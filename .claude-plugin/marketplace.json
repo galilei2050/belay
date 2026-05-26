@@ -1,0 +1,14 @@
+{
+  "name": "belay",
+  "owner": {
+    "name": "galilei2050",
+    "url": "https://github.com/galilei2050"
+  },
+  "plugins": [
+    {
+      "name": "acl-hook",
+      "source": "./plugins/acl-hook",
+      "description": "PreToolUse Bash gate enforcing a project ACL. Vendored from clarity-auto-care."
+    }
+  ]
+}
