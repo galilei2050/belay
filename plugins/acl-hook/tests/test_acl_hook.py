@@ -77,6 +77,27 @@ def test_git_add_is_allowed(logger):
     assert decide("git add app/foo.py", logger)[0] == "allow"
 
 
+def test_git_add_multiple_files_is_allowed(logger):
+    assert decide("git add app/foo.py app/bar.py tests/test_foo.py", logger)[0] == "allow"
+
+
+def test_git_add_dash_a_is_denied(logger):
+    decision, reason = decide("git add -A", logger)
+    assert decision == "deny"
+    assert "git add" in reason
+    assert "by path" in reason
+
+
+def test_git_add_all_long_flag_is_denied(logger):
+    assert decide("git add --all", logger)[0] == "deny"
+
+
+def test_git_add_dot_is_denied(logger):
+    decision, reason = decide("git add .", logger)
+    assert decision == "deny"
+    assert "git add" in reason
+
+
 def test_git_commit_is_allowed(logger):
     # After the harness gates were removed, plain `git commit` is allow.
     # Pre-commit verification belongs in a separate plugin.
