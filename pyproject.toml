@@ -26,31 +26,30 @@ target-version = "py310"
 select = ["ALL"]
 ignore = [
     # Formatter conflicts
-    "COM812", "ISC001",
+    "COM812",
     # Project conventions
     "RUF013",  # implicit-optional — explicit X | None used instead
+    "RUF001",  # ambiguous unicode chars — bilingual (RU + EN) plugins need real Cyrillic
+    "SIM110",  # explicit for-loops over any() — easier to extend with logging later
     "D203", "D213",  # docstring style conflicts (we use D211, D212)
-    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",  # missing docstrings not enforced
-    "B008",
-    "FBT",  # boolean trap
     "G",    # logging-format
     "TRY003",
     "EM101", "EM102",
-    "ANN401",
     "TID252",
 ]
 
 [tool.ruff.lint.pylint]
 max-args = 8
 max-positional-args = 8
-max-branches = 12
-max-statements = 50
-max-locals = 12
+max-branches = 8
+max-statements = 25
+max-locals = 10
 max-bool-expr = 4
-max-nested-blocks = 4
+max-nested-blocks = 3
+max-returns = 4
 
 [tool.ruff.lint.mccabe]
-max-complexity = 12
+max-complexity = 8
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -71,6 +70,9 @@ warn_unreachable = true
 check_untyped_defs = true
 no_implicit_optional = true
 ignore_missing_imports = true  # bashlex has no stubs
+# Per-plugin conftest.py files collide as one module under mypy; they're
+# pytest fixtures with no typing surface, so just skip them.
+exclude = ['conftest\.py$']
 
 [[tool.mypy.overrides]]
 module = "bashlex.*"
