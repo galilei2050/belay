@@ -63,441 +63,41 @@ HOME = str(Path.home())
 # when invoked outside a Claude Code session (tests, manual runs).
 PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
 
-# ── Long reasons hoisted out of the ACL table to keep lines under 120 chars ──
+# ── ACL config: bundled defaults auto-installed into the project on first run ──
+#
+# The full rule table lives in `acl_default.json` next to this file. On first
+# invocation in a project, that file is copied to `$CLAUDE_PROJECT_DIR/.claude/
+# acl.json` so the user can edit rules per-project without forking the plugin.
+# Subsequent invocations read the project copy.
 
-GIT_RESET_REASON = (
-    "Don't reset history. Commit forward (new commit / `git revert`) or ask the user to run `git reset` themselves."
-)
-GIT_REBASE_REASON = "Agent never rebases — commit forward or ask the user to rebase manually"
-GIT_CHERRY_PICK_REASON = "Agent never cherry-picks — open a PR with the desired commits, or ask user"
-GIT_MERGE_REASON = "Agent never merges — use PRs via `gh pr create`/merge UI"
-GIT_REVERT_REASON = "Confirm revert — legitimate way to undo a bad commit"
-GIT_ADD_A_REASON = (
-    "`git add -A` stages everything in the working tree, which sneaks in secrets (.env), "
-    "build artifacts, half-finished work, and files unrelated to the current change. "
-    "INSTEAD: list files by path — `git add path/to/file1 path/to/file2`. If you don't "
-    "know what's changed, run `git status` first and add the relevant ones deliberately."
-)
-GIT_ADD_ALL_REASON = (
-    "`git add --all` stages everything (same problem as `-A`). INSTEAD: list files by "
-    "path. Run `git status` first if you need to see what's changed."
-)
-GIT_ADD_DOT_REASON = (
-    "`git add .` stages everything under cwd, which sneaks in unintended files. INSTEAD: "
-    "list files by path — `git add path/to/file1 path/to/file2`. Run `git status` first "
-    "if you need to see what's changed."
-)
-GIT_DEFAULT_REASON = (
-    "git subcommand not in allow-list. Use status/log/diff/add/commit/push/checkout/"
-    "branch/restore or ask the user which command they want."
-)
-SOURCE_REASON = "source is blocked. If the venv isn't active, ask the user to activate it — do not try workarounds."
-DOT_SOURCE_REASON = "`.` (source builtin) is blocked — same as `source`."
-ENV_REASON = (
-    "env is blocked — bypasses ACL via leading env-var assignments. Read env vars from "
-    "inside your program, or ask the user."
-)
-XARGS_REASON = "xargs bypasses ACL. Use a `for` loop or run commands directly."
-GH_PR_COMMENT_REASON = "Confirm before posting PR comment (outward-facing)"
-GH_ISSUE_COMMENT_REASON = "Confirm before posting issue comment (outward-facing)"
-GH_DEFAULT_REASON = "gh subcommand not in allow-list — confirm. Merge/close/delete/release are user-only."
-SED_INLINE_LONG_REASON = (
-    "`sed -i` expression too long (>300 chars) — use the Edit tool instead. Edit shows a "
-    "diff, doesn't risk regex mishaps, and the change is reviewable. If you genuinely "
-    "need a long regex replacement, split it into multiple short `sed -e` expressions or "
-    "use Edit with the new content."
-)
-SHELL_FORK_REASON = "Use the Bash tool directly or chain commands with && instead"
-COMMAND_BUILTIN_REASON = (
-    "`command <X>` is the bash `command` builtin and it bypasses ACL. Do NOT prefix "
-    "anything with `command` — write the bare command. Example: instead of "
-    "`command git status`, write `git status`."
-)
-EVAL_REASON = "`eval` bypasses ACL by executing a constructed string. Run the command directly."
-EXEC_REASON = "`exec` bypasses ACL by replacing the shell. Run the command directly."
-BUILTIN_REASON = "`builtin` bypasses ACL. Run the command directly."
-GCLOUD_AUTH_ACTIVATE_REASON = "Service account impersonation blocked"
-GCLOUD_AUTH_LOGIN_REASON = (
-    "User runs `gcloud auth login` interactively themselves — agent can't complete the browser flow"
-)
-GCLOUD_DEFAULT_REASON = "gcloud subcommand not in read allow-list — confirm."
+_BUNDLED_ACL_PATH = Path(__file__).parent / "acl_default.json"
+_PROJECT_ACL_RELPATH = Path(".claude") / "acl.json"
+_ACL_CACHE: dict[str, Entry] | None = None
 
-# fmt: off
-ACL: dict[str, Entry] = {
-    "git": {
-        "rules": [
-            # Hard denies — never bypass
-            {"args": ["commit", "--amend"],          "decision": "deny", "reason": "Never amend commits"},
-            {"args": ["push", "--force"],            "decision": "deny", "reason": "Never force push"},
-            {"args": ["push", "--force-with-lease"], "decision": "deny", "reason": "Never force push"},
-            {"args": ["*", "--no-verify"],           "decision": "deny", "reason": "Never skip hooks"},
-            {"args": ["filter-branch"],              "decision": "deny", "reason": "filter-branch rewrites history"},
-            {"args": ["filter-repo"],                "decision": "deny", "reason": "filter-repo rewrites history"},
 
-            # Destructive subcommands — agent must not silently rewrite history
-            {"args": ["reset"],        "decision": "deny", "reason": GIT_RESET_REASON},
-            {"args": ["clean", "-f"],  "decision": "ask",  "reason": "Confirm git clean"},
-            {"args": ["branch", "-D"], "decision": "ask",  "reason": "Confirm force-delete branch"},
-            {"args": ["branch", "-d"], "decision": "ask",  "reason": "Confirm delete branch"},
-            {"args": ["rebase"],       "decision": "deny", "reason": GIT_REBASE_REASON},
-            {"args": ["cherry-pick"],  "decision": "deny", "reason": GIT_CHERRY_PICK_REASON},
-            {"args": ["merge"],        "decision": "deny", "reason": GIT_MERGE_REASON},
-            {"args": ["revert"],       "decision": "ask",  "reason": GIT_REVERT_REASON},
+def project_acl_path() -> Path:
+    """Where the per-project ACL config lives (auto-installed from bundled default)."""
+    return Path(PROJECT_DIR) / _PROJECT_ACL_RELPATH
 
-            # Commit is allow (reversible on solo branch); use a separate plugin
-            # (verify-gate, code-review-gate, …) if you want pre-commit gates.
-            {"args": ["commit"],              "decision": "allow", "reason": ""},
 
-            # Config: reads ok, writes confirmed
-            {"args": ["config", "--get"],  "decision": "allow", "reason": ""},
-            {"args": ["config", "--list"], "decision": "allow", "reason": ""},
-            {"args": ["config"],           "decision": "ask",   "reason": "Confirm git config write"},
+def _load_acl() -> dict[str, Entry]:
+    """Read the project ACL, copying the bundled default on first access."""
+    global _ACL_CACHE  # noqa: PLW0603 — module-level cache for the parsed config
+    if _ACL_CACHE is not None:
+        return _ACL_CACHE
+    target = project_acl_path()
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(_BUNDLED_ACL_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+    loaded: dict[str, Entry] = json.loads(target.read_text(encoding="utf-8"))
+    _ACL_CACHE = loaded
+    return loaded
 
-            # Allow-list: read-only + safe state-changing operations
-            {"args": ["status"],        "decision": "allow", "reason": ""},
-            {"args": ["log"],           "decision": "allow", "reason": ""},
-            {"args": ["diff"],          "decision": "allow", "reason": ""},
-            {"args": ["show"],          "decision": "allow", "reason": ""},
-            {"args": ["blame"],         "decision": "allow", "reason": ""},
-            {"args": ["describe"],      "decision": "allow", "reason": ""},
-            {"args": ["rev-parse"],     "decision": "allow", "reason": ""},
-            {"args": ["ls-files"],      "decision": "allow", "reason": ""},
-            {"args": ["ls-tree"],       "decision": "allow", "reason": ""},
-            {"args": ["branch"],        "decision": "allow", "reason": ""},
-            {"args": ["fetch"],         "decision": "allow", "reason": ""},
-            {"args": ["pull"],          "decision": "allow", "reason": ""},
-            {"args": ["push"],          "decision": "allow", "reason": ""},
-            {"args": ["add", "-A"],     "decision": "deny",  "reason": GIT_ADD_A_REASON},
-            {"args": ["add", "--all"],  "decision": "deny",  "reason": GIT_ADD_ALL_REASON},
-            {"args": ["add", "."],      "decision": "deny",  "reason": GIT_ADD_DOT_REASON},
-            {"args": ["add"],           "decision": "allow", "reason": ""},
-            {"args": ["mv"],            "decision": "allow", "reason": ""},
-            {"args": ["clone"],         "decision": "allow", "reason": ""},
-            {"args": ["restore"],       "decision": "allow", "reason": ""},
-            {"args": ["checkout"],      "decision": "allow", "reason": ""},
-            {"args": ["switch"],        "decision": "allow", "reason": ""},
-            {"args": ["stash"],         "decision": "allow", "reason": ""},
-            {"args": ["tag"],           "decision": "allow", "reason": ""},
-            {"args": ["remote"],        "decision": "allow", "reason": ""},
-            {"args": ["reflog"],        "decision": "allow", "reason": ""},
-            {"args": ["worktree"],      "decision": "allow", "reason": ""},
-            {"args": ["merge-base"],    "decision": "allow", "reason": ""},
-            {"args": ["shortlog"],      "decision": "allow", "reason": ""},
-            {"args": ["grep"],          "decision": "allow", "reason": ""},
-            {"args": ["init"],          "decision": "ask",   "reason": "Confirm git init"},
-        ],
-        "default": "deny",
-        "reason": GIT_DEFAULT_REASON,
-    },
-    "cat":  {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "head": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "tail": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "less": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "more": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "source":  {"rules": [], "default": "deny", "reason": SOURCE_REASON},
-    ".":       {"rules": [], "default": "deny", "reason": DOT_SOURCE_REASON},
-    "env":     {"rules": [], "default": "deny", "reason": ENV_REASON},
-    "xargs":   {"rules": [], "default": "deny", "reason": XARGS_REASON},
-    "python3": {"rules": [], "default": "allow"},
-    "python":  {"rules": [], "default": "allow"},
-    "gh": {
-        "rules": [
-            {"args": ["pr", "view"],     "decision": "allow", "reason": ""},
-            {"args": ["pr", "list"],     "decision": "allow", "reason": ""},
-            {"args": ["pr", "checks"],   "decision": "allow", "reason": ""},
-            {"args": ["pr", "diff"],     "decision": "allow", "reason": ""},
-            {"args": ["pr", "status"],   "decision": "allow", "reason": ""},
-            {"args": ["pr", "comment"],  "decision": "ask",   "reason": GH_PR_COMMENT_REASON},
-            {"args": ["pr", "edit"],     "decision": "allow", "reason": ""},
-            {"args": ["pr", "ready"],    "decision": "allow", "reason": ""},
-            {"args": ["pr", "create"],   "decision": "allow", "reason": ""},
 
-            {"args": ["repo", "view"],     "decision": "allow", "reason": ""},
-            {"args": ["repo", "list"],     "decision": "allow", "reason": ""},
-            {"args": ["run", "view"],      "decision": "allow", "reason": ""},
-            {"args": ["run", "list"],      "decision": "allow", "reason": ""},
-            {"args": ["run", "watch"],     "decision": "allow", "reason": ""},
-            {"args": ["api"],              "decision": "allow", "reason": ""},
-            {"args": ["auth", "status"],   "decision": "allow", "reason": ""},
-            {"args": ["issue", "view"],    "decision": "allow", "reason": ""},
-            {"args": ["issue", "list"],    "decision": "allow", "reason": ""},
-            {"args": ["issue", "comment"], "decision": "ask",   "reason": GH_ISSUE_COMMENT_REASON},
-            {"args": ["issue", "create"],  "decision": "ask",   "reason": "Confirm before creating issue"},
-            {"args": ["workflow", "view"], "decision": "allow", "reason": ""},
-            {"args": ["workflow", "list"], "decision": "allow", "reason": ""},
-            {"args": ["release", "view"],  "decision": "allow", "reason": ""},
-            {"args": ["release", "list"],  "decision": "allow", "reason": ""},
-            {"args": ["secret", "list"],   "decision": "allow", "reason": ""},
-        ],
-        "default": "ask",
-        "reason": GH_DEFAULT_REASON,
-    },
-    "rm": {
-        "rules": [
-            {"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"},
-            {"fn": "all_paths_inside_project", "decision": "ask", "reason": "Confirm rm inside project tree"},
-        ],
-        "default": "deny",
-        "reason": "rm only allowed inside the project tree — system paths off-limits",
-    },
-    "nc":      {"rules": [], "default": "ask", "reason": "Confirm before using nc"},
-    "pip":     {"rules": [{"args": ["install"], "decision": "ask",
-                           "reason": "Confirm before installing packages"}],
-                "default": "allow"},
-    "cp":   {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "mv":   {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "grep": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "rg":   {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "sed": {
-        "rules": [
-            {"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"},
-            {"fn": "sed_inline_long", "decision": "deny", "reason": SED_INLINE_LONG_REASON},
-        ],
-        "default": "allow",
-    },
-    "diff": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "awk":  {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "tee":  {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-             "default": "allow"},
-    "curl": {
-        "rules": [
-            {"args_contain": ["@.env*", "-d*@.env*"], "decision": "deny",
-             "reason": "Env file exfiltration blocked"},
-            {"fn": "curl_mutating_remote", "decision": "ask",
-             "reason": "Confirm POST/PUT/PATCH/DELETE to remote"},
-        ],
-        "default": "allow",
-    },
-    "echo":   {"rules": [], "default": "allow"},
-    "printf": {"rules": [], "default": "allow"},
-    "ls":     {"rules": [], "default": "allow"},
-    "lsof":   {"rules": [], "default": "allow"},
-    "kill":   {"rules": [], "default": "allow"},
-    "pkill":  {"rules": [], "default": "allow"},
-    "pwd":    {"rules": [], "default": "allow"},
-    "tr":     {"rules": [], "default": "allow"},
-    "until":  {"rules": [], "default": "allow"},
-    "export": {"rules": [], "default": "allow"},
-    "unset":  {"rules": [], "default": "allow"},
-    "getent": {"rules": [], "default": "allow"},
-    "ip":     {"rules": [], "default": "allow"},
-    "chmod":  {"rules": [], "default": "allow"},
-    "ps":     {"rules": [], "default": "allow"},
-    "pyright": {"rules": [], "default": "allow"},
-    "ruff":    {"rules": [], "default": "allow"},
-    "mypy":    {"rules": [], "default": "allow"},
-    "isort":   {"rules": [], "default": "allow"},
-    "black":   {"rules": [], "default": "allow"},
-    "flake8":  {"rules": [], "default": "allow"},
-    "pylint":  {"rules": [], "default": "allow"},
-    "cd":     {"rules": [], "default": "allow"},
-    "mkdir":  {"rules": [], "default": "allow"},
-    "tree":   {"rules": [], "default": "allow"},
-    "test":   {"rules": [], "default": "allow"},
-    "touch":  {"rules": [], "default": "allow"},
-    "date":   {"rules": [], "default": "allow"},
-    "whoami": {"rules": [], "default": "allow"},
-    "which":  {"rules": [], "default": "allow"},
-    "jq":     {"rules": [], "default": "allow"},
-    "stat":   {"rules": [], "default": "allow"},
-    "wc":     {"rules": [], "default": "allow"},
-    "true":   {"rules": [], "default": "allow"},
-    "find":   {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-               "default": "allow"},
-    "cut":    {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-               "default": "allow"},
-    "iconv":  {"rules": [], "default": "allow"},
-    "id":     {"rules": [], "default": "allow"},
-    "systemctl": {
-        "rules": [
-            {"args": ["status"],     "decision": "allow", "reason": ""},
-            {"args": ["is-active"],  "decision": "allow", "reason": ""},
-            {"args": ["is-enabled"], "decision": "allow", "reason": ""},
-            {"args": ["list-units"], "decision": "allow", "reason": ""},
-            {"args": ["show"],       "decision": "allow", "reason": ""},
-            {"args": ["cat"],        "decision": "allow", "reason": ""},
-        ],
-        "default": "ask",
-        "reason": "systemctl mutations (start/stop/enable/disable/reload) need confirmation.",
-    },
-    "make": {"rules": [], "default": "allow"},
-    "docker": {
-        "rules": [
-            {"args": ["ps"],      "decision": "allow", "reason": ""},
-            {"args": ["images"],  "decision": "allow", "reason": ""},
-            {"args": ["logs"],    "decision": "allow", "reason": ""},
-            {"args": ["inspect"], "decision": "allow", "reason": ""},
-            {"args": ["info"],    "decision": "allow", "reason": ""},
-            {"args": ["version"], "decision": "allow", "reason": ""},
-            {"args": ["stats"],   "decision": "allow", "reason": ""},
-            {"args": ["history"], "decision": "allow", "reason": ""},
-            {"args": ["top"],     "decision": "allow", "reason": ""},
-            {"args": ["port"],    "decision": "allow", "reason": ""},
-            {"args": ["events"],  "decision": "allow", "reason": ""},
-            {"args": ["diff"],    "decision": "allow", "reason": ""},
-            {"args": ["pull"],    "decision": "allow", "reason": ""},
-            {"args": ["build"],   "decision": "allow", "reason": ""},
-            {"args": ["push"],    "decision": "ask",   "reason": "Confirm docker push (outward-facing)"},
-            {"args": ["run"],     "decision": "allow", "reason": ""},
-            {"args": ["exec"],    "decision": "allow", "reason": ""},
-            {"args": ["start"],   "decision": "allow", "reason": ""},
-            {"args": ["stop"],    "decision": "allow", "reason": ""},
-            {"args": ["restart"], "decision": "allow", "reason": ""},
-            {"args": ["rm"],      "decision": "ask",   "reason": "Confirm docker rm"},
-            {"args": ["rmi"],     "decision": "ask",   "reason": "Confirm docker rmi"},
-            {"args": ["prune"],   "decision": "ask",   "reason": "Confirm docker prune"},
-            {"args": ["compose"], "decision": "ask",   "reason": "Confirm docker compose"},
-            {"args": ["login"],   "decision": "deny",  "reason": "No registry login from agent"},
-            {"args": ["logout"],  "decision": "deny",  "reason": "No registry logout from agent"},
-        ],
-        "default": "ask",
-        "reason": "docker subcommand not in allow-list — confirm.",
-    },
-    "fuser":      {"rules": [], "default": "allow"},
-    "paste":      {"rules": [], "default": "allow"},
-    "pre-commit": {"rules": [], "default": "allow"},
-    "journalctl": {"rules": [], "default": "allow"},
-    "du":         {"rules": [], "default": "allow"},
-    "file":       {"rules": [], "default": "allow"},
-    "df":         {"rules": [], "default": "allow"},
-    "lsblk":      {"rules": [], "default": "allow"},
-    "findmnt":    {"rules": [], "default": "allow"},
-    "rmdir": {
-        "rules": [{"fn": "all_paths_inside_project", "decision": "ask",
-                   "reason": "Confirm rmdir inside project tree"}],
-        "default": "deny",
-        "reason": "rmdir only allowed inside the project tree",
-    },
-    "pytest":    {"rules": [], "default": "allow"},
-    "streamlit": {"rules": [], "default": "allow"},
-    "pulumi": {
-        "rules": [
-            {"args": ["preview"],         "decision": "allow", "reason": ""},
-            {"args": ["stack", "ls"],     "decision": "allow", "reason": ""},
-            {"args": ["stack", "select"], "decision": "allow", "reason": ""},
-            {"args": ["config", "get"],   "decision": "allow", "reason": ""},
-        ],
-        "default": "ask",
-        "reason": "pulumi mutations (up/destroy) need confirmation.",
-    },
-    "pgrep": {"rules": [], "default": "allow"},
-    "set":   {"rules": [], "default": "allow"},
-    "sleep": {"rules": [], "default": "allow"},
-    "sort":  {"rules": [], "default": "allow"},
-    "uniq":  {"rules": [], "default": "allow"},
-    "if":    {"rules": [], "default": "allow"},
-    "then":  {"rules": [], "default": "allow"},
-    "else":  {"rules": [], "default": "allow"},
-    "elif":  {"rules": [], "default": "allow"},
-    "fi":    {"rules": [], "default": "allow"},
-    "[":     {"rules": [], "default": "allow"},
-    "[[":    {"rules": [], "default": "allow"},
-    "for":   {"rules": [], "default": "allow"},
-    "do":    {"rules": [], "default": "allow"},
-    "done":  {"rules": [], "default": "allow"},
-    "while": {"rules": [], "default": "allow"},
-    "npm": {
-        "rules": [
-            {"args": ["list"],      "decision": "allow", "reason": ""},
-            {"args": ["ls"],        "decision": "allow", "reason": ""},
-            {"args": ["view"],      "decision": "allow", "reason": ""},
-            {"args": ["info"],      "decision": "allow", "reason": ""},
-            {"args": ["outdated"],  "decision": "allow", "reason": ""},
-            {"args": ["audit"],     "decision": "allow", "reason": ""},
-            {"args": ["test"],      "decision": "allow", "reason": ""},
-            {"args": ["run"],       "decision": "allow", "reason": ""},
-            {"args": ["start"],     "decision": "allow", "reason": ""},
-            {"args": ["install"],   "decision": "ask",   "reason": "Confirm npm install"},
-            {"args": ["i"],         "decision": "ask",   "reason": "Confirm npm install"},
-            {"args": ["ci"],        "decision": "allow", "reason": ""},
-            {"args": ["uninstall"], "decision": "ask",   "reason": "Confirm npm uninstall"},
-            {"args": ["update"],    "decision": "ask",   "reason": "Confirm npm update"},
-            {"args": ["publish"],   "decision": "deny",  "reason": "Never publish from agent"},
-            {"args": ["adduser"],   "decision": "deny",  "reason": "No npm auth changes"},
-            {"args": ["login"],     "decision": "deny",  "reason": "No npm auth changes"},
-            {"args": ["token"],     "decision": "deny",  "reason": "No npm tokens"},
-        ],
-        "default": "ask",
-        "reason": "npm subcommand not in allow-list — confirm.",
-    },
-    "npx":     {"rules": [], "default": "ask", "reason": "Confirm npx — runs arbitrary package"},
-    "gunzip":  {"rules": [], "default": "allow"},
-    "zcat":    {"rules": [], "default": "allow"},
-    "bash":    {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
-    "sh":      {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
-    "dash":    {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
-    "zsh":     {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
-    "ksh":     {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
-    "fish":    {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
-    "command": {"rules": [], "default": "deny", "reason": COMMAND_BUILTIN_REASON},
-    "eval":    {"rules": [], "default": "deny", "reason": EVAL_REASON},
-    "exec":    {"rules": [], "default": "deny", "reason": EXEC_REASON},
-    "builtin": {"rules": [], "default": "deny", "reason": BUILTIN_REASON},
-    "sudo":    {"rules": [], "default": "deny", "reason": "No privilege escalation from agent."},
-    "pkexec":  {"rules": [], "default": "deny", "reason": "No privilege escalation from agent."},
-    "doas":    {"rules": [], "default": "deny", "reason": "No privilege escalation from agent."},
-    "ffmpeg":  {"rules": [], "default": "allow"},
-    "ffprobe": {"rules": [], "default": "allow"},
-    "gcloud": {
-        "rules": [
-            {"args_contain": ["set-iam-policy", "add-iam-policy-binding", "remove-iam-policy-binding"],
-             "decision": "deny", "reason": "IAM changes blocked"},
-            {"args": ["auth", "activate-service-account"], "decision": "deny",
-             "reason": GCLOUD_AUTH_ACTIVATE_REASON},
+def acl() -> dict[str, Entry]:
+    """Public accessor for the loaded ACL table (tests reset _ACL_CACHE to reload)."""
+    return _load_acl()
 
-            {"args_contain": ["print-access-token", "print-identity-token"],
-             "decision": "ask", "reason": "Confirm auth token output"},
-            {"args": ["secrets", "versions", "access"],
-             "decision": "ask", "reason": "Confirm secret access"},
-
-            {"args_contain": ["deploy"], "decision": "ask", "reason": "Confirm before deploying"},
-            {"args_contain": ["delete"], "decision": "ask", "reason": "Confirm before deleting"},
-            {"args_contain": ["create"], "decision": "ask", "reason": "Confirm before creating resources"},
-            {"args_contain": ["update"], "decision": "ask", "reason": "Confirm before updating resources"},
-            {"args_contain": ["import"], "decision": "ask", "reason": "Confirm before importing resources"},
-            {"args": ["services", "disable"], "decision": "ask", "reason": "Confirm before disabling services"},
-            {"args": ["services", "enable"],  "decision": "ask", "reason": "Confirm before enabling services"},
-            {"args": ["config", "set"],       "decision": "ask", "reason": "Confirm gcloud config write"},
-            {"args": ["config", "unset"],     "decision": "ask", "reason": "Confirm gcloud config write"},
-            {"args": ["auth", "login"],       "decision": "deny", "reason": GCLOUD_AUTH_LOGIN_REASON},
-            {"args": ["auth", "revoke"],      "decision": "deny", "reason": "Auth changes are user-only"},
-
-            {"args": ["storage", "ls"],   "decision": "allow", "reason": ""},
-            {"args": ["storage", "cat"],  "decision": "allow", "reason": ""},
-            {"args": ["pubsub", "subscriptions", "pull"], "decision": "allow", "reason": ""},
-            {"args_contain": ["list"],     "decision": "allow", "reason": ""},
-            {"args_contain": ["describe"], "decision": "allow", "reason": ""},
-            {"args_contain": ["info"],     "decision": "allow", "reason": ""},
-            {"args_contain": ["read"],     "decision": "allow", "reason": ""},
-            {"args_contain": ["show"],     "decision": "allow", "reason": ""},
-            {"args_contain": ["check"],    "decision": "allow", "reason": ""},
-            {"args_contain": ["lookup"],   "decision": "allow", "reason": ""},
-            {"args_contain": ["query"],    "decision": "allow", "reason": ""},
-            {"args_contain": ["status"],   "decision": "allow", "reason": ""},
-            {"args_contain": ["get-*"],    "decision": "allow", "reason": ""},
-            {"args_contain": ["print-settings"], "decision": "allow", "reason": ""},
-            {"args_contain": ["log"],   "decision": "allow", "reason": ""},
-            {"args_contain": ["logs"],  "decision": "allow", "reason": ""},
-            {"args_contain": ["tail"],  "decision": "allow", "reason": ""},
-            {"args": ["version"],       "decision": "allow", "reason": ""},
-            {"args": ["help"],          "decision": "allow", "reason": ""},
-        ],
-        "default": "ask",
-        "reason": GCLOUD_DEFAULT_REASON,
-    },
-}
-# fmt: on
 
 DECISION_PRIORITY = {"deny": 2, "ask": 1, "allow": 0}
 
@@ -881,7 +481,7 @@ def _preflight(command: str) -> Decision | None:
 
 def _apply_acl(command: str, args: list[str]) -> Decision:
     """Walk the ACL rules for `command`, falling back to its `default`."""
-    entry = ACL[command]
+    entry = acl()[command]
     for rule in entry.get("rules", []):
         if check_rule(rule, args):
             return rule["decision"], rule.get("reason", ""), "rule"
@@ -915,11 +515,12 @@ def _classify(cmd_str: str) -> Decision:
     if preflight is not None:
         return preflight
 
+    table = acl()
     # Basename normalization so /usr/bin/git is ACL'd the same as bare git.
-    if "/" in command and Path(command).name in ACL:
+    if "/" in command and Path(command).name in table:
         command = Path(command).name
 
-    if command not in ACL:
+    if command not in table:
         return "deny", _UNKNOWN_CMD_REASON.format(cmd=command), "unknown_command"
 
     return _apply_acl(command, args)

@@ -59,17 +59,26 @@ understand the rule well enough to ship it. Write a real one before merging.
 A bad reason is "Not allowed." or "Blocked." A good reason names the
 antipattern, explains the failure mode in one clause, and prescribes the fix.
 
+## Where the ACL config lives
+
+The full rule table is **`.claude/acl.json`** inside each project. On the
+first Bash invocation in a fresh project, the hook copies its bundled default
+(`plugins/acl-hook/hooks/acl_default.json`) to that path; from then on the
+project file is authoritative — edit it freely without forking the plugin.
+
+To change rules: edit `.claude/acl.json`. To start over: delete the file and
+the next hook run re-installs the bundled default.
+
 ## Anatomy of an ACL entry
 
-```python
+```json
 "git": {
     "rules": [
         {"args": ["push", "--force"], "decision": "deny",  "reason": "…"},
-        {"args": ["commit"],          "decision": "allow", "reason": ""},
-        # …
+        {"args": ["commit"],          "decision": "allow", "reason": ""}
     ],
     "default": "deny",
-    "reason": "git subcommand not in allow-list. Use status/log/diff/… or ask the user.",
+    "reason": "git subcommand not in allow-list. Use status/log/diff/… or ask the user."
 }
 ```
 
@@ -85,9 +94,9 @@ antipattern, explains the failure mode in one clause, and prescribes the fix.
   - `"args_contain": [a, b]` — any of these tokens appears anywhere.
   - `"args_glob": "pattern"` — full arg string matched as one glob.
 - The escape hatch: `"fn": "name"` where `name` is a Python callable in
-  `CUSTOM_FNS`. Use only when no pattern matcher captures the intent
-  (`curl_mutating_remote`, `all_paths_inside_project`). Each new `fn`
-  adds a piece of business logic to the hook — keep them tiny and pure.
+  `CUSTOM_FNS` (registered in `acl_hook.py`). Use only when no pattern matcher
+  captures the intent (`curl_mutating_remote`, `all_paths_inside_project`).
+  New `fn` predicates require editing `acl_hook.py` — keep them tiny and pure.
 
 ## How to add a new rule
 
