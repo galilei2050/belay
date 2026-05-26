@@ -506,3 +506,26 @@ def test_systemctl_status_is_allowed(logger):
 
 def test_systemctl_restart_needs_confirmation(logger):
     assert decide("systemctl restart nginx", logger)[0] == "ask"
+
+
+# ── ACL config auto-install + project override ───────────────────────────────
+
+
+def test_acl_config_is_auto_installed_on_first_decision(logger, fix_project_dir):
+    target = fix_project_dir / ".claude" / "acl.json"
+    assert not target.exists()
+    decide("git status", logger)
+    assert target.exists()
+    assert json.loads(target.read_text(encoding="utf-8"))["git"]["default"] == "deny"
+
+
+def test_project_acl_override_wins(fix_project_dir, logger, monkeypatch):
+    override_dir = fix_project_dir / ".claude"
+    override_dir.mkdir(exist_ok=True)
+    (override_dir / "acl.json").write_text(
+        json.dumps({"git": {"rules": [], "default": "allow"}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
+    decision, _ = decide("git push --force", logger)
+    assert decision == "allow"  # bundled default would have denied this

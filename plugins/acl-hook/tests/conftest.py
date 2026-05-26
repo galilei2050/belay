@@ -17,7 +17,7 @@ if _HOOKS_DIR not in sys.path:
 
 
 @pytest.fixture(autouse=True)
-def _fix_project_dir(tmp_path, monkeypatch):
+def fix_project_dir(tmp_path, monkeypatch):
     """Pin PROJECT_DIR to a tmp dir so rm/rmdir path tests are deterministic.
 
     The real plugin reads CLAUDE_PROJECT_DIR from the env at import time and
@@ -33,6 +33,7 @@ def _fix_project_dir(tmp_path, monkeypatch):
         (project / sub).mkdir()
 
     monkeypatch.setattr(acl_hook, "PROJECT_DIR", str(project))
+    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
     return project
 
