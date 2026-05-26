@@ -11,6 +11,7 @@ One job. No project knowledge, no network, no LLM.
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import logging
@@ -18,6 +19,7 @@ import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import IO
 
 HOME = Path.home()
 
@@ -191,22 +193,24 @@ def extract_tail(text: str) -> str:
     return tail
 
 
+def _parse_jsonl(handle: IO[str]) -> list[dict]:
+    events: list[dict] = []
+    for raw in handle:
+        line = raw.strip()
+        if not line:
+            continue
+        with contextlib.suppress(json.JSONDecodeError):
+            events.append(json.loads(line))
+    return events
+
+
 def read_transcript(path: str) -> list[dict]:
     """Read a Claude Code JSONL transcript. Each line is one event."""
-    events: list[dict] = []
     try:
         with Path(path).open(encoding="utf-8") as f:
-            for raw in f:
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    events.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
+            return _parse_jsonl(f)
     except OSError:
         return []
-    return events
 
 
 def _message_text(message: dict) -> str:
@@ -284,6 +288,16 @@ def user_asked_open_question(user_text: str) -> bool:
     return bool(text) and text.endswith("?") and len(text) < _USER_Q_MAX_LEN
 
 
+def _firing_guard(tail: str, user_text: str) -> str | None:
+    if has_destructive_context(tail):
+        return "destructive"
+    if has_business_ambiguity(tail):
+        return "ambiguity"
+    if user_asked_open_question(user_text):
+        return "user_question"
+    return None
+
+
 def classify(
     assistant_text: str,
     user_text: str,
@@ -293,24 +307,14 @@ def classify(
     verdict ∈ {"ok", "shirk", "guard:<name>"} — guard verdicts are still "ok" for the
     blocking decision, but we log them separately for tuning.
     """
-    normalized = normalize(assistant_text)
-    tail = extract_tail(normalized)
-    if not tail:
-        return "ok", None, None
-
-    hit = match_shirk(tail)
+    tail = extract_tail(normalize(assistant_text))
+    hit = match_shirk(tail) if tail else None
     if not hit:
         return "ok", None, None
-
     group, snippet = hit
-
-    if has_destructive_context(tail):
-        return "guard:destructive", group, snippet
-    if has_business_ambiguity(tail):
-        return "guard:ambiguity", group, snippet
-    if user_asked_open_question(user_text):
-        return "guard:user_question", group, snippet
-
+    guard = _firing_guard(tail, user_text)
+    if guard:
+        return f"guard:{guard}", group, snippet
     return "shirk", group, snippet
 
 
@@ -341,30 +345,33 @@ def build_reason(snippet: str) -> str:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 
-def main() -> None:
+def _load_events() -> list[dict] | None:
+    """Parse stdin payload, apply gate checks, return transcript events.
+
+    Returns None when the hook should exit silently (bad input, loop guard,
+    missing transcript). Empty list means transcript loaded but contained
+    nothing usable.
+    """
     raw = sys.stdin.read()
     try:
         data = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError:
-        sys.exit(0)
-
-    # Loop guard: if we already blocked once this turn, don't block again.
+        return None
     if data.get("stop_hook_active"):
-        sys.exit(0)
-
+        return None
     transcript_path = data.get("transcript_path")
     if not transcript_path or not Path(transcript_path).exists():
-        sys.exit(0)
+        return None
+    return read_transcript(transcript_path)
 
-    events = read_transcript(transcript_path)
-    assistant_text = last_assistant_text(events)
-    if not assistant_text.strip():
-        sys.exit(0)
-    user_text = last_user_text(events)
 
-    verdict, group, snippet = classify(assistant_text, user_text)
-
-    logger = setup_logging()
+def _log_verdict(
+    logger: logging.Logger,
+    verdict: str,
+    group: str | None,
+    snippet: str | None,
+    assistant_text: str,
+) -> None:
     logger.info(
         'verdict=%s group=%s snippet="%s" preview="%s"',
         verdict,
@@ -373,12 +380,19 @@ def main() -> None:
         assistant_text.strip().replace("\n", " ")[:200],
     )
 
-    if verdict != "shirk":
-        sys.exit(0)
 
-    assert snippet is not None  # noqa: S101 — verdict=="shirk" implies a match
+def main() -> None:
+    events = _load_events()
+    if events is None:
+        return
+    assistant_text = last_assistant_text(events)
+    if not assistant_text.strip():
+        return
+    verdict, group, snippet = classify(assistant_text, last_user_text(events))
+    _log_verdict(setup_logging(), verdict, group, snippet, assistant_text)
+    if verdict != "shirk" or snippet is None:
+        return
     sys.stdout.write(json.dumps({"decision": "block", "reason": build_reason(snippet)}) + "\n")
-    sys.exit(0)
 
 
 if __name__ == "__main__":

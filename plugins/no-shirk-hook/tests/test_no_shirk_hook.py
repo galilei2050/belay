@@ -292,9 +292,7 @@ def via_main(monkeypatch, capsys, *, transcript_path, stop_hook_active=False):
         }
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
-    with pytest.raises(SystemExit) as exc:
-        no_shirk_hook.main()
-    assert exc.value.code == 0
+    no_shirk_hook.main()
     return capsys.readouterr().out
 
 
@@ -335,9 +333,7 @@ def test_main_respects_loop_guard(monkeypatch, capsys, write_transcript):
 
 def test_main_no_transcript_path_exits_clean(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "Stop"})))
-    with pytest.raises(SystemExit) as exc:
-        no_shirk_hook.main()
-    assert exc.value.code == 0
+    no_shirk_hook.main()
     assert capsys.readouterr().out == ""
 
 
