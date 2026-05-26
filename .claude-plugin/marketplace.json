@@ -9,6 +9,11 @@
       "name": "acl-hook",
       "source": "./plugins/acl-hook",
       "description": "PreToolUse Bash gate enforcing a project ACL. Vendored from clarity-auto-care."
+    },
+    {
+      "name": "no-shirk-hook",
+      "source": "./plugins/no-shirk-hook",
+      "description": "Stop hook that blocks the agent from ending a turn with an ask-instead-of-do question."
     }
   ]
 }

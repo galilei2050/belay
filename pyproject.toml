@@ -29,6 +29,8 @@ ignore = [
     "COM812", "ISC001",
     # Project conventions
     "RUF013",  # implicit-optional — explicit X | None used instead
+    "RUF001",  # ambiguous unicode chars — bilingual (RU + EN) plugins need real Cyrillic
+    "SIM110",  # explicit for-loops over any() — easier to extend with logging later
     "D203", "D213",  # docstring style conflicts (we use D211, D212)
     "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",  # missing docstrings not enforced
     "B008",
