@@ -7,3 +7,9 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-commit]
+      - id: pre-push
+        name: make pre-push
+        entry: make pre-push
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
