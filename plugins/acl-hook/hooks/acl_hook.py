@@ -747,7 +747,11 @@ def check_command(cmd_str, logger, *, agent_type: str):
         return "allow", "", "comment"
     args = [expand_home(a) for a in parts[1:]]
 
-    if fnmatch(command, ".claude/skills/*/*.py") or fnmatch(command, "*/.claude/skills/*/*.py") or fnmatch(command, "*/.claude/hooks/*.py"):
+    if (
+        fnmatch(command, ".claude/skills/*/*.py")
+        or fnmatch(command, "*/.claude/skills/*/*.py")
+        or fnmatch(command, "*/.claude/hooks/*.py")
+    ):
         logger.info('decision=allow command="%s" matched=claude_script agent=%s', cmd_str, agent_type)
         return "allow", "", "claude_script"
 
@@ -826,102 +830,149 @@ def main():
     # Long multi-line bash blobs are the wrong tool — split into multiple simple calls.
     line_count = command.count("\n") + 1
     if len(command) > MAX_BASH_LEN or line_count > MAX_BASH_LINES:
-        logger.info('decision=deny command_too_long len=%d lines=%d agent=%s', len(command), line_count, agent_type)
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"Bash command too large ({len(command)} chars / {line_count} lines; "
-                f"limit {MAX_BASH_LEN}/{MAX_BASH_LINES}). SPLIT into several simple Bash "
-                "calls — each step gets its own ACL check and feedback. Antipatterns to "
-                "avoid: long `for x in …; do …; done`, function defs `name() {…}`, `&&` chains "
-                "longer than 3 links, `python -c \"<multiline script>\"`. Genuinely atomic "
-                "script with control flow (rare) → Write tool to a file, then run it."
-            ),
-        }}))
+        logger.info("decision=deny command_too_long len=%d lines=%d agent=%s", len(command), line_count, agent_type)
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            f"Bash command too large ({len(command)} chars / {line_count} lines; "
+                            f"limit {MAX_BASH_LEN}/{MAX_BASH_LINES}). SPLIT into several simple Bash "
+                            "calls — each step gets its own ACL check and feedback. Antipatterns to "
+                            "avoid: long `for x in …; do …; done`, function defs `name() {…}`, `&&` chains "
+                            'longer than 3 links, `python -c "<multiline script>"`. Genuinely atomic '
+                            "script with control flow (rare) → Write tool to a file, then run it."
+                        ),
+                    }
+                }
+            )
+        )
         return
 
     # Agents must use Write tool for file creation — heredoc content breaks ACL parsing
     if "<<" in command:
         logger.info('decision=deny command="%s" matched=agent_heredoc agent=%s', command[:120], agent_type)
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": "Agents cannot use heredoc (<<) in Bash — use the Write tool instead.",
-        }}))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "Agents cannot use heredoc (<<) in Bash — use the Write tool instead.",
+                    }
+                }
+            )
+        )
         return
 
     # Parse bash once; deny if bashlex chokes (fail-closed for AST detectors below).
     try:
         trees = bashlex.parse(command)
     except Exception as e:
-        logger.info('decision=deny command="%s" matched=bashlex_parse_failed agent=%s err=%s', command[:120], agent_type, type(e).__name__)
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"Bash command failed to parse via bashlex ({type(e).__name__}): {e}. "
-                "This blocks the AST-based antipattern detectors from checking it, so we "
-                "fail closed. Likely cause: ANSI-C escapes (`$'…'`), process substitution "
-                "(`<(…)` / `>(…)`), unbalanced quotes. Rewrite as a simpler primitive or "
-                "split into multiple Bash calls."
-            ),
-        }}))
+        logger.info(
+            'decision=deny command="%s" matched=bashlex_parse_failed agent=%s err=%s',
+            command[:120],
+            agent_type,
+            type(e).__name__,
+        )
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            f"Bash command failed to parse via bashlex ({type(e).__name__}): {e}. "
+                            "This blocks the AST-based antipattern detectors from checking it, so we "
+                            "fail closed. Likely cause: ANSI-C escapes (`$'…'`), process substitution "
+                            "(`<(…)` / `>(…)`), unbalanced quotes. Rewrite as a simpler primitive or "
+                            "split into multiple Bash calls."
+                        ),
+                    }
+                }
+            )
+        )
         return
 
     if has_function_def(trees):
         logger.info('decision=deny command="%s" matched=function_def agent=%s', command[:120], agent_type)
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                "Bash function definitions (`name() { … }`) inside a Bash call are denied — "
-                "split into multiple simple Bash calls. If you need reusable logic, Write it "
-                "as a script file."
-            ),
-        }}))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            "Bash function definitions (`name() { … }`) inside a Bash call are denied — "
+                            "split into multiple simple Bash calls. If you need reusable logic, Write it "
+                            "as a script file."
+                        ),
+                    }
+                }
+            )
+        )
         return
 
     if python_c_not_after_pipe(trees):
         logger.info('decision=deny command="%s" matched=python_c_standalone agent=%s', command[:120], agent_type)
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                "`python -c` is allowed only as a pipe filter (`<cmd> | python3 -c \"…\"`). "
-                "Standalone or `$(python -c …)` is a script masquerading as a command. "
-                "Options: (1) pipe data in; (2) Write the script to a file and run it; "
-                "(3) split into simple Bash builtins or `jq`."
-            ),
-        }}))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            '`python -c` is allowed only as a pipe filter (`<cmd> | python3 -c "…"`). '
+                            "Standalone or `$(python -c …)` is a script masquerading as a command. "
+                            "Options: (1) pipe data in; (2) Write the script to a file and run it; "
+                            "(3) split into simple Bash builtins or `jq`."
+                        ),
+                    }
+                }
+            )
+        )
         return
 
     if until_loop_with_sleep(trees):
         logger.info('decision=deny command="%s" matched=until_loop_with_sleep agent=%s', command[:120], agent_type)
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                "`until <cond>; do … sleep N … ; done` inline polling is denied — the loop "
-                "blocks the agent for the whole wait, can't be interrupted cleanly. "
-                "Use instead: `Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; "
-                "or `ScheduleWakeup(delaySeconds=…)` in a /loop session; "
-                "or `/schedule` (CronCreate) for recurring runs."
-            ),
-        }}))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            "`until <cond>; do … sleep N … ; done` inline polling is denied — the loop "
+                            "blocks the agent for the whole wait, can't be interrupted cleanly. "
+                            "Use instead: `Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; "
+                            "or `ScheduleWakeup(delaySeconds=…)` in a /loop session; "
+                            "or `/schedule` (CronCreate) for recurring runs."
+                        ),
+                    }
+                }
+            )
+        )
         return
 
     if chained_sleep(trees):
         logger.info('decision=deny command="%s" matched=chained_sleep agent=%s', command[:120], agent_type)
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                "`sleep N` chained with another command is denied. "
-                "Use one of: (1) `Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; "
-                "(2) `ScheduleWakeup` in a /loop session; (3) `/schedule` for a cron remote agent."
-            ),
-        }}))
+        print(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": (
+                            "`sleep N` chained with another command is denied. "
+                            "Use one of: (1) `Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; "
+                            "(2) `ScheduleWakeup` in a /loop session; (3) `/schedule` for a cron remote agent."
+                        ),
+                    }
+                }
+            )
+        )
         return
 
     sub_commands = split_chained_commands(command)

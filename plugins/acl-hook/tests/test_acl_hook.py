@@ -32,13 +32,15 @@ def decide(cmd, logger):
 
 
 def via_main(monkeypatch, capsys, command):
-    payload = json.dumps({
-        "tool_name": "Bash",
-        "tool_input": {"command": command},
-        "session_id": "test-session",
-        "agent_id": "agent-1",
-        "agent_type": "subagent",
-    })
+    payload = json.dumps(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": command},
+            "session_id": "test-session",
+            "agent_id": "agent-1",
+            "agent_type": "subagent",
+        }
+    )
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
     acl_hook.main()
     return json.loads(capsys.readouterr().out)
@@ -274,10 +276,12 @@ def test_command_over_max_bash_lines_is_denied_via_main(monkeypatch, capsys):
 
 
 def test_non_bash_tool_passes_through(monkeypatch):
-    payload = json.dumps({
-        "tool_name": "Write",
-        "tool_input": {"file_path": "/tmp/foo.py", "content": "pass"},
-    })
+    payload = json.dumps(
+        {
+            "tool_name": "Write",
+            "tool_input": {"file_path": "/tmp/foo.py", "content": "pass"},
+        }
+    )
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
     with pytest.raises(SystemExit) as exc:
         acl_hook.main()
