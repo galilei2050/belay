@@ -1,0 +1,82 @@
+[project]
+name = "belay"
+version = "0.0.1"
+description = "Claude Code plugin marketplace."
+requires-python = ">=3.10"
+
+[project.optional-dependencies]
+dev = [
+    "bashlex>=0.18",
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "mypy>=1.10",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Copied from clarity-auto-care: strict ratchet (ALL) with project-convention ignores.
+select = ["ALL"]
+ignore = [
+    # Formatter conflicts
+    "COM812", "ISC001",
+    # Project conventions
+    "RUF013",  # implicit-optional — explicit X | None used instead
+    "D203", "D213",  # docstring style conflicts (we use D211, D212)
+    "D100", "D101", "D102", "D103", "D104", "D105", "D106", "D107",  # missing docstrings not enforced
+    "B008",
+    "FBT",  # boolean trap
+    "G",    # logging-format
+    "TRY003",
+    "EM101", "EM102",
+    "ANN401",
+    "TID252",
+]
+
+[tool.ruff.lint.pylint]
+max-args = 8
+max-positional-args = 8
+max-branches = 12
+max-statements = 50
+max-locals = 12
+max-bool-expr = 4
+max-nested-blocks = 4
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+# Tests get to use asserts, magic numbers, long lines, and conftest-style
+# imports-inside-functions (post sys.path injection).
+"**/tests/**" = ["S101", "PLR2004", "E501", "ANN", "D", "PT011", "SLF001", "INP001", "PLR0913", "PLC0415", "S108"]
+# acl_hook is vendored verbatim — strict-ratchet onboarding happens when it gets
+# refactored to load rules from YAML. Until then it stays on the baseline.
+"plugins/acl-hook/hooks/acl_hook.py" = ["ALL"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+check_untyped_defs = true
+no_implicit_optional = true
+ignore_missing_imports = true  # bashlex has no stubs
+
+[[tool.mypy.overrides]]
+module = "bashlex.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Vendored verbatim — strict typing happens during the YAML refactor.
+module = "acl_hook"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["plugins"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
