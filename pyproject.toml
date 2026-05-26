@@ -5,7 +5,7 @@ description = "Claude Code plugin marketplace."
 requires-python = ">=3.10"
 license = "AGPL-3.0-or-later"
 
-[project.optional-dependencies]
+[dependency-groups]
 dev = [
     "bashlex>=0.18",
     "pytest>=8.0",
@@ -13,6 +13,9 @@ dev = [
     "mypy>=1.10",
     "pre-commit>=3.5",
 ]
+
+[tool.uv]
+package = false
 
 [tool.ruff]
 line-length = 120
