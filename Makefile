@@ -2,26 +2,26 @@ SHELL := /bin/bash
 
 .PHONY: setup
 setup:
-	pip install -e .[dev]
-	pre-commit install
+	uv sync --group dev
+	uv run pre-commit install
 
 .PHONY: lint
 lint:
-	ruff format --check .
-	ruff check .
+	uv run ruff format --check .
+	uv run ruff check .
 
 .PHONY: lint-fix
 lint-fix:
-	ruff format .
-	ruff check . --fix
+	uv run ruff format .
+	uv run ruff check . --fix
 
 .PHONY: typecheck
 typecheck:
-	mypy plugins/
+	uv run mypy plugins/
 
 .PHONY: test
 test:
-	pytest
+	uv run pytest
 
 .PHONY: ci
 ci: lint typecheck test
