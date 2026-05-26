@@ -31,4 +31,5 @@ See [docs/AUTHORING.md](docs/AUTHORING.md).
 
 ## License
 
-Proprietary. See [LICENSE](LICENSE). No use without explicit written permission.
+[AGPL-3.0](LICENSE). If you run a modified version on a network-accessible
+server, you must offer the source to its users.

@@ -161,4 +161,4 @@ yourself; the hook doesn't rotate.
 
 ## License
 
-Proprietary. See the repository [LICENSE](../../LICENSE).
+[AGPL-3.0](../../LICENSE).

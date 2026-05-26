@@ -3,6 +3,7 @@ name = "belay"
 version = "0.0.1"
 description = "Claude Code plugin marketplace."
 requires-python = ">=3.10"
+license = "AGPL-3.0-or-later"
 
 [project.optional-dependencies]
 dev = [
@@ -10,6 +11,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "mypy>=1.10",
+    "pre-commit>=3.5",
 ]
 
 [tool.ruff]
