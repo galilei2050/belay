@@ -11,7 +11,6 @@ import json
 
 import acl_hook
 import bashlex
-import pytest
 from acl_hook import (
     chained_sleep,
     check_command,
@@ -275,7 +274,7 @@ def test_command_over_max_bash_lines_is_denied_via_main(monkeypatch, capsys):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_non_bash_tool_passes_through(monkeypatch):
+def test_non_bash_tool_passes_through(monkeypatch, capsys):
     payload = json.dumps(
         {
             "tool_name": "Write",
@@ -283,9 +282,8 @@ def test_non_bash_tool_passes_through(monkeypatch):
         }
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
-    with pytest.raises(SystemExit) as exc:
-        acl_hook.main()
-    assert exc.value.code == 0
+    acl_hook.main()
+    assert capsys.readouterr().out == ""
 
 
 # ── function defs are denied ─────────────────────────────────────────────────

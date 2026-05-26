@@ -19,7 +19,27 @@ import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import IO
+from typing import IO, NamedTuple
+
+
+class Match(NamedTuple):
+    """A successful shirk-pattern hit on the tail of the assistant text."""
+
+    group: str
+    snippet: str
+
+
+class Classification(NamedTuple):
+    """Result of classifying an assistant turn.
+
+    ``verdict`` is one of ``"ok"``, ``"shirk"``, ``"guard:<name>"`` — guard verdicts
+    are still passthrough for the block decision but logged separately.
+    """
+
+    verdict: str
+    group: str | None
+    snippet: str | None
+
 
 HOME = Path.home()
 
@@ -194,8 +214,8 @@ def extract_tail(text: str) -> str:
     return tail
 
 
-def _parse_jsonl(handle: IO[str]) -> list[dict]:
-    events: list[dict] = []
+def _parse_jsonl(handle: IO[str]) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
     for raw in handle:
         line = raw.strip()
         if not line:
@@ -205,7 +225,7 @@ def _parse_jsonl(handle: IO[str]) -> list[dict]:
     return events
 
 
-def read_transcript(path: str) -> list[dict]:
+def read_transcript(path: str) -> list[dict[str, object]]:
     """Read a Claude Code JSONL transcript. Each line is one event."""
     try:
         with Path(path).open(encoding="utf-8") as f:
@@ -214,7 +234,7 @@ def read_transcript(path: str) -> list[dict]:
         return []
 
 
-def _message_text(message: dict) -> str:
+def _message_text(message: dict[str, object]) -> str:
     """Join all text content blocks of an assistant/user message into one string."""
     content = message.get("content")
     if isinstance(content, str):
@@ -230,7 +250,7 @@ def _message_text(message: dict) -> str:
     return "\n".join(chunks)
 
 
-def last_assistant_text(events: list[dict]) -> str:
+def last_assistant_text(events: list[dict[str, object]]) -> str:
     """Find the most recent assistant text. Skips tool_use-only messages."""
     for event in reversed(events):
         msg = event.get("message")
@@ -244,7 +264,7 @@ def last_assistant_text(events: list[dict]) -> str:
     return ""
 
 
-def last_user_text(events: list[dict]) -> str:
+def last_user_text(events: list[dict[str, object]]) -> str:
     """Return the text of the most recent user message, or '' if none."""
     for event in reversed(events):
         msg = event.get("message")
@@ -261,13 +281,13 @@ def last_user_text(events: list[dict]) -> str:
 # ── classifier ───────────────────────────────────────────────────────────────
 
 
-def match_shirk(tail: str) -> tuple[str, str] | None:
-    """Return (group_name, snippet) of the first shirking pattern that matches the tail."""
+def match_shirk(tail: str) -> Match | None:
+    """Return the first shirking pattern that matches the tail (or None)."""
     for group, patterns in SHIRK_PATTERNS.items():
         for pattern in patterns:
             m = re.search(pattern, tail, flags=re.IGNORECASE | re.MULTILINE)
             if m:
-                return group, m.group(0)
+                return Match(group, m.group(0))
     return None
 
 
@@ -303,24 +323,15 @@ def _firing_guard(tail: str, user_text: str) -> str | None:
     return None
 
 
-def classify(
-    assistant_text: str,
-    user_text: str,
-) -> tuple[str, str | None, str | None]:
-    """Return (verdict, group, snippet).
-
-    verdict ∈ {"ok", "shirk", "guard:<name>"} — guard verdicts are still "ok" for the
-    blocking decision, but we log them separately for tuning.
-    """
+def classify(assistant_text: str, user_text: str) -> Classification:
+    """Classify an assistant turn as ok / shirk / guarded."""
     tail = extract_tail(normalize(assistant_text))
     hit = match_shirk(tail) if tail else None
-    if not hit:
-        return "ok", None, None
-    group, snippet = hit
+    if hit is None:
+        return Classification("ok", None, None)
     guard = _firing_guard(tail, user_text)
-    if guard:
-        return f"guard:{guard}", group, snippet
-    return "shirk", group, snippet
+    verdict = f"guard:{guard}" if guard else "shirk"
+    return Classification(verdict, hit.group, hit.snippet)
 
 
 # ── reason message ───────────────────────────────────────────────────────────
@@ -351,7 +362,7 @@ def build_reason(snippet: str) -> str:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 
-def _load_events() -> list[dict] | None:
+def _load_events() -> list[dict[str, object]] | None:
     """Parse stdin payload, apply gate checks, return transcript events.
 
     Returns None when the hook should exit silently (bad input, loop guard,
@@ -373,11 +384,10 @@ def _load_events() -> list[dict] | None:
 
 def _log_verdict(
     logger: logging.Logger,
-    verdict: str,
-    group: str | None,
-    snippet: str | None,
+    result: Classification,
     assistant_text: str,
 ) -> None:
+    verdict, group, snippet = result
     logger.info(
         'verdict=%s group=%s snippet="%s" preview="%s"',
         verdict,
@@ -395,8 +405,9 @@ def main() -> None:
     assistant_text = last_assistant_text(events)
     if not assistant_text.strip():
         return
-    verdict, group, snippet = classify(assistant_text, last_user_text(events))
-    _log_verdict(setup_logging(), verdict, group, snippet, assistant_text)
+    result = classify(assistant_text, last_user_text(events))
+    _log_verdict(setup_logging(), result, assistant_text)
+    verdict, _, snippet = result
     if verdict != "shirk" or snippet is None:
         return
     sys.stdout.write(json.dumps({"decision": "block", "reason": build_reason(snippet)}) + "\n")

@@ -2,7 +2,7 @@
 name = "belay"
 version = "0.0.1"
 description = "Claude Code plugin marketplace."
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "AGPL-3.0-or-later"
 
 [dependency-groups]
@@ -19,7 +19,7 @@ package = false
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
 
 [tool.ruff.lint]
 # Copied from clarity-auto-care: strict ratchet (ALL) with project-convention ignores.
@@ -39,14 +39,14 @@ ignore = [
 ]
 
 [tool.ruff.lint.pylint]
-max-args = 8
-max-positional-args = 8
-max-branches = 8
-max-statements = 25
+max-args = 4
+max-positional-args = 4
+max-branches = 7
+max-statements = 20
 max-locals = 10
-max-bool-expr = 4
+max-bool-expr = 3
 max-nested-blocks = 3
-max-returns = 4
+max-returns = 5
 
 [tool.ruff.lint.mccabe]
 max-complexity = 8
@@ -58,12 +58,9 @@ convention = "google"
 # Tests get to use asserts, magic numbers, long lines, and conftest-style
 # imports-inside-functions (post sys.path injection).
 "**/tests/**" = ["S101", "PLR2004", "E501", "ANN", "D", "PT011", "SLF001", "INP001", "PLR0913", "PLC0415", "S108"]
-# acl_hook is vendored verbatim — strict-ratchet onboarding happens when it gets
-# refactored to load rules from YAML. Until then it stays on the baseline.
-"plugins/acl-hook/hooks/acl_hook.py" = ["ALL"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.12"
 warn_unused_ignores = true
 warn_redundant_casts = true
 warn_unreachable = true
@@ -84,6 +81,6 @@ module = "acl_hook"
 ignore_errors = true
 
 [tool.pytest.ini_options]
-testpaths = ["plugins"]
+testpaths = ["plugins", "tests"]
 python_files = ["test_*.py"]
 addopts = "-ra --strict-markers"

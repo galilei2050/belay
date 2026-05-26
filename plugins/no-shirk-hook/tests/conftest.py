@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 
@@ -13,15 +14,22 @@ if _HOOKS_DIR not in sys.path:
     sys.path.insert(0, _HOOKS_DIR)
 
 
-@pytest.fixture
-def write_transcript(tmp_path):
-    """Return a function that writes a JSONL transcript and returns its path.
+class Message(NamedTuple):
+    """One transcript line for the write_transcript fixture.
 
-    Accepts a list of (role, text) tuples. `text` may be a string (single text block)
-    or a list of content blocks (dicts with type/text/tool_use etc.).
+    `content` may be a string (single text block) or a list of content blocks
+    (dicts with type/text/tool_use etc.).
     """
 
-    def _write(messages: list[tuple[str, object]]) -> str:
+    role: str
+    content: object
+
+
+@pytest.fixture
+def write_transcript(tmp_path):
+    """Return a function that writes a JSONL transcript and returns its path."""
+
+    def _write(messages: list[Message]) -> str:
         path = tmp_path / "transcript.jsonl"
         with path.open("w", encoding="utf-8") as f:
             for role, content in messages:

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-ACL hook for Claude Code Bash commands.
+"""ACL hook for Claude Code Bash commands.
 
 Single job: decide allow / ask / deny for each Bash invocation, so the user
 only sees prompts for genuinely ambiguous commands. No project knowledge, no
@@ -12,6 +11,8 @@ Rule match types:
   "args_glob"    — full argument string matched as a single glob
 """
 
+from __future__ import annotations
+
 import gzip
 import json
 import logging
@@ -21,16 +22,108 @@ import sys
 from fnmatch import fnmatch
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import TYPE_CHECKING, NamedTuple, TypedDict
 
 import bashlex
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Iterator
+
+# Bashlex AST nodes are duck-typed; we read attributes via getattr.
+BashNode = object
+
+
+class _RuleBase(TypedDict):
+    decision: str
+
+
+class Rule(_RuleBase, total=False):
+    """One ACL rule. Exactly one of `args` / `args_contain` / `args_glob` / `fn` is set."""
+
+    args: list[str]
+    args_contain: list[str]
+    args_glob: str
+    fn: str
+    reason: str
+
+
+class _EntryBase(TypedDict):
+    default: str
+
+
+class Entry(_EntryBase, total=False):
+    """ACL entry for a single command name. `rules` are tried in order; `default` is the fallback."""
+
+    rules: list[Rule]
+    reason: str
+
 
 HOME = str(Path.home())
 # Project root passed by Claude Code as CLAUDE_PROJECT_DIR. Fall back to cwd
 # when invoked outside a Claude Code session (tests, manual runs).
-PROJECT_DIR = os.path.realpath(os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd()))
+PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
+
+# ── Long reasons hoisted out of the ACL table to keep lines under 120 chars ──
+
+GIT_RESET_REASON = (
+    "Don't reset history. Commit forward (new commit / `git revert`) or ask the user to run `git reset` themselves."
+)
+GIT_REBASE_REASON = "Agent never rebases — commit forward or ask the user to rebase manually"
+GIT_CHERRY_PICK_REASON = "Agent never cherry-picks — open a PR with the desired commits, or ask user"
+GIT_MERGE_REASON = "Agent never merges — use PRs via `gh pr create`/merge UI"
+GIT_REVERT_REASON = "Confirm revert — legitimate way to undo a bad commit"
+GIT_ADD_A_REASON = (
+    "`git add -A` stages everything in the working tree, which sneaks in secrets (.env), "
+    "build artifacts, half-finished work, and files unrelated to the current change. "
+    "INSTEAD: list files by path — `git add path/to/file1 path/to/file2`. If you don't "
+    "know what's changed, run `git status` first and add the relevant ones deliberately."
+)
+GIT_ADD_ALL_REASON = (
+    "`git add --all` stages everything (same problem as `-A`). INSTEAD: list files by "
+    "path. Run `git status` first if you need to see what's changed."
+)
+GIT_ADD_DOT_REASON = (
+    "`git add .` stages everything under cwd, which sneaks in unintended files. INSTEAD: "
+    "list files by path — `git add path/to/file1 path/to/file2`. Run `git status` first "
+    "if you need to see what's changed."
+)
+GIT_DEFAULT_REASON = (
+    "git subcommand not in allow-list. Use status/log/diff/add/commit/push/checkout/"
+    "branch/restore or ask the user which command they want."
+)
+SOURCE_REASON = "source is blocked. If the venv isn't active, ask the user to activate it — do not try workarounds."
+DOT_SOURCE_REASON = "`.` (source builtin) is blocked — same as `source`."
+ENV_REASON = (
+    "env is blocked — bypasses ACL via leading env-var assignments. Read env vars from "
+    "inside your program, or ask the user."
+)
+XARGS_REASON = "xargs bypasses ACL. Use a `for` loop or run commands directly."
+GH_PR_COMMENT_REASON = "Confirm before posting PR comment (outward-facing)"
+GH_ISSUE_COMMENT_REASON = "Confirm before posting issue comment (outward-facing)"
+GH_DEFAULT_REASON = "gh subcommand not in allow-list — confirm. Merge/close/delete/release are user-only."
+SED_INLINE_LONG_REASON = (
+    "`sed -i` expression too long (>300 chars) — use the Edit tool instead. Edit shows a "
+    "diff, doesn't risk regex mishaps, and the change is reviewable. If you genuinely "
+    "need a long regex replacement, split it into multiple short `sed -e` expressions or "
+    "use Edit with the new content."
+)
+SHELL_FORK_REASON = "Use the Bash tool directly or chain commands with && instead"
+COMMAND_BUILTIN_REASON = (
+    "`command <X>` is the bash `command` builtin and it bypasses ACL. Do NOT prefix "
+    "anything with `command` — write the bare command. Example: instead of "
+    "`command git status`, write `git status`."
+)
+EVAL_REASON = "`eval` bypasses ACL by executing a constructed string. Run the command directly."
+EXEC_REASON = "`exec` bypasses ACL by replacing the shell. Run the command directly."
+BUILTIN_REASON = "`builtin` bypasses ACL. Run the command directly."
+GCLOUD_AUTH_ACTIVATE_REASON = "Service account impersonation blocked"
+GCLOUD_AUTH_LOGIN_REASON = (
+    "User runs `gcloud auth login` interactively themselves — agent can't complete the browser flow"
+)
+GCLOUD_DEFAULT_REASON = "gcloud subcommand not in read allow-list — confirm."
 
 # fmt: off
-ACL = {
+ACL: dict[str, Entry] = {
     "git": {
         "rules": [
             # Hard denies — never bypass
@@ -42,14 +135,14 @@ ACL = {
             {"args": ["filter-repo"],                "decision": "deny", "reason": "filter-repo rewrites history"},
 
             # Destructive subcommands — agent must not silently rewrite history
-            {"args": ["reset"],       "decision": "deny", "reason": "Don't reset history. Commit forward (new commit / `git revert`) or ask the user to run `git reset` themselves."},
-            {"args": ["clean", "-f"], "decision": "ask",  "reason": "Confirm git clean"},
-            {"args": ["branch", "-D"], "decision": "ask", "reason": "Confirm force-delete branch"},
-            {"args": ["branch", "-d"], "decision": "ask", "reason": "Confirm delete branch"},
-            {"args": ["rebase"],      "decision": "deny", "reason": "Agent never rebases — commit forward or ask the user to rebase manually"},
-            {"args": ["cherry-pick"], "decision": "deny", "reason": "Agent never cherry-picks — open a PR with the desired commits, or ask user"},
-            {"args": ["merge"],       "decision": "deny", "reason": "Agent never merges — use PRs via `gh pr create`/merge UI"},
-            {"args": ["revert"],      "decision": "ask",  "reason": "Confirm revert — legitimate way to undo a bad commit"},
+            {"args": ["reset"],        "decision": "deny", "reason": GIT_RESET_REASON},
+            {"args": ["clean", "-f"],  "decision": "ask",  "reason": "Confirm git clean"},
+            {"args": ["branch", "-D"], "decision": "ask",  "reason": "Confirm force-delete branch"},
+            {"args": ["branch", "-d"], "decision": "ask",  "reason": "Confirm delete branch"},
+            {"args": ["rebase"],       "decision": "deny", "reason": GIT_REBASE_REASON},
+            {"args": ["cherry-pick"],  "decision": "deny", "reason": GIT_CHERRY_PICK_REASON},
+            {"args": ["merge"],        "decision": "deny", "reason": GIT_MERGE_REASON},
+            {"args": ["revert"],       "decision": "ask",  "reason": GIT_REVERT_REASON},
 
             # Commit is allow (reversible on solo branch); use a separate plugin
             # (verify-gate, code-review-gate, …) if you want pre-commit gates.
@@ -61,98 +154,88 @@ ACL = {
             {"args": ["config"],           "decision": "ask",   "reason": "Confirm git config write"},
 
             # Allow-list: read-only + safe state-changing operations
-            {"args": ["status"],     "decision": "allow", "reason": ""},
-            {"args": ["log"],        "decision": "allow", "reason": ""},
-            {"args": ["diff"],       "decision": "allow", "reason": ""},
-            {"args": ["show"],       "decision": "allow", "reason": ""},
-            {"args": ["blame"],      "decision": "allow", "reason": ""},
-            {"args": ["describe"],   "decision": "allow", "reason": ""},
-            {"args": ["rev-parse"],  "decision": "allow", "reason": ""},
-            {"args": ["ls-files"],   "decision": "allow", "reason": ""},
-            {"args": ["ls-tree"],    "decision": "allow", "reason": ""},
-            {"args": ["branch"],     "decision": "allow", "reason": ""},
-            {"args": ["fetch"],      "decision": "allow", "reason": ""},
-            {"args": ["pull"],       "decision": "allow", "reason": ""},
-            {"args": ["push"],       "decision": "allow", "reason": ""},
-            {"args": ["add", "-A"],     "decision": "deny", "reason": "`git add -A` stages everything in the working tree, which sneaks in secrets (.env), build artifacts, half-finished work, and files unrelated to the current change. INSTEAD: list files by path — `git add path/to/file1 path/to/file2`. If you don't know what's changed, run `git status` first and add the relevant ones deliberately."},
-            {"args": ["add", "--all"],  "decision": "deny", "reason": "`git add --all` stages everything (same problem as `-A`). INSTEAD: list files by path. Run `git status` first if you need to see what's changed."},
-            {"args": ["add", "."],      "decision": "deny", "reason": "`git add .` stages everything under cwd, which sneaks in unintended files. INSTEAD: list files by path — `git add path/to/file1 path/to/file2`. Run `git status` first if you need to see what's changed."},
-            {"args": ["add"],        "decision": "allow", "reason": ""},
-            {"args": ["mv"],         "decision": "allow", "reason": ""},
-            {"args": ["clone"],      "decision": "allow", "reason": ""},
-            {"args": ["restore"],    "decision": "allow", "reason": ""},
-            {"args": ["checkout"],   "decision": "allow", "reason": ""},
-            {"args": ["switch"],     "decision": "allow", "reason": ""},
-            {"args": ["stash"],      "decision": "allow", "reason": ""},
-            {"args": ["tag"],        "decision": "allow", "reason": ""},
-            {"args": ["remote"],     "decision": "allow", "reason": ""},
-            {"args": ["reflog"],     "decision": "allow", "reason": ""},
-            {"args": ["worktree"],   "decision": "allow", "reason": ""},
-            {"args": ["merge-base"], "decision": "allow", "reason": ""},
-            {"args": ["shortlog"],   "decision": "allow", "reason": ""},
-            {"args": ["grep"],       "decision": "allow", "reason": ""},
-            {"args": ["init"],       "decision": "ask",   "reason": "Confirm git init"},
+            {"args": ["status"],        "decision": "allow", "reason": ""},
+            {"args": ["log"],           "decision": "allow", "reason": ""},
+            {"args": ["diff"],          "decision": "allow", "reason": ""},
+            {"args": ["show"],          "decision": "allow", "reason": ""},
+            {"args": ["blame"],         "decision": "allow", "reason": ""},
+            {"args": ["describe"],      "decision": "allow", "reason": ""},
+            {"args": ["rev-parse"],     "decision": "allow", "reason": ""},
+            {"args": ["ls-files"],      "decision": "allow", "reason": ""},
+            {"args": ["ls-tree"],       "decision": "allow", "reason": ""},
+            {"args": ["branch"],        "decision": "allow", "reason": ""},
+            {"args": ["fetch"],         "decision": "allow", "reason": ""},
+            {"args": ["pull"],          "decision": "allow", "reason": ""},
+            {"args": ["push"],          "decision": "allow", "reason": ""},
+            {"args": ["add", "-A"],     "decision": "deny",  "reason": GIT_ADD_A_REASON},
+            {"args": ["add", "--all"],  "decision": "deny",  "reason": GIT_ADD_ALL_REASON},
+            {"args": ["add", "."],      "decision": "deny",  "reason": GIT_ADD_DOT_REASON},
+            {"args": ["add"],           "decision": "allow", "reason": ""},
+            {"args": ["mv"],            "decision": "allow", "reason": ""},
+            {"args": ["clone"],         "decision": "allow", "reason": ""},
+            {"args": ["restore"],       "decision": "allow", "reason": ""},
+            {"args": ["checkout"],      "decision": "allow", "reason": ""},
+            {"args": ["switch"],        "decision": "allow", "reason": ""},
+            {"args": ["stash"],         "decision": "allow", "reason": ""},
+            {"args": ["tag"],           "decision": "allow", "reason": ""},
+            {"args": ["remote"],        "decision": "allow", "reason": ""},
+            {"args": ["reflog"],        "decision": "allow", "reason": ""},
+            {"args": ["worktree"],      "decision": "allow", "reason": ""},
+            {"args": ["merge-base"],    "decision": "allow", "reason": ""},
+            {"args": ["shortlog"],      "decision": "allow", "reason": ""},
+            {"args": ["grep"],          "decision": "allow", "reason": ""},
+            {"args": ["init"],          "decision": "ask",   "reason": "Confirm git init"},
         ],
         "default": "deny",
-        "reason": "git subcommand not in allow-list. Use status/log/diff/add/commit/push/checkout/branch/restore or ask the user which command they want.",
+        "reason": GIT_DEFAULT_REASON,
     },
-    "cat": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "head": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "tail": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "less": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "more": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "source":  {"rules": [], "default": "deny", "reason": "source is blocked. If the venv isn't active, ask the user to activate it — do not try workarounds."},
-    ".":       {"rules": [], "default": "deny", "reason": "`.` (source builtin) is blocked — same as `source`."},
-    "env":     {"rules": [], "default": "deny", "reason": "env is blocked — bypasses ACL via leading env-var assignments. Read env vars from inside your program, or ask the user."},
-    "xargs":   {"rules": [], "default": "deny", "reason": "xargs bypasses ACL. Use a `for` loop or run commands directly."},
+    "cat":  {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "head": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "tail": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "less": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "more": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "source":  {"rules": [], "default": "deny", "reason": SOURCE_REASON},
+    ".":       {"rules": [], "default": "deny", "reason": DOT_SOURCE_REASON},
+    "env":     {"rules": [], "default": "deny", "reason": ENV_REASON},
+    "xargs":   {"rules": [], "default": "deny", "reason": XARGS_REASON},
     "python3": {"rules": [], "default": "allow"},
     "python":  {"rules": [], "default": "allow"},
     "gh": {
         "rules": [
-            {"args": ["pr", "view"],    "decision": "allow", "reason": ""},
-            {"args": ["pr", "list"],    "decision": "allow", "reason": ""},
-            {"args": ["pr", "checks"],  "decision": "allow", "reason": ""},
-            {"args": ["pr", "diff"],    "decision": "allow", "reason": ""},
-            {"args": ["pr", "status"],  "decision": "allow", "reason": ""},
-            {"args": ["pr", "comment"], "decision": "ask",   "reason": "Confirm before posting PR comment (outward-facing)"},
-            {"args": ["pr", "edit"],    "decision": "allow", "reason": ""},
-            {"args": ["pr", "ready"],   "decision": "allow", "reason": ""},
-            {"args": ["pr", "create"],  "decision": "allow", "reason": ""},
+            {"args": ["pr", "view"],     "decision": "allow", "reason": ""},
+            {"args": ["pr", "list"],     "decision": "allow", "reason": ""},
+            {"args": ["pr", "checks"],   "decision": "allow", "reason": ""},
+            {"args": ["pr", "diff"],     "decision": "allow", "reason": ""},
+            {"args": ["pr", "status"],   "decision": "allow", "reason": ""},
+            {"args": ["pr", "comment"],  "decision": "ask",   "reason": GH_PR_COMMENT_REASON},
+            {"args": ["pr", "edit"],     "decision": "allow", "reason": ""},
+            {"args": ["pr", "ready"],    "decision": "allow", "reason": ""},
+            {"args": ["pr", "create"],   "decision": "allow", "reason": ""},
 
-            {"args": ["repo", "view"],    "decision": "allow", "reason": ""},
-            {"args": ["repo", "list"],    "decision": "allow", "reason": ""},
-            {"args": ["run", "view"],     "decision": "allow", "reason": ""},
-            {"args": ["run", "list"],     "decision": "allow", "reason": ""},
-            {"args": ["run", "watch"],    "decision": "allow", "reason": ""},
-            {"args": ["api"],             "decision": "allow", "reason": ""},
-            {"args": ["auth", "status"],  "decision": "allow", "reason": ""},
-            {"args": ["issue", "view"],   "decision": "allow", "reason": ""},
-            {"args": ["issue", "list"],   "decision": "allow", "reason": ""},
-            {"args": ["issue", "comment"],"decision": "ask",   "reason": "Confirm before posting issue comment (outward-facing)"},
-            {"args": ["issue", "create"], "decision": "ask",   "reason": "Confirm before creating issue"},
-            {"args": ["workflow", "view"],"decision": "allow", "reason": ""},
-            {"args": ["workflow", "list"],"decision": "allow", "reason": ""},
-            {"args": ["release", "view"], "decision": "allow", "reason": ""},
-            {"args": ["release", "list"], "decision": "allow", "reason": ""},
-            {"args": ["secret", "list"],  "decision": "allow", "reason": ""},
+            {"args": ["repo", "view"],     "decision": "allow", "reason": ""},
+            {"args": ["repo", "list"],     "decision": "allow", "reason": ""},
+            {"args": ["run", "view"],      "decision": "allow", "reason": ""},
+            {"args": ["run", "list"],      "decision": "allow", "reason": ""},
+            {"args": ["run", "watch"],     "decision": "allow", "reason": ""},
+            {"args": ["api"],              "decision": "allow", "reason": ""},
+            {"args": ["auth", "status"],   "decision": "allow", "reason": ""},
+            {"args": ["issue", "view"],    "decision": "allow", "reason": ""},
+            {"args": ["issue", "list"],    "decision": "allow", "reason": ""},
+            {"args": ["issue", "comment"], "decision": "ask",   "reason": GH_ISSUE_COMMENT_REASON},
+            {"args": ["issue", "create"],  "decision": "ask",   "reason": "Confirm before creating issue"},
+            {"args": ["workflow", "view"], "decision": "allow", "reason": ""},
+            {"args": ["workflow", "list"], "decision": "allow", "reason": ""},
+            {"args": ["release", "view"],  "decision": "allow", "reason": ""},
+            {"args": ["release", "list"],  "decision": "allow", "reason": ""},
+            {"args": ["secret", "list"],   "decision": "allow", "reason": ""},
         ],
         "default": "ask",
-        "reason": "gh subcommand not in allow-list — confirm. Merge/close/delete/release are user-only.",
+        "reason": GH_DEFAULT_REASON,
     },
     "rm": {
         "rules": [
@@ -162,94 +245,80 @@ ACL = {
         "default": "deny",
         "reason": "rm only allowed inside the project tree — system paths off-limits",
     },
-    "nc":      {"rules": [], "default": "ask",  "reason": "Confirm before using nc"},
-    "pip":     {"rules": [{"args": ["install"], "decision": "ask", "reason": "Confirm before installing packages"}], "default": "allow"},
-    "cp":  {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "mv":  {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "grep": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "rg": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
+    "nc":      {"rules": [], "default": "ask", "reason": "Confirm before using nc"},
+    "pip":     {"rules": [{"args": ["install"], "decision": "ask",
+                           "reason": "Confirm before installing packages"}],
+                "default": "allow"},
+    "cp":   {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "mv":   {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "grep": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "rg":   {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
     "sed": {
         "rules": [
             {"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"},
-            {"fn": "sed_inline_long", "decision": "deny", "reason": "`sed -i` expression too long (>300 chars) — use the Edit tool instead. Edit shows a diff, doesn't risk regex mishaps, and the change is reviewable. If you genuinely need a long regex replacement, split it into multiple short `sed -e` expressions or use Edit with the new content."},
+            {"fn": "sed_inline_long", "decision": "deny", "reason": SED_INLINE_LONG_REASON},
         ],
         "default": "allow",
     },
-    "diff": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "awk": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "tee": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
+    "diff": {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "awk":  {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
+    "tee":  {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+             "default": "allow"},
     "curl": {
         "rules": [
-            {"args_contain": ["@.env*", "-d*@.env*"], "decision": "deny", "reason": "Env file exfiltration blocked"},
-            {"fn": "curl_mutating_remote", "decision": "ask", "reason": "Confirm POST/PUT/PATCH/DELETE to remote"},
+            {"args_contain": ["@.env*", "-d*@.env*"], "decision": "deny",
+             "reason": "Env file exfiltration blocked"},
+            {"fn": "curl_mutating_remote", "decision": "ask",
+             "reason": "Confirm POST/PUT/PATCH/DELETE to remote"},
         ],
         "default": "allow",
     },
-    "echo":    {"rules": [], "default": "allow"},
-    "printf":  {"rules": [], "default": "allow"},
-    "ls":      {"rules": [], "default": "allow"},
-    "lsof":    {"rules": [], "default": "allow"},
-    "kill":    {"rules": [], "default": "allow"},
-    "pkill":   {"rules": [], "default": "allow"},
-    "pwd":     {"rules": [], "default": "allow"},
-    "tr":      {"rules": [], "default": "allow"},
-    "until":   {"rules": [], "default": "allow"},
-    "export":  {"rules": [], "default": "allow"},
-    "unset":   {"rules": [], "default": "allow"},
-    "getent":  {"rules": [], "default": "allow"},
-    "ip":      {"rules": [], "default": "allow"},
-    "chmod":   {"rules": [], "default": "allow"},
-    "ps":      {"rules": [], "default": "allow"},
-    "pyright":  {"rules": [], "default": "allow"},
-    "ruff":     {"rules": [], "default": "allow"},
-    "mypy":     {"rules": [], "default": "allow"},
-    "isort":    {"rules": [], "default": "allow"},
-    "black":    {"rules": [], "default": "allow"},
-    "flake8":   {"rules": [], "default": "allow"},
-    "pylint":   {"rules": [], "default": "allow"},
-    "cd":      {"rules": [], "default": "allow"},
-    "mkdir":   {"rules": [], "default": "allow"},
-    "tree":    {"rules": [], "default": "allow"},
-    "test":    {"rules": [], "default": "allow"},
-    "touch":   {"rules": [], "default": "allow"},
-    "date":    {"rules": [], "default": "allow"},
-    "whoami":  {"rules": [], "default": "allow"},
-    "which":   {"rules": [], "default": "allow"},
-    "jq":      {"rules": [], "default": "allow"},
-    "stat":    {"rules": [], "default": "allow"},
-    "wc":      {"rules": [], "default": "allow"},
-    "true":    {"rules": [], "default": "allow"},
-    "find": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "cut": {
-        "rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
-        "default": "allow",
-    },
-    "iconv":   {"rules": [], "default": "allow"},
-    "id":      {"rules": [], "default": "allow"},
+    "echo":   {"rules": [], "default": "allow"},
+    "printf": {"rules": [], "default": "allow"},
+    "ls":     {"rules": [], "default": "allow"},
+    "lsof":   {"rules": [], "default": "allow"},
+    "kill":   {"rules": [], "default": "allow"},
+    "pkill":  {"rules": [], "default": "allow"},
+    "pwd":    {"rules": [], "default": "allow"},
+    "tr":     {"rules": [], "default": "allow"},
+    "until":  {"rules": [], "default": "allow"},
+    "export": {"rules": [], "default": "allow"},
+    "unset":  {"rules": [], "default": "allow"},
+    "getent": {"rules": [], "default": "allow"},
+    "ip":     {"rules": [], "default": "allow"},
+    "chmod":  {"rules": [], "default": "allow"},
+    "ps":     {"rules": [], "default": "allow"},
+    "pyright": {"rules": [], "default": "allow"},
+    "ruff":    {"rules": [], "default": "allow"},
+    "mypy":    {"rules": [], "default": "allow"},
+    "isort":   {"rules": [], "default": "allow"},
+    "black":   {"rules": [], "default": "allow"},
+    "flake8":  {"rules": [], "default": "allow"},
+    "pylint":  {"rules": [], "default": "allow"},
+    "cd":     {"rules": [], "default": "allow"},
+    "mkdir":  {"rules": [], "default": "allow"},
+    "tree":   {"rules": [], "default": "allow"},
+    "test":   {"rules": [], "default": "allow"},
+    "touch":  {"rules": [], "default": "allow"},
+    "date":   {"rules": [], "default": "allow"},
+    "whoami": {"rules": [], "default": "allow"},
+    "which":  {"rules": [], "default": "allow"},
+    "jq":     {"rules": [], "default": "allow"},
+    "stat":   {"rules": [], "default": "allow"},
+    "wc":     {"rules": [], "default": "allow"},
+    "true":   {"rules": [], "default": "allow"},
+    "find":   {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+               "default": "allow"},
+    "cut":    {"rules": [{"args_contain": [".env*"], "decision": "deny", "reason": "Env files blocked"}],
+               "default": "allow"},
+    "iconv":  {"rules": [], "default": "allow"},
+    "id":     {"rules": [], "default": "allow"},
     "systemctl": {
         "rules": [
             {"args": ["status"],     "decision": "allow", "reason": ""},
@@ -262,7 +331,7 @@ ACL = {
         "default": "ask",
         "reason": "systemctl mutations (start/stop/enable/disable/reload) need confirmation.",
     },
-    "make":    {"rules": [], "default": "allow"},
+    "make": {"rules": [], "default": "allow"},
     "docker": {
         "rules": [
             {"args": ["ps"],      "decision": "allow", "reason": ""},
@@ -295,8 +364,8 @@ ACL = {
         "default": "ask",
         "reason": "docker subcommand not in allow-list — confirm.",
     },
-    "fuser":   {"rules": [], "default": "allow"},
-    "paste":   {"rules": [], "default": "allow"},
+    "fuser":      {"rules": [], "default": "allow"},
+    "paste":      {"rules": [], "default": "allow"},
     "pre-commit": {"rules": [], "default": "allow"},
     "journalctl": {"rules": [], "default": "allow"},
     "du":         {"rules": [], "default": "allow"},
@@ -305,12 +374,13 @@ ACL = {
     "lsblk":      {"rules": [], "default": "allow"},
     "findmnt":    {"rules": [], "default": "allow"},
     "rmdir": {
-        "rules": [{"fn": "all_paths_inside_project", "decision": "ask", "reason": "Confirm rmdir inside project tree"}],
+        "rules": [{"fn": "all_paths_inside_project", "decision": "ask",
+                   "reason": "Confirm rmdir inside project tree"}],
         "default": "deny",
         "reason": "rmdir only allowed inside the project tree",
     },
-    "pytest":     {"rules": [], "default": "allow"},
-    "streamlit":  {"rules": [], "default": "allow"},
+    "pytest":    {"rules": [], "default": "allow"},
+    "streamlit": {"rules": [], "default": "allow"},
     "pulumi": {
         "rules": [
             {"args": ["preview"],         "decision": "allow", "reason": ""},
@@ -321,22 +391,22 @@ ACL = {
         "default": "ask",
         "reason": "pulumi mutations (up/destroy) need confirmation.",
     },
-    "pgrep":   {"rules": [], "default": "allow"},
-    "set":     {"rules": [], "default": "allow"},
-    "sleep":   {"rules": [], "default": "allow"},
-    "sort":    {"rules": [], "default": "allow"},
-    "uniq":    {"rules": [], "default": "allow"},
-    "if":      {"rules": [], "default": "allow"},
-    "then":    {"rules": [], "default": "allow"},
-    "else":    {"rules": [], "default": "allow"},
-    "elif":    {"rules": [], "default": "allow"},
-    "fi":      {"rules": [], "default": "allow"},
-    "[":       {"rules": [], "default": "allow"},
-    "[[":      {"rules": [], "default": "allow"},
-    "for":     {"rules": [], "default": "allow"},
-    "do":      {"rules": [], "default": "allow"},
-    "done":    {"rules": [], "default": "allow"},
-    "while":   {"rules": [], "default": "allow"},
+    "pgrep": {"rules": [], "default": "allow"},
+    "set":   {"rules": [], "default": "allow"},
+    "sleep": {"rules": [], "default": "allow"},
+    "sort":  {"rules": [], "default": "allow"},
+    "uniq":  {"rules": [], "default": "allow"},
+    "if":    {"rules": [], "default": "allow"},
+    "then":  {"rules": [], "default": "allow"},
+    "else":  {"rules": [], "default": "allow"},
+    "elif":  {"rules": [], "default": "allow"},
+    "fi":    {"rules": [], "default": "allow"},
+    "[":     {"rules": [], "default": "allow"},
+    "[[":    {"rules": [], "default": "allow"},
+    "for":   {"rules": [], "default": "allow"},
+    "do":    {"rules": [], "default": "allow"},
+    "done":  {"rules": [], "default": "allow"},
+    "while": {"rules": [], "default": "allow"},
     "npm": {
         "rules": [
             {"args": ["list"],      "decision": "allow", "reason": ""},
@@ -361,19 +431,19 @@ ACL = {
         "default": "ask",
         "reason": "npm subcommand not in allow-list — confirm.",
     },
-    "npx":     {"rules": [], "default": "ask",  "reason": "Confirm npx — runs arbitrary package"},
+    "npx":     {"rules": [], "default": "ask", "reason": "Confirm npx — runs arbitrary package"},
     "gunzip":  {"rules": [], "default": "allow"},
     "zcat":    {"rules": [], "default": "allow"},
-    "bash":    {"rules": [], "default": "deny", "reason": "Use the Bash tool directly or chain commands with && instead"},
-    "sh":      {"rules": [], "default": "deny", "reason": "Use the Bash tool directly or chain commands with && instead"},
-    "dash":    {"rules": [], "default": "deny", "reason": "Use the Bash tool directly or chain commands with && instead"},
-    "zsh":     {"rules": [], "default": "deny", "reason": "Use the Bash tool directly or chain commands with && instead"},
-    "ksh":     {"rules": [], "default": "deny", "reason": "Use the Bash tool directly or chain commands with && instead"},
-    "fish":    {"rules": [], "default": "deny", "reason": "Use the Bash tool directly or chain commands with && instead"},
-    "command": {"rules": [], "default": "deny", "reason": "`command <X>` is the bash `command` builtin and it bypasses ACL. Do NOT prefix anything with `command` — write the bare command. Example: instead of `command git status`, write `git status`."},
-    "eval":    {"rules": [], "default": "deny", "reason": "`eval` bypasses ACL by executing a constructed string. Run the command directly."},
-    "exec":    {"rules": [], "default": "deny", "reason": "`exec` bypasses ACL by replacing the shell. Run the command directly."},
-    "builtin": {"rules": [], "default": "deny", "reason": "`builtin` bypasses ACL. Run the command directly."},
+    "bash":    {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
+    "sh":      {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
+    "dash":    {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
+    "zsh":     {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
+    "ksh":     {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
+    "fish":    {"rules": [], "default": "deny", "reason": SHELL_FORK_REASON},
+    "command": {"rules": [], "default": "deny", "reason": COMMAND_BUILTIN_REASON},
+    "eval":    {"rules": [], "default": "deny", "reason": EVAL_REASON},
+    "exec":    {"rules": [], "default": "deny", "reason": EXEC_REASON},
+    "builtin": {"rules": [], "default": "deny", "reason": BUILTIN_REASON},
     "sudo":    {"rules": [], "default": "deny", "reason": "No privilege escalation from agent."},
     "pkexec":  {"rules": [], "default": "deny", "reason": "No privilege escalation from agent."},
     "doas":    {"rules": [], "default": "deny", "reason": "No privilege escalation from agent."},
@@ -383,7 +453,8 @@ ACL = {
         "rules": [
             {"args_contain": ["set-iam-policy", "add-iam-policy-binding", "remove-iam-policy-binding"],
              "decision": "deny", "reason": "IAM changes blocked"},
-            {"args": ["auth", "activate-service-account"], "decision": "deny", "reason": "Service account impersonation blocked"},
+            {"args": ["auth", "activate-service-account"], "decision": "deny",
+             "reason": GCLOUD_AUTH_ACTIVATE_REASON},
 
             {"args_contain": ["print-access-token", "print-identity-token"],
              "decision": "ask", "reason": "Confirm auth token output"},
@@ -399,55 +470,58 @@ ACL = {
             {"args": ["services", "enable"],  "decision": "ask", "reason": "Confirm before enabling services"},
             {"args": ["config", "set"],       "decision": "ask", "reason": "Confirm gcloud config write"},
             {"args": ["config", "unset"],     "decision": "ask", "reason": "Confirm gcloud config write"},
-            {"args": ["auth", "login"],       "decision": "deny", "reason": "User runs `gcloud auth login` interactively themselves — agent can't complete the browser flow"},
+            {"args": ["auth", "login"],       "decision": "deny", "reason": GCLOUD_AUTH_LOGIN_REASON},
             {"args": ["auth", "revoke"],      "decision": "deny", "reason": "Auth changes are user-only"},
 
-            {"args": ["storage", "ls"],          "decision": "allow", "reason": ""},
-            {"args": ["storage", "cat"],         "decision": "allow", "reason": ""},
+            {"args": ["storage", "ls"],   "decision": "allow", "reason": ""},
+            {"args": ["storage", "cat"],  "decision": "allow", "reason": ""},
             {"args": ["pubsub", "subscriptions", "pull"], "decision": "allow", "reason": ""},
-            {"args_contain": ["list"],           "decision": "allow", "reason": ""},
-            {"args_contain": ["describe"],       "decision": "allow", "reason": ""},
-            {"args_contain": ["info"],           "decision": "allow", "reason": ""},
-            {"args_contain": ["read"],           "decision": "allow", "reason": ""},
-            {"args_contain": ["show"],           "decision": "allow", "reason": ""},
-            {"args_contain": ["check"],          "decision": "allow", "reason": ""},
-            {"args_contain": ["lookup"],         "decision": "allow", "reason": ""},
-            {"args_contain": ["query"],          "decision": "allow", "reason": ""},
-            {"args_contain": ["status"],         "decision": "allow", "reason": ""},
-            {"args_contain": ["get-*"],          "decision": "allow", "reason": ""},
+            {"args_contain": ["list"],     "decision": "allow", "reason": ""},
+            {"args_contain": ["describe"], "decision": "allow", "reason": ""},
+            {"args_contain": ["info"],     "decision": "allow", "reason": ""},
+            {"args_contain": ["read"],     "decision": "allow", "reason": ""},
+            {"args_contain": ["show"],     "decision": "allow", "reason": ""},
+            {"args_contain": ["check"],    "decision": "allow", "reason": ""},
+            {"args_contain": ["lookup"],   "decision": "allow", "reason": ""},
+            {"args_contain": ["query"],    "decision": "allow", "reason": ""},
+            {"args_contain": ["status"],   "decision": "allow", "reason": ""},
+            {"args_contain": ["get-*"],    "decision": "allow", "reason": ""},
             {"args_contain": ["print-settings"], "decision": "allow", "reason": ""},
-            {"args_contain": ["log"],            "decision": "allow", "reason": ""},
-            {"args_contain": ["logs"],           "decision": "allow", "reason": ""},
-            {"args_contain": ["tail"],           "decision": "allow", "reason": ""},
-            {"args": ["version"],                "decision": "allow", "reason": ""},
-            {"args": ["help"],                   "decision": "allow", "reason": ""},
+            {"args_contain": ["log"],   "decision": "allow", "reason": ""},
+            {"args_contain": ["logs"],  "decision": "allow", "reason": ""},
+            {"args_contain": ["tail"],  "decision": "allow", "reason": ""},
+            {"args": ["version"],       "decision": "allow", "reason": ""},
+            {"args": ["help"],          "decision": "allow", "reason": ""},
         ],
         "default": "ask",
-        "reason": "gcloud subcommand not in read allow-list — confirm.",
+        "reason": GCLOUD_DEFAULT_REASON,
     },
 }
 # fmt: on
 
 DECISION_PRIORITY = {"deny": 2, "ask": 1, "allow": 0}
 
+# ── Logging ──────────────────────────────────────────────────────────────────
 
-def _gz_namer(name):
+
+def _gz_namer(name: str) -> str:
     return name + ".gz"
 
 
-def _gz_rotator(source, dest):
-    with open(source, "rb") as f_in:
-        with gzip.open(dest, "wb") as f_out:
-            f_out.write(f_in.read())
-    os.remove(source)
+def _gz_rotator(source: str, dest: str) -> None:
+    src = Path(source)
+    with src.open("rb") as f_in, gzip.open(dest, "wb") as f_out:
+        f_out.write(f_in.read())
+    src.unlink()
 
 
-def setup_logging():
-    log_dir = os.path.join(HOME, ".claude", "logs")
-    os.makedirs(log_dir, exist_ok=True)
+def setup_logging() -> logging.Logger:
+    """Initialise the rotating file logger used by every ACL decision."""
+    log_dir = Path(HOME) / ".claude" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("acl_hook")
     logger.setLevel(logging.INFO)
-    handler = RotatingFileHandler(os.path.join(log_dir, "acl-hook.log"), maxBytes=5_000_000, backupCount=5)
+    handler = RotatingFileHandler(log_dir / "acl-hook.log", maxBytes=5_000_000, backupCount=5)
     handler.namer = _gz_namer
     handler.rotator = _gz_rotator
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
@@ -455,7 +529,11 @@ def setup_logging():
     return logger
 
 
-def expand_home(arg):
+# ── Arg utilities ────────────────────────────────────────────────────────────
+
+
+def expand_home(arg: str) -> str:
+    """Expand a leading `~` or `~/` to $HOME (other forms left alone)."""
     if arg == "~":
         return HOME
     if arg.startswith("~/"):
@@ -463,43 +541,50 @@ def expand_home(arg):
     return arg
 
 
-def split_chained_commands(command):
-    """Split command on &&, ;, | respecting quotes."""
-    parts = []
-    current = []
-    in_single = False
-    in_double = False
+class Span(NamedTuple):
+    """Half-open range into the original command string."""
+
+    start: int
+    end: int
+
+
+def _separator_spans(command: str) -> Iterator[Span]:
+    """Yield every top-level `&&` / `;` / `|` outside quotes as a Span."""
+    in_single = in_double = False
     i = 0
     while i < len(command):
         c = command[i]
         if c == "'" and not in_double:
             in_single = not in_single
-            current.append(c)
         elif c == '"' and not in_single:
             in_double = not in_double
-            current.append(c)
-        elif not in_single and not in_double:
-            if c == "|" or c == ";":
-                parts.append("".join(current).strip())
-                current = []
-            elif c == "&" and i + 1 < len(command) and command[i + 1] == "&":
-                parts.append("".join(current).strip())
-                current = []
+        elif not (in_single or in_double):
+            if c in {"|", ";"}:
+                yield Span(i, i + 1)
+            elif c == "&" and command[i + 1 : i + 2] == "&":
+                yield Span(i, i + 2)
                 i += 1
-            else:
-                current.append(c)
-        else:
-            current.append(c)
         i += 1
-    parts.append("".join(current).strip())
-    return [p for p in parts if p]
 
 
-def arg_matches(arg, pattern):
-    return fnmatch(arg, pattern) or fnmatch(os.path.basename(arg), pattern)
+def split_chained_commands(command: str) -> list[str]:
+    """Split a Bash command on top-level `&&`, `;`, `|` respecting quotes."""
+    pieces: list[str] = []
+    cursor = 0
+    for start, end in _separator_spans(command):
+        pieces.append(command[cursor:start])
+        cursor = end
+    pieces.append(command[cursor:])
+    return [p.strip() for p in pieces if p.strip()]
 
 
-def matches_args(rule_patterns, cmd_args):
+def arg_matches(arg: str, pattern: str) -> bool:
+    """Glob-match `arg` against `pattern`, also trying just the basename."""
+    return fnmatch(arg, pattern) or fnmatch(Path(arg).name, pattern)
+
+
+def matches_args(rule_patterns: list[str], cmd_args: list[str]) -> bool:
+    """True iff `rule_patterns` appear as an ordered subsequence of `cmd_args`."""
     cmd_idx = 0
     for pattern in rule_patterns:
         found = False
@@ -514,39 +599,37 @@ def matches_args(rule_patterns, cmd_args):
     return True
 
 
-def matches_args_contain(rule_patterns, cmd_args):
-    for pattern in rule_patterns:
-        for arg in cmd_args:
-            if arg_matches(arg, pattern):
-                return True
-    return False
+def matches_args_contain(rule_patterns: list[str], cmd_args: list[str]) -> bool:
+    """True iff any pattern matches any arg (unordered membership test)."""
+    return any(arg_matches(arg, pattern) for pattern in rule_patterns for arg in cmd_args)
 
 
-def matches_args_glob(glob_pattern, cmd_args):
-    arg_str = " ".join(cmd_args)
-    return fnmatch(arg_str, glob_pattern)
+def matches_args_glob(glob_pattern: str, cmd_args: list[str]) -> bool:
+    """Match the full arg string (space-joined) as a single glob."""
+    return fnmatch(" ".join(cmd_args), glob_pattern)
 
 
-LOCALHOST = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]")
+# ── Custom predicates referenced via {"fn": "..."} in ACL rules ─────────────
+
+LOCALHOST = ("localhost", "127.0.0.1", "0.0.0.0", "[::1]")  # noqa: S104 — identifier list, not a network bind
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
+_X_FLAG_ARG_SPAN = 2  # `-X METHOD` consumes two argv entries
 
-def curl_mutating_remote(args):
+
+def curl_mutating_remote(args: list[str]) -> bool:
     """True if curl uses a mutating method against a non-localhost target."""
     mutating = False
     for i, arg in enumerate(args):
         if arg in ("-X", "--request") and i + 1 < len(args) and args[i + 1].upper() in MUTATING_METHODS:
             mutating = True
-        if arg.startswith("-X") and len(arg) > 2 and arg[2:].upper() in MUTATING_METHODS:
+        if arg.startswith("-X") and len(arg) > _X_FLAG_ARG_SPAN and arg[_X_FLAG_ARG_SPAN:].upper() in MUTATING_METHODS:
             mutating = True
         if arg in ("-d", "--data", "--data-raw", "--data-binary", "--data-urlencode"):
             mutating = True
     if not mutating:
         return False
-    for arg in args:
-        if not arg.startswith("-") and any(h in arg for h in LOCALHOST):
-            return False
-    return True
+    return not any(not arg.startswith("-") and any(h in arg for h in LOCALHOST) for arg in args)
 
 
 # Standalone `python -c "…"` is denied at top level in main() — see python_c_not_after_pipe.
@@ -555,7 +638,8 @@ MAX_BASH_LINES = 10
 SED_INLINE_EXPR_MAX = 300
 
 
-def rm_recursive(args):
+def rm_recursive(args: list[str]) -> bool:
+    """True iff `rm` was invoked with a recursive flag."""
     for arg in args:
         if arg == "--recursive":
             return True
@@ -564,21 +648,23 @@ def rm_recursive(args):
     return False
 
 
-def all_paths_inside_project(args):
+def all_paths_inside_project(args: list[str]) -> bool:
     """True iff every non-flag path arg resolves inside PROJECT_DIR (and at least one exists)."""
+    project_root = Path(PROJECT_DIR).resolve()
     has_path = False
     for arg in args:
         if arg.startswith("-"):
             continue
         has_path = True
-        path = arg if os.path.isabs(arg) else os.path.join(PROJECT_DIR, arg)
-        real = os.path.realpath(path)
-        if not real.startswith(PROJECT_DIR + os.sep) and real != PROJECT_DIR:
+        candidate = Path(arg) if Path(arg).is_absolute() else project_root / arg
+        real = candidate.resolve()
+        if real != project_root and project_root not in real.parents:
             return False
     return has_path
 
 
-def sed_inline_long(args):
+def sed_inline_long(args: list[str]) -> bool:
+    """True iff `sed -i` is passed a single substitution expression longer than the limit."""
     if "-i" not in args and not any(a.startswith("-i") for a in args):
         return False
     for arg in args:
@@ -589,7 +675,7 @@ def sed_inline_long(args):
     return False
 
 
-CUSTOM_FNS = {
+CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
     "rm_recursive": rm_recursive,
@@ -597,7 +683,8 @@ CUSTOM_FNS = {
 }
 
 
-def check_rule(rule, cmd_args):
+def check_rule(rule: Rule, cmd_args: list[str]) -> bool:
+    """Dispatch a single ACL rule to the appropriate matcher / predicate."""
     if "fn" in rule:
         return CUSTOM_FNS[rule["fn"]](cmd_args)
     if "args" in rule:
@@ -609,17 +696,23 @@ def check_rule(rule, cmd_args):
     return False
 
 
-# --- Top-level antipattern detectors ---
+# ── Top-level antipattern detectors (operate on bashlex ASTs) ────────────────
 
 
-def _walk_with_parent(node, parent=None, position=None):
+WalkItem = tuple[BashNode, "BashNode | None", "int | None"]
+
+
+def _walk_with_parent(
+    node: BashNode,
+    parent: BashNode | None = None,
+    position: int | None = None,
+) -> Iterator[WalkItem]:
     yield node, parent, position
-    children = list(_node_children(node))
-    for idx, child in enumerate(children):
+    for idx, child in enumerate(_node_children(node)):
         yield from _walk_with_parent(child, parent=node, position=idx)
 
 
-def _node_children(node):
+def _node_children(node: BashNode) -> Iterator[BashNode]:
     parts = getattr(node, "parts", None)
     if parts:
         yield from parts
@@ -631,17 +724,13 @@ def _node_children(node):
         yield cmd_child
 
 
-def _command_words(node):
+def _command_words(node: BashNode) -> list[str]:
     if getattr(node, "kind", None) != "command":
         return []
-    words = []
-    for part in getattr(node, "parts", []) or []:
-        if getattr(part, "kind", None) == "word":
-            words.append(part.word)
-    return words
+    return [part.word for part in (getattr(node, "parts", []) or []) if getattr(part, "kind", None) == "word"]
 
 
-def has_function_def(trees) -> bool:
+def has_function_def(trees: Iterable[BashNode]) -> bool:
     """True iff any tree contains a Bash function definition."""
     for tree in trees:
         for node, _parent, _pos in _walk_with_parent(tree):
@@ -650,15 +739,14 @@ def has_function_def(trees) -> bool:
     return False
 
 
-def python_c_not_after_pipe(trees) -> bool:
+def python_c_not_after_pipe(trees: Iterable[BashNode]) -> bool:
     """True iff any `python[3] -c …` invocation is NOT positioned as a pipe receiver."""
     for tree in trees:
         for node, parent, position in _walk_with_parent(tree):
             words = _command_words(node)
             if not words:
                 continue
-            basename = os.path.basename(words[0])
-            if basename not in ("python", "python3"):
+            if Path(words[0]).name not in ("python", "python3"):
                 continue
             if "-c" not in words[1:]:
                 continue
@@ -668,7 +756,7 @@ def python_c_not_after_pipe(trees) -> bool:
     return False
 
 
-def until_loop_with_sleep(trees) -> bool:
+def until_loop_with_sleep(trees: Iterable[BashNode]) -> bool:
     """True iff a Bash invocation contains both `until` (reserved word) and a `sleep` command."""
     for tree in trees:
         has_until = False
@@ -677,19 +765,19 @@ def until_loop_with_sleep(trees) -> bool:
             if getattr(node, "kind", None) == "reservedword" and getattr(node, "word", "") == "until":
                 has_until = True
             words = _command_words(node)
-            if words and os.path.basename(words[0]) == "sleep":
+            if words and Path(words[0]).name == "sleep":
                 has_sleep = True
             if has_until and has_sleep:
                 return True
     return False
 
 
-def chained_sleep(trees) -> bool:
+def chained_sleep(trees: Iterable[BashNode]) -> bool:
     """True iff `sleep N` is chained with another command at the same nesting level."""
     for tree in trees:
         for node, parent, _pos in _walk_with_parent(tree):
             words = _command_words(node)
-            if not words or os.path.basename(words[0]) != "sleep":
+            if not words or Path(words[0]).name != "sleep":
                 continue
             if parent is None:
                 continue
@@ -699,304 +787,274 @@ def chained_sleep(trees) -> bool:
     return False
 
 
-def check_command(cmd_str, logger, *, agent_type: str):
-    """Check a single command against ACL. Returns (decision, reason, log_detail)."""
-    try:
-        parts = shlex.split(cmd_str)
-    except ValueError as e:
-        reason = (
-            f"Bash command failed to parse ({e}). Rewrite as a simpler primitive the shell "
-            "can parse cleanly, or split into multiple Bash calls."
-        )
-        logger.info('decision=deny command="%s" matched=shlex_error agent=%s', cmd_str[:120], agent_type)
-        return "deny", reason, "shlex_error"
+# ── Per-command ACL check (split into helpers to keep complexity bounded) ────
 
-    if not parts:
-        return "allow", "", "empty command"
+_PROC_WRAPPERS = ("time", "nohup", "nice", "setsid", "stdbuf", "ionice", "taskset")
+_WRAPPER_FLAGS_WITH_VALUE = ("-n", "-c", "-p")
+_TIMEOUT_FLAGS_WITH_VALUE = ("-s", "--signal", "-k", "--kill-after")
 
-    # Skip leading VAR=value environment variable assignments
+
+def _strip_env_assignments(parts: list[str]) -> list[str]:
     while parts and "=" in parts[0] and not parts[0].startswith("-"):
         parts = parts[1:]
+    return parts
 
-    # Strip leading process-wrapper commands
-    while parts and parts[0] in ("time", "nohup", "nice", "setsid", "stdbuf", "ionice", "taskset"):
+
+def _strip_wrapper(parts: list[str]) -> list[str]:
+    while parts and parts[0] in _PROC_WRAPPERS:
         parts = parts[1:]
         while parts and parts[0].startswith("-"):
-            if parts[0] in ("-n", "-c", "-p") and len(parts) > 1:
-                parts = parts[2:]
-            else:
-                parts = parts[1:]
+            parts = parts[2:] if parts[0] in _WRAPPER_FLAGS_WITH_VALUE and len(parts) > 1 else parts[1:]
+    return parts
 
-    # Strip leading `timeout [opts] <duration>` wrapper
-    if parts and parts[0] == "timeout":
+
+def _strip_timeout(parts: list[str]) -> list[str]:
+    if not parts or parts[0] != "timeout":
+        return parts
+    parts = parts[1:]
+    while parts and parts[0].startswith("-"):
+        parts = parts[2:] if parts[0] in _TIMEOUT_FLAGS_WITH_VALUE and len(parts) > 1 else parts[1:]
+    if parts:  # consume the <duration> positional
         parts = parts[1:]
-        while parts and parts[0].startswith("-"):
-            if parts[0] in ("-s", "--signal", "-k", "--kill-after") and len(parts) > 1:
-                parts = parts[2:]
-            else:
-                parts = parts[1:]
-        if parts:
-            parts = parts[1:]
+    return parts
 
-    if not parts:
-        return "allow", "", "empty command"
 
-    command = parts[0]
-
-    if command.startswith("#"):
-        return "allow", "", "comment"
-    args = [expand_home(a) for a in parts[1:]]
-
-    if (
+def _is_claude_script(command: str) -> bool:
+    return (
         fnmatch(command, ".claude/skills/*/*.py")
         or fnmatch(command, "*/.claude/skills/*/*.py")
         or fnmatch(command, "*/.claude/hooks/*.py")
-    ):
-        logger.info('decision=allow command="%s" matched=claude_script agent=%s', cmd_str, agent_type)
-        return "allow", "", "claude_script"
+    )
 
-    # Block direct paths into the project venv — use bare command names instead
-    if "/" in command:
-        abs_command = os.path.abspath(command if os.path.isabs(command) else os.path.join(PROJECT_DIR, command))
-        venv_bin_prefix = os.path.join(PROJECT_DIR, ".venv", "bin") + os.sep
-        if abs_command.startswith(venv_bin_prefix):
-            bare = os.path.basename(abs_command)
-            reason = (
-                f"Don't invoke `{command}` — call `{bare}` directly. The project venv should be active in the shell profile.\n"
-                f"If `{bare}` still fails, ASK THE USER to activate the venv (`source .venv/bin/activate` in their terminal). "
-                f"Workarounds like `source`, `.`, `bash -c`, invoking the venv binary by path — all blocked."
-            )
-            logger.info('decision=deny command="%s" matched=venv_bin agent=%s', cmd_str, agent_type)
-            return "deny", reason, "venv_bin"
 
-    basename = os.path.basename(command)
-    if "/" in command and basename in ("python", "python3"):
-        reason = (
+def _venv_bin_deny_reason(command: str) -> str | None:
+    if "/" not in command:
+        return None
+    abs_command = (Path(command) if Path(command).is_absolute() else Path(PROJECT_DIR) / command).resolve()
+    venv_bin = (Path(PROJECT_DIR) / ".venv" / "bin").resolve()
+    if venv_bin in abs_command.parents:
+        bare = abs_command.name
+        return (
+            f"Don't invoke `{command}` — call `{bare}` directly. The project venv should be active "
+            f"in the shell profile.\nIf `{bare}` still fails, ASK THE USER to activate the venv "
+            f"(`source .venv/bin/activate` in their terminal). Workarounds like `source`, `.`, "
+            f"`bash -c`, invoking the venv binary by path — all blocked."
+        )
+    return None
+
+
+def _python_path_deny_reason(command: str) -> str | None:
+    if "/" in command and Path(command).name in ("python", "python3"):
+        return (
             "Use python3 directly, not a path. The project venv should be active in the shell profile.\n"
             "If `python3` runs from /usr/bin (venv not active), ASK THE USER to activate it."
         )
-        logger.info('decision=deny command="%s" matched=python_path agent=%s', cmd_str, agent_type)
-        return "deny", reason, "python_path"
+    return None
 
-    # Basename normalization so /usr/bin/git is ACL'd the same as bare git
-    if "/" in command:
-        bn = os.path.basename(command)
-        if bn in ACL:
-            command = bn
+
+_UNKNOWN_CMD_REASON = (
+    "Unknown command `{cmd}` — not in ACL. Don't smuggle it through a wrapper or a clever "
+    "one-liner. Use a simpler primitive that IS in the allow-list (ls/cat/grep/find/git/gh/…), "
+    "or split into multiple Bash calls. If you genuinely need this command, ask the user to "
+    "add it to ACL."
+)
+_SHLEX_ERROR_REASON = (
+    "Bash command failed to parse ({err}). Rewrite as a simpler primitive the shell can "
+    "parse cleanly, or split into multiple Bash calls."
+)
+
+Decision = tuple[str, str, str]
+
+
+def _preflight(command: str) -> Decision | None:
+    """Per-command early decisions (allow claude scripts, deny venv paths) before ACL lookup."""
+    if _is_claude_script(command):
+        return "allow", "", "claude_script"
+    venv = _venv_bin_deny_reason(command)
+    if venv is not None:
+        return "deny", venv, "venv_bin"
+    py = _python_path_deny_reason(command)
+    if py is not None:
+        return "deny", py, "python_path"
+    return None
+
+
+def _apply_acl(command: str, args: list[str]) -> Decision:
+    """Walk the ACL rules for `command`, falling back to its `default`."""
+    entry = ACL[command]
+    for rule in entry.get("rules", []):
+        if check_rule(rule, args):
+            return rule["decision"], rule.get("reason", ""), "rule"
+    default = entry["default"]
+    return default, entry.get("reason", ""), f"default:{default}"
+
+
+def check_command(cmd_str: str, logger: logging.Logger, *, agent_type: str) -> Decision:
+    """Check a single command against ACL. Returns (decision, reason, log_detail)."""
+    decision = _classify(cmd_str)
+    verdict, _, detail = decision
+    logger.info('decision=%s command="%s" matched=%s agent=%s', verdict, cmd_str[:200], detail, agent_type)
+    return decision
+
+
+def _classify(cmd_str: str) -> Decision:
+    """Pure classification: no logging side effects, so the logic stays linear."""
+    try:
+        parts = shlex.split(cmd_str)
+    except ValueError as e:
+        return "deny", _SHLEX_ERROR_REASON.format(err=e), "shlex_error"
+
+    parts = _strip_timeout(_strip_wrapper(_strip_env_assignments(parts)))
+    if not parts or parts[0].startswith("#"):
+        return "allow", "", "comment" if parts and parts[0].startswith("#") else "empty command"
+
+    command = parts[0]
+    args = [expand_home(a) for a in parts[1:]]
+
+    preflight = _preflight(command)
+    if preflight is not None:
+        return preflight
+
+    # Basename normalization so /usr/bin/git is ACL'd the same as bare git.
+    if "/" in command and Path(command).name in ACL:
+        command = Path(command).name
 
     if command not in ACL:
-        reason = (
-            f"Unknown command `{command}` — not in ACL. Don't smuggle it through a wrapper "
-            "or a clever one-liner. Use a simpler primitive that IS in the allow-list "
-            "(ls/cat/grep/find/git/gh/…), or split into multiple Bash calls. If you "
-            "genuinely need this command, ask the user to add it to ACL."
-        )
-        logger.info('decision=deny command="%s" matched=unknown_command agent=%s', cmd_str, agent_type)
-        return "deny", reason, "unknown_command"
+        return "deny", _UNKNOWN_CMD_REASON.format(cmd=command), "unknown_command"
 
-    entry = ACL[command]
-    for rule in entry["rules"]:
-        if check_rule(rule, args):
-            logger.info(
-                'decision=%s command="%s" matched=rule:%s agent=%s',
-                rule["decision"],
-                cmd_str,
-                rule.get("args") or rule.get("args_contain") or rule.get("args_glob") or rule.get("fn"),
-                agent_type,
-            )
-            return rule["decision"], rule["reason"], "rule"
-
-    default = entry["default"]
-    reason = entry.get("reason", "")
-    logger.info('decision=%s command="%s" matched=default:%s agent=%s', default, cmd_str, default, agent_type)
-    return default, reason, f"default:{default}"
+    return _apply_acl(command, args)
 
 
-def main():
-    data = json.loads(sys.stdin.read())
+# ── main() and its emit helpers ──────────────────────────────────────────────
 
-    if data.get("tool_name") != "Bash":
-        sys.exit(0)
 
-    command = data.get("tool_input", {}).get("command", "")
-    if not command:
-        sys.exit(0)
-
-    agent_id = data.get("agent_id")
-    agent_type = data.get("agent_type") if agent_id is not None else "main"
-
-    logger = setup_logging()
-
-    # Long multi-line bash blobs are the wrong tool — split into multiple simple calls.
-    line_count = command.count("\n") + 1
-    if len(command) > MAX_BASH_LEN or line_count > MAX_BASH_LINES:
-        logger.info("decision=deny command_too_long len=%d lines=%d agent=%s", len(command), line_count, agent_type)
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            f"Bash command too large ({len(command)} chars / {line_count} lines; "
-                            f"limit {MAX_BASH_LEN}/{MAX_BASH_LINES}). SPLIT into several simple Bash "
-                            "calls — each step gets its own ACL check and feedback. Antipatterns to "
-                            "avoid: long `for x in …; do …; done`, function defs `name() {…}`, `&&` chains "
-                            'longer than 3 links, `python -c "<multiline script>"`. Genuinely atomic '
-                            "script with control flow (rare) → Write tool to a file, then run it."
-                        ),
-                    }
-                }
-            )
-        )
-        return
-
-    # Agents must use Write tool for file creation — heredoc content breaks ACL parsing
-    if "<<" in command:
-        logger.info('decision=deny command="%s" matched=agent_heredoc agent=%s', command[:120], agent_type)
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": "Agents cannot use heredoc (<<) in Bash — use the Write tool instead.",
-                    }
-                }
-            )
-        )
-        return
-
-    # Parse bash once; deny if bashlex chokes (fail-closed for AST detectors below).
-    try:
-        trees = bashlex.parse(command)
-    except Exception as e:
-        logger.info(
-            'decision=deny command="%s" matched=bashlex_parse_failed agent=%s err=%s',
-            command[:120],
-            agent_type,
-            type(e).__name__,
-        )
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            f"Bash command failed to parse via bashlex ({type(e).__name__}): {e}. "
-                            "This blocks the AST-based antipattern detectors from checking it, so we "
-                            "fail closed. Likely cause: ANSI-C escapes (`$'…'`), process substitution "
-                            "(`<(…)` / `>(…)`), unbalanced quotes. Rewrite as a simpler primitive or "
-                            "split into multiple Bash calls."
-                        ),
-                    }
-                }
-            )
-        )
-        return
-
-    if has_function_def(trees):
-        logger.info('decision=deny command="%s" matched=function_def agent=%s', command[:120], agent_type)
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            "Bash function definitions (`name() { … }`) inside a Bash call are denied — "
-                            "split into multiple simple Bash calls. If you need reusable logic, Write it "
-                            "as a script file."
-                        ),
-                    }
-                }
-            )
-        )
-        return
-
-    if python_c_not_after_pipe(trees):
-        logger.info('decision=deny command="%s" matched=python_c_standalone agent=%s', command[:120], agent_type)
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            '`python -c` is allowed only as a pipe filter (`<cmd> | python3 -c "…"`). '
-                            "Standalone or `$(python -c …)` is a script masquerading as a command. "
-                            "Options: (1) pipe data in; (2) Write the script to a file and run it; "
-                            "(3) split into simple Bash builtins or `jq`."
-                        ),
-                    }
-                }
-            )
-        )
-        return
-
-    if until_loop_with_sleep(trees):
-        logger.info('decision=deny command="%s" matched=until_loop_with_sleep agent=%s', command[:120], agent_type)
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            "`until <cond>; do … sleep N … ; done` inline polling is denied — the loop "
-                            "blocks the agent for the whole wait, can't be interrupted cleanly. "
-                            "Use instead: `Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; "
-                            "or `ScheduleWakeup(delaySeconds=…)` in a /loop session; "
-                            "or `/schedule` (CronCreate) for recurring runs."
-                        ),
-                    }
-                }
-            )
-        )
-        return
-
-    if chained_sleep(trees):
-        logger.info('decision=deny command="%s" matched=chained_sleep agent=%s', command[:120], agent_type)
-        print(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": (
-                            "`sleep N` chained with another command is denied. "
-                            "Use one of: (1) `Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; "
-                            "(2) `ScheduleWakeup` in a /loop session; (3) `/schedule` for a cron remote agent."
-                        ),
-                    }
-                }
-            )
-        )
-        return
-
-    sub_commands = split_chained_commands(command)
-
-    final_decision = "allow"
-    final_reason = ""
-
-    for sub_cmd in sub_commands:
-        decision, reason, _ = check_command(sub_cmd, logger, agent_type=agent_type)
-        if DECISION_PRIORITY[decision] > DECISION_PRIORITY[final_decision]:
-            final_decision = decision
-            final_reason = reason
-
-    print(
+def _emit(decision: str, reason: str) -> None:
+    sys.stdout.write(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "permissionDecision": final_decision,
-                    "permissionDecisionReason": final_reason,
+                    "permissionDecision": decision,
+                    "permissionDecisionReason": reason,
                 }
             }
         )
+        + "\n"
     )
+
+
+def _log_deny(logger: logging.Logger, command: str, agent_type: str, tag: str) -> None:
+    logger.info('decision=deny command="%s" matched=%s agent=%s', command[:120], tag, agent_type)
+
+
+_TOO_LARGE_REASON = (
+    "Bash command too large ({n} chars / {lines} lines; limit {mlen}/{mlines}). SPLIT into "
+    "several simple Bash calls — each step gets its own ACL check and feedback. Antipatterns "
+    "to avoid: long `for x in …; do …; done`, function defs `name() {{…}}`, `&&` chains "
+    'longer than 3 links, `python -c "<multiline script>"`. Genuinely atomic script with '
+    "control flow (rare) → Write tool to a file, then run it."
+)
+_HEREDOC_REASON = "Agents cannot use heredoc (<<) in Bash — use the Write tool instead."
+_BASHLEX_REASON = (
+    "Bash command failed to parse via bashlex ({errname}): {err}. This blocks the AST-based "
+    "antipattern detectors from checking it, so we fail closed. Likely cause: ANSI-C escapes "
+    "(`$'…'`), process substitution (`<(…)` / `>(…)`), unbalanced quotes. Rewrite as a "
+    "simpler primitive or split into multiple Bash calls."
+)
+_FUNCTION_DEF_REASON = (
+    "Bash function definitions (`name() { … }`) inside a Bash call are denied — split into "
+    "multiple simple Bash calls. If you need reusable logic, Write it as a script file."
+)
+_PYTHON_C_REASON = (
+    '`python -c` is allowed only as a pipe filter (`<cmd> | python3 -c "…"`). Standalone or '
+    "`$(python -c …)` is a script masquerading as a command. Options: (1) pipe data in; "
+    "(2) Write the script to a file and run it; (3) split into simple Bash builtins or `jq`."
+)
+_UNTIL_LOOP_REASON = (
+    "`until <cond>; do … sleep N … ; done` inline polling is denied — the loop blocks the "
+    "agent for the whole wait, can't be interrupted cleanly. Use instead: "
+    "`Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; or "
+    "`ScheduleWakeup(delaySeconds=…)` in a /loop session; or `/schedule` (CronCreate) for "
+    "recurring runs."
+)
+_CHAINED_SLEEP_REASON = (
+    "`sleep N` chained with another command is denied. Use one of: "
+    "(1) `Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; "
+    "(2) `ScheduleWakeup` in a /loop session; "
+    "(3) `/schedule` for a cron remote agent."
+)
+
+_AST_DETECTORS: list[tuple[Callable[[Iterable[BashNode]], bool], str, str]] = [
+    (has_function_def, _FUNCTION_DEF_REASON, "function_def"),
+    (python_c_not_after_pipe, _PYTHON_C_REASON, "python_c_standalone"),
+    (until_loop_with_sleep, _UNTIL_LOOP_REASON, "until_loop_with_sleep"),
+    (chained_sleep, _CHAINED_SLEEP_REASON, "chained_sleep"),
+]
+
+
+Verdict = tuple[str, str]
+
+
+def _size_gate(command: str, logger: logging.Logger, agent_type: str) -> Verdict | None:
+    """Deny commands that are too long or span too many lines."""
+    line_count = command.count("\n") + 1
+    if len(command) <= MAX_BASH_LEN and line_count <= MAX_BASH_LINES:
+        return None
+    logger.info("decision=deny command_too_long len=%d lines=%d agent=%s", len(command), line_count, agent_type)
+    return "deny", _TOO_LARGE_REASON.format(n=len(command), lines=line_count, mlen=MAX_BASH_LEN, mlines=MAX_BASH_LINES)
+
+
+def _heredoc_gate(command: str, logger: logging.Logger, agent_type: str) -> Verdict | None:
+    """Deny heredoc usage; agents must use the Write tool for multiline content."""
+    if "<<" not in command:
+        return None
+    _log_deny(logger, command, agent_type, "agent_heredoc")
+    return "deny", _HEREDOC_REASON
+
+
+def _ast_gate(command: str, logger: logging.Logger, agent_type: str) -> Verdict | None:
+    """Parse with bashlex; fail closed on parse errors, then run AST antipattern detectors."""
+    try:
+        trees = bashlex.parse(command)
+    except Exception as e:  # noqa: BLE001 — bashlex raises a variety; fail closed
+        _log_deny(logger, command, agent_type, f"bashlex_parse_failed:{type(e).__name__}")
+        return "deny", _BASHLEX_REASON.format(errname=type(e).__name__, err=e)
+    for detector, reason, tag in _AST_DETECTORS:
+        if detector(trees):
+            _log_deny(logger, command, agent_type, tag)
+            return "deny", reason
+    return None
+
+
+_GATES = (_size_gate, _heredoc_gate, _ast_gate)
+
+
+def _resolve_chained(command: str, logger: logging.Logger, agent_type: str) -> Verdict:
+    """Run ACL on each sub-command and keep the strictest decision (deny > ask > allow)."""
+    final: Verdict = ("allow", "")
+    for sub_cmd in split_chained_commands(command):
+        decision, reason, _ = check_command(sub_cmd, logger, agent_type=agent_type)
+        if DECISION_PRIORITY[decision] > DECISION_PRIORITY[final[0]]:
+            final = (decision, reason)
+    return final
+
+
+def _decide(command: str, logger: logging.Logger, agent_type: str) -> Verdict:
+    for gate in _GATES:
+        verdict = gate(command, logger, agent_type)
+        if verdict is not None:
+            return verdict
+    return _resolve_chained(command, logger, agent_type)
+
+
+def main() -> None:
+    """PreToolUse entry point: read stdin payload, emit allow/ask/deny decision."""
+    data = json.loads(sys.stdin.read())
+    command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
+    if not command:
+        return
+    agent_type = data.get("agent_type") if data.get("agent_id") is not None else "main"
+    _emit(*_decide(command, setup_logging(), agent_type))
 
 
 if __name__ == "__main__":
