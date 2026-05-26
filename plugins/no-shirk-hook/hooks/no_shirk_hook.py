@@ -140,6 +140,7 @@ def _gz_rotator(source: str, dest: str) -> None:
 
 
 def setup_logging() -> logging.Logger:
+    """Return the hook's logger, configured once with rotating gzip handler."""
     log_dir = HOME / ".claude" / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("no_shirk_hook")
@@ -244,6 +245,7 @@ def last_assistant_text(events: list[dict]) -> str:
 
 
 def last_user_text(events: list[dict]) -> str:
+    """Return the text of the most recent user message, or '' if none."""
     for event in reversed(events):
         msg = event.get("message")
         if not isinstance(msg, dict):
@@ -270,6 +272,7 @@ def match_shirk(tail: str) -> tuple[str, str] | None:
 
 
 def has_destructive_context(tail: str) -> bool:
+    """True iff the tail mentions a destructive/irreversible action keyword."""
     for kw in DESTRUCTIVE_KEYWORDS:
         if re.search(kw, tail, flags=re.IGNORECASE):
             return True
@@ -277,6 +280,7 @@ def has_destructive_context(tail: str) -> bool:
 
 
 def has_business_ambiguity(tail: str) -> bool:
+    """True iff the tail asks the user to make a business/tradeoff decision."""
     for marker in BUSINESS_AMBIGUITY_MARKERS:
         if re.search(marker, tail, flags=re.IGNORECASE):
             return True
@@ -284,6 +288,7 @@ def has_business_ambiguity(tail: str) -> bool:
 
 
 def user_asked_open_question(user_text: str) -> bool:
+    """True iff the last user message is a short open-ended question."""
     text = user_text.strip()
     return bool(text) and text.endswith("?") and len(text) < _USER_Q_MAX_LEN
 
@@ -336,6 +341,7 @@ REASON_TEMPLATE = (
 
 
 def build_reason(snippet: str) -> str:
+    """Render the actionable block reason shown to the agent, embedding the matched snippet."""
     snippet = snippet.strip().replace("\n", " ")
     if len(snippet) > _SNIPPET_MAX_LEN:
         snippet = snippet[: _SNIPPET_MAX_LEN - 3] + "…"
@@ -382,6 +388,7 @@ def _log_verdict(
 
 
 def main() -> None:
+    """Stop-hook entry point: read transcript, classify, emit block decision if needed."""
     events = _load_events()
     if events is None:
         return
