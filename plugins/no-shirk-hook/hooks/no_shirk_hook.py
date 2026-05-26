@@ -317,17 +317,17 @@ def classify(
 # ── reason message ───────────────────────────────────────────────────────────
 
 REASON_TEMPLATE = (
-    "Ты закончил ход вопросом «{snippet}» — это «спросить вместо сделать».\n"
-    "Сделай следующий очевидный шаг сам:\n"
-    "  • если это запуск тестов/линта/typecheck — просто запусти;\n"
-    "  • если это дочинить вторую часть той же задачи — дочини;\n"
-    "  • если это создать/обновить файл — создай.\n"
-    "Спрашивать у пользователя нужно ТОЛЬКО когда:\n"
-    "  (1) действие разрушительное и необратимое "
-    "(force push, drop table, prod deploy),\n"
-    "  (2) есть реальная двусмысленность в бизнес-требованиях,\n"
-    "  (3) пользователь сам задал открытый вопрос.\n"
-    "В остальных случаях — делай и отчитывайся результатом, а не вопросом."
+    'You ended the turn asking "{snippet}" — that\'s ask-instead-of-do.\n'
+    "Take the obvious next step yourself:\n"
+    "  - if it's running tests / lint / typecheck, just run it;\n"
+    "  - if it's finishing the second half of the same task, finish it;\n"
+    "  - if it's creating or updating a file, do it.\n"
+    "Ask the user ONLY when:\n"
+    "  (1) the action is destructive or irreversible "
+    "(force push, drop table, prod deploy);\n"
+    "  (2) there's genuine ambiguity in business requirements;\n"
+    "  (3) the user themselves asked an open question.\n"
+    "Otherwise: do the work and report the result, not a question."
 )
 
 

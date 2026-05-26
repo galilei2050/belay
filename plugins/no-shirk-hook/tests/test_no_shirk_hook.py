@@ -308,7 +308,7 @@ def test_main_blocks_shirking_turn(monkeypatch, capsys, write_transcript):
     out = via_main(monkeypatch, capsys, transcript_path=path)
     decision = json.loads(out)
     assert decision["decision"] == "block"
-    assert "спросить вместо сделать" in decision["reason"]
+    assert "ask-instead-of-do" in decision["reason"]
 
 
 def test_main_allows_normal_completion(monkeypatch, capsys, write_transcript):
