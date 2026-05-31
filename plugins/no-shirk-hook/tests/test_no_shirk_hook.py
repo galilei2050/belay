@@ -90,6 +90,26 @@ def test_want_me_to_triggers(text):
 @pytest.mark.parametrize(
     "text",
     [
+        # real-world misses: offering to babysit a CI run and report back
+        "Хочешь — последю за прогоном и доложу, зелёный или нет?",
+        "Последить за ними и доложить, зелёные ли (первый прогон workflow)?",
+        "Want me to watch the run and report whether it's green?",
+        "CI is running. Should I keep an eye on it and let you know if it goes red?",
+    ],
+)
+def test_watch_and_report_triggers(text):
+    assert match_shirk(text) is not None
+
+
+def test_watch_and_report_past_tense_is_ok():
+    # A completed report (past tense) is not a shirk — it's the result.
+    verdict, _, _ = classify("Я последил за прогоном и доложил: 3/3 зелёные.", user_text="")
+    assert verdict == "ok"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "Если хотите, я допишу остальное.",
         "If you'd like, I can also add error handling.",
         "I can refactor the helper if you'd like.",
@@ -118,10 +138,26 @@ def test_ready_to_triggers(text):
         "Дайте знать, если нужно подправить.",
         "Let me know if I should run the tests.",
         "Let me know if you'd like a refactor.",
+        # "ping me and I'll do it" — 2nd-person-future offer, not imperative
+        "Менять-коммитить не стал — скажешь, оформлю коммит.",
+        "Коммит не делал. Скажешь — закоммичу.",
+        "Done. Just say the word and I'll commit.",
     ],
 )
 def test_tell_me_if_triggers(text):
     assert match_shirk(text) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Я закоммитил и запушил — всё на месте.",  # past-tense statement
+        "Скажу честно: тесты зелёные, линт чист.",  # 1st person, not an offer
+    ],
+)
+def test_tell_me_if_does_not_overmatch(text):
+    verdict, _, _ = classify(text, user_text="")
+    assert verdict == "ok"
 
 
 @pytest.mark.parametrize(
@@ -148,6 +184,33 @@ def test_when_youre_ready_triggers(text):
 )
 def test_proceed_q_triggers(text):
     assert match_shirk(text) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Изменение workflow пока не закоммичено — коммитить?",
+        "Готово локально. Закоммитить?",
+        "Все зелёное. Запушить?",
+        "Done. Commit?",
+        "Ready locally. Push it?",
+        "Shall I commit the change?",
+    ],
+)
+def test_commit_offer_triggers(text):
+    assert match_shirk(text) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Закоммитил и запушил — всё на месте.",  # past tense
+        "Не коммитил — по политике, закоммичу по запросу.",  # statement, mid-line verb
+    ],
+)
+def test_commit_offer_does_not_overmatch(text):
+    verdict, _, _ = classify(text, user_text="")
+    assert verdict == "ok"
 
 
 def test_out_of_scope_triggers():
