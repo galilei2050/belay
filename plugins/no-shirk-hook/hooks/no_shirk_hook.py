@@ -60,12 +60,16 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
         r"\brun\s+(the\s+)?tests\s*\??\s*$",
     ],
     "want_me_to": [
-        r"\bхотите,?\s+я\s+(с?делаю|запущу|продолжу|допишу|починю)",
-        r"\bхочешь,?\s+(с?делаю|запущу|продолжу|допишу|починю)",
+        r"\bхотите[\s,—–-]+я\s+(с?делаю|запущу|продолжу|допишу|починю)",
+        r"\bхочешь[\s,—–-]+(с?делаю|запущу|продолжу|допишу|починю)",
         r"\bесли\s+хочешь,?\s+(запущу|сделаю|продолжу)",
         r"\bwant\s+me\s+to\b",
         r"\bwould\s+you\s+like\s+me\s+to\b",
         r"\bdo\s+you\s+want\s+me\s+to\b",
+    ],
+    "watch_and_report": [
+        r"\b(послед(ить|ю|им)|просле(дить|жу))\b.{0,60}\b(доло(жить|жу)|расскаж\w*|сообщ\w*|напиш\w*)",
+        r"\b(watch|monitor|keep\s+an?\s+eye\s+on)\b.{0,60}\b(report|let\s+you\s+know|tell\s+you)\b",
     ],
     "if_you_want": [
         r"\bесли\s+хотите,?\s+(могу|я)\b",
@@ -79,8 +83,10 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
     ],
     "tell_me_if": [
         r"\bскажи(те)?\s+если\s+(нужно|надо|сделать|запустить)",
+        r"\bскаж(ешь|ете)\b[\s,—–-]+(я\s+)?\w+(ю|у)\b",
         r"\bдай(те)?\s+знать,?\s+если\b",
         r"\blet\s+me\s+know\s+if\s+(you('?d)?\s+like|i\s+should)\b",
+        r"\b(just\s+)?say\s+the\s+word\b",
     ],
     "when_youre_ready": [
         r"\bкогда\s+буде(те|шь)\s+готов\w*",
@@ -93,6 +99,13 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
         r"\bделаю\s*\??\s*$",
         r"\bshall\s+i\s+(proceed|continue)\b",
         r"\bproceed\s*\?\s*$",
+    ],
+    "commit_offer": [
+        r"\b(за)?коммит(ить|нуть)\s*\??\s*$",
+        r"\b(за)?коммичу\s*\??\s*$",
+        r"\b(за)?пуш(ить|у)\s*\??\s*$",
+        r"\b(commit|push)(\s+it)?\s*\?\s*$",
+        r"\bshall\s+i\s+(commit|push)\b",
     ],
     "out_of_scope": [
         r"\bвне\s+(рамок|скоупа)\b",
