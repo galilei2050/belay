@@ -17,8 +17,8 @@ a commit.**
 
 The git hooks split the work across two stages (see `.pre-commit-config.yaml`):
 
-- `pre-commit` → `make lint-fix` (auto-format + ruff fix + `anon_lint.py`).
-  Fast, runs on every `git commit`.
+- `pre-commit` → `make pre-commit` (= `lint-fix`: auto-format + ruff fix +
+  `anon_lint.py`). Fast, runs on every `git commit`.
 - `pre-push` → `make pre-push` (= `typecheck` + `test`). Runs on `git push`.
 
 So `git commit` succeeding does NOT mean tests/typecheck pass — those only

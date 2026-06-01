@@ -25,6 +25,9 @@ typecheck:
 test:
 	uv run pytest
 
+.PHONY: pre-commit
+pre-commit: lint-fix
+
 .PHONY: pre-push
 pre-push: typecheck test
 

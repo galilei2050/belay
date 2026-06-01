@@ -1,9 +1,9 @@
 repos:
   - repo: local
     hooks:
-      - id: lint-fix
-        name: make lint-fix
-        entry: make lint-fix
+      - id: pre-commit
+        name: make pre-commit
+        entry: make pre-commit
         language: system
         pass_filenames: false
         stages: [pre-commit]
