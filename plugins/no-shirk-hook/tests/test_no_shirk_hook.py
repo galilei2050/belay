@@ -150,7 +150,11 @@ def test_ready_to_triggers(text):
         # "ping me and I'll do it" — 2nd-person-future offer, not imperative
         "Менять-коммитить не стал — скажешь, оформлю коммит.",
         "Коммит не делал. Скажешь — закоммичу.",
+        # Imperative "скажи — <infinitive>?" ship-offer (real prod miss).
+        "Нужен отдельный PR в nisse — скажи, оформить?",
+        "Консьюмер лежит в рабочем дереве. Скажи — открыть PR?",
         "Done. Just say the word and I'll commit.",
+        "Tests are green. Let me know and I'll open the PR.",
     ],
 )
 def test_tell_me_if_triggers(text):

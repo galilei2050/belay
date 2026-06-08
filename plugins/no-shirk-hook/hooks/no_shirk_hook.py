@@ -85,8 +85,13 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
     "tell_me_if": [
         r"\bскажи(те)?\s+если\s+(нужно|надо|сделать|запустить)",
         r"\bскаж(ешь|ете)\b[\s,—–-]+(я\s+)?\w+(ю|у)\b",
+        # Imperative "скажи — <infinitive>?" offer, e.g. "скажи, оформить?" /
+        # "скажи — открыть PR?". The infinitive (-ть/-ти) is the tell; [^?]{0,40}
+        # keeps the match inside the final question, not spanning an earlier one.
+        r"\bскажи(те)?\b[\s,—–-]+\w+(ть|ти)\b[^?]{0,40}\?\s*$",
         r"\bдай(те)?\s+знать,?\s+если\b",
         r"\blet\s+me\s+know\s+if\s+(you('?d)?\s+like|i\s+should)\b",
+        r"\blet\s+me\s+know\s+and\s+i'?ll\b",
         r"\b(just\s+)?say\s+the\s+word\b",
     ],
     "when_youre_ready": [
