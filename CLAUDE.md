@@ -10,6 +10,12 @@ single-purpose Python hook (or skill/command/agent), self-contained, registered
 in `.claude-plugin/marketplace.json`. Philosophy: `docs/PHILOSOPHY.md`.
 Authoring detail: `docs/AUTHORING.md`.
 
+`rules/` is the other half: language-agnostic code-smell / agent-behavior rules
+(markdown, not a plugin — Claude Code can't ship rules via plugins). They're the
+soft context layer; the hook plugins are the hard enforcement layer for the same
+concerns (e.g. `no-shirk-hook` enforces `rules/finish-the-work.md`). Symlinked
+into `~/.claude/rules` to load machine-wide. See `rules/README.md`.
+
 ## Before any commit: run `make ci`
 
 `make ci` = `lint` + `typecheck` + `test`. **Run it locally before proposing

@@ -21,6 +21,21 @@ a climber when they fall. These plugins are the belay for the agent.
 
 More plugins will land here as the harness is decomposed.
 
+## Rules
+
+[`rules/`](rules) holds a language-agnostic set of code-smell and agent-behavior
+rules (the soft, context layer that complements the enforcement hooks above).
+Symlink them into the user-level dir so they load in every project on the
+machine:
+
+```
+ln -s ~/Projects/belay/rules ~/.claude/rules
+```
+
+Rules can't be shipped as a plugin (plugin components are skills/agents/hooks/
+MCP/LSP/monitors), so they live here as a plain versioned directory. See
+[rules/README.md](rules/README.md).
+
 ## Concept
 
 See [docs/PHILOSOPHY.md](docs/PHILOSOPHY.md).
