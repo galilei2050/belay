@@ -69,6 +69,30 @@ project file is authoritative — edit it freely without forking the plugin.
 To change rules: edit `.claude/acl.json`. To start over: delete the file and
 the next hook run re-installs the bundled default.
 
+**Version-gated migration.** When the plugin `version` bumps, the next hook run
+*additively* merges in any **wholly-missing command keys** from the bundled
+default (tracked via `.claude/.acl-synced-version`). It never rewrites an
+existing command's rules — a project override (e.g. `git` set to allow-all)
+always wins. If the bundled default has *new rules for a command the project
+already defines*, that's logged as `acl_drift` (not auto-applied, since it's
+indistinguishable from a deliberate override) — re-sync that command by hand or
+delete `.claude/acl.json` to take the fresh default wholesale.
+
+## Waiting / polling is NOT this plugin's job
+
+acl-hook does **not** police foreground waits (`until …; do sleep; done`,
+`sleep N && cmd`). That's a harness concern — the harness already blocks
+foreground `sleep` and steers the agent to `run_in_background` + `Monitor`.
+We removed the old `until_loop_with_sleep` / `chained_sleep` detectors because
+duplicating the harness made acl-hook a *second, contradicting voice*: the
+harness recommended an until-loop, acl-hook denied it, and the agent dead-ended
+bouncing between them. Per this plugin's scope ("no harness gates"), waiting is
+the harness's call. Loop *bodies* are still ACL'd for damage via the chained
+resolver (e.g. the `rm` in `rm -rf x && sleep 5` is caught independently).
+
+If you're ever tempted to re-add a "don't block the agent" rule here: don't.
+Same class of bug. It belongs in the harness, not the ACL.
+
 ## Anatomy of an ACL entry
 
 ```json

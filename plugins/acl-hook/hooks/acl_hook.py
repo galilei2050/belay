@@ -71,7 +71,9 @@ PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resol
 # Subsequent invocations read the project copy.
 
 _BUNDLED_ACL_PATH = Path(__file__).parent / "acl_default.json"
+_PLUGIN_JSON_PATH = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
 _PROJECT_ACL_RELPATH = Path(".claude") / "acl.json"
+_SYNC_STAMP_RELPATH = Path(".claude") / ".acl-synced-version"
 _ACL_CACHE: dict[str, Entry] | None = None
 
 
@@ -80,16 +82,79 @@ def project_acl_path() -> Path:
     return Path(PROJECT_DIR) / _PROJECT_ACL_RELPATH
 
 
+def _plugin_version() -> str:
+    return str(json.loads(_PLUGIN_JSON_PATH.read_text(encoding="utf-8"))["version"])
+
+
+def _rule_sig(rule: Rule) -> str:
+    """Opaque dedup key for a rule: matcher kind + value + decision."""
+    for kind in ("args", "args_contain", "args_glob", "fn"):
+        if kind in rule:
+            return f"{kind}\0{json.dumps(rule[kind], sort_keys=True)}\0{rule['decision']}"  # type: ignore[literal-required]
+    return f"\0\0{rule['decision']}"
+
+
+class MergeResult(NamedTuple):
+    """Outcome of merging bundled defaults into a project ACL."""
+
+    added: list[str]
+    drifted: list[str]
+
+
+def _merge_defaults(project: dict[str, Entry], bundled: dict[str, Entry]) -> MergeResult:
+    """Add command keys the project entirely lacks; report (don't touch) drifted entries.
+
+    Only wholly-missing command keys are added — a key the project already has is left alone,
+    because we can't tell a deliberate override (e.g. `git` set to allow-all) from a stale copy.
+    For existing keys whose bundled rule-set the project is missing, we return the names for an
+    informational log so drift is visible instead of silent; the user re-syncs those by hand.
+    Returns (added_keys, drifted_keys).
+    """
+    added: list[str] = []
+    drifted: list[str] = []
+    for name, b_entry in bundled.items():
+        if name not in project:
+            project[name] = b_entry
+            added.append(name)
+            continue
+        seen = {_rule_sig(r) for r in project[name].get("rules", [])}
+        if any(_rule_sig(r) not in seen for r in b_entry.get("rules", [])):
+            drifted.append(name)
+    return MergeResult(added, drifted)
+
+
+def _sync_project_acl(target: Path, loaded: dict[str, Entry], version: str) -> None:
+    """On a plugin version bump, add new default command keys to the project ACL.
+
+    Additive only — never rewrites an existing command's rules, so project overrides win.
+    """
+    stamp = target.parent / _SYNC_STAMP_RELPATH.name
+    if stamp.exists() and stamp.read_text(encoding="utf-8").strip() == version:
+        return
+    bundled: dict[str, Entry] = json.loads(_BUNDLED_ACL_PATH.read_text(encoding="utf-8"))
+    added, drifted = _merge_defaults(loaded, bundled)
+    log = logging.getLogger("acl_hook")
+    if added:
+        target.write_text(json.dumps(loaded, indent=2) + "\n", encoding="utf-8")
+        log.info("acl_migrated version=%s added_commands=%s", version, added)
+    if drifted:
+        log.info("acl_drift version=%s commands_missing_default_rules=%s (re-sync by hand)", version, drifted)
+    stamp.write_text(version, encoding="utf-8")
+
+
 def _load_acl() -> dict[str, Entry]:
-    """Read the project ACL, copying the bundled default on first access."""
+    """Read the project ACL, installing the bundled default and syncing new defaults on version bump."""
     global _ACL_CACHE  # noqa: PLW0603 — module-level cache for the parsed config
     if _ACL_CACHE is not None:
         return _ACL_CACHE
     target = project_acl_path()
+    version = _plugin_version()
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(_BUNDLED_ACL_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+        (target.parent / _SYNC_STAMP_RELPATH.name).write_text(version, encoding="utf-8")
     loaded: dict[str, Entry] = json.loads(target.read_text(encoding="utf-8"))
+    _sync_project_acl(target, loaded, version)
     _ACL_CACHE = loaded
     return loaded
 
@@ -356,35 +421,11 @@ def python_c_not_after_pipe(trees: Iterable[BashNode]) -> bool:
     return False
 
 
-def until_loop_with_sleep(trees: Iterable[BashNode]) -> bool:
-    """True iff a Bash invocation contains both `until` (reserved word) and a `sleep` command."""
-    for tree in trees:
-        has_until = False
-        has_sleep = False
-        for node, _parent, _pos in _walk_with_parent(tree):
-            if getattr(node, "kind", None) == "reservedword" and getattr(node, "word", "") == "until":
-                has_until = True
-            words = _command_words(node)
-            if words and Path(words[0]).name == "sleep":
-                has_sleep = True
-            if has_until and has_sleep:
-                return True
-    return False
-
-
-def chained_sleep(trees: Iterable[BashNode]) -> bool:
-    """True iff `sleep N` is chained with another command at the same nesting level."""
-    for tree in trees:
-        for node, parent, _pos in _walk_with_parent(tree):
-            words = _command_words(node)
-            if not words or Path(words[0]).name != "sleep":
-                continue
-            if parent is None:
-                continue
-            siblings = [c for c in _node_children(parent) if c is not node and getattr(c, "kind", None) == "command"]
-            if siblings:
-                return True
-    return False
+# Foreground-blocking waits (`until …; do sleep; done`, `sleep N && cmd`) are intentionally
+# NOT policed here. That's a harness concern — the harness already blocks foreground `sleep`
+# and steers the agent to run_in_background / Monitor. Duplicating it made acl-hook a second,
+# contradicting voice (harness said "use an until-loop", acl-hook denied it). Per this plugin's
+# scope ("no harness gates"), waiting is the harness's job; we only ACL for damage/leak.
 
 
 # ── Per-command ACL check (split into helpers to keep complexity bounded) ────
@@ -571,25 +612,9 @@ _PYTHON_C_REASON = (
     "`$(python -c …)` is a script masquerading as a command. Options: (1) pipe data in; "
     "(2) Write the script to a file and run it; (3) split into simple Bash builtins or `jq`."
 )
-_UNTIL_LOOP_REASON = (
-    "`until <cond>; do … sleep N … ; done` inline polling is denied — the loop blocks the "
-    "agent for the whole wait, can't be interrupted cleanly. Use instead: "
-    "`Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; or "
-    "`ScheduleWakeup(delaySeconds=…)` in a /loop session; or `/schedule` (CronCreate) for "
-    "recurring runs."
-)
-_CHAINED_SLEEP_REASON = (
-    "`sleep N` chained with another command is denied. Use one of: "
-    "(1) `Bash(..., run_in_background=true)` + `Monitor`/`BashOutput`; "
-    "(2) `ScheduleWakeup` in a /loop session; "
-    "(3) `/schedule` for a cron remote agent."
-)
-
 _AST_DETECTORS: list[tuple[Callable[[Iterable[BashNode]], bool], str, str]] = [
     (has_function_def, _FUNCTION_DEF_REASON, "function_def"),
     (python_c_not_after_pipe, _PYTHON_C_REASON, "python_c_standalone"),
-    (until_loop_with_sleep, _UNTIL_LOOP_REASON, "until_loop_with_sleep"),
-    (chained_sleep, _CHAINED_SLEEP_REASON, "chained_sleep"),
 ]
 
 
