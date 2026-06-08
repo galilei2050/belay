@@ -2,16 +2,27 @@ Every claim, proposal, and judgment must rest on data you actually checked — n
 
 **The word "наверное" / "probably" / "maybe" is banned for anything checkable.** So are "likely", "should be", "I think", "usually", "typically", "around N", "most X do Y" — every hedge is a verification you skipped. Replace the hedge with the checked fact.
 
+## Check the right source first
+
+Match the claim to the place that actually holds the truth, and look there before you speak:
+
+- **Database / data store** — query it before claiming counts, statuses, or relationships ("it has ~18 records" → run the query, state the number).
+- **Code** — grep/read before claiming a symbol exists, a flag is set, a branch runs, a field means what its name suggests.
+- **Files** — read the file before describing what it contains.
+- **Tests / build / CI** — run the command before claiming pass/fail (and a green proxy isn't proof the system works — see `finish-the-work.md`).
+- **External live resources** (third-party APIs, web pages, dashboards, another service's state) — fetch/query them before claiming what they currently hold. Their state drifts; your memory of it is stale.
+
+Internal or external, the rule is the same: a claim is backed by a tool call you just made, not by intuition.
+
 ## The forms
 
 **1. Hedging instead of checking.**
 ```
-# BAD — "there are probably a few unanswered reviews" · "the file likely has ~18 photos"
-#      "this should be the right field" · "usually this config lives in app/"
-# GOOD — go look, then: "2 unanswered reviews (queried)" · "18 photos (counted)"
-#      "dateStarted is the field (grep'd app/compass/data.py:176)"
+# BAD — "the table probably has a few thousand rows" · "this is likely the right field"
+#      "the config usually lives near the entrypoint" · "that path should already handle it"
+# GOOD — go look, then: "4,212 rows (queried)" · "the field is `started_at` (grep'd, <file>:NN)"
 ```
-The tell is any confident-sounding claim about a state you didn't inspect. Inspect it.
+The tell is any confident claim about a state you didn't inspect. Other tells: "if there are X…" (go count, then say how many), "the current X is weak/short/missing" stated without quoting it (quote it with a concrete number). Inspect, then speak.
 
 **2. Offloading the check onto the user.** "I can check if you want…", "let me know if you'd like me to verify…", "you may want to confirm…" — this pushes your job back onto the user. If you have the tool, run it and present the result. Never ask the user to validate something you could have checked.
 
