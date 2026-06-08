@@ -688,6 +688,16 @@
     ],
     "default": "allow"
   },
+  "uv": {
+    "rules": [
+      {
+        "args_glob": "publish*",
+        "decision": "deny",
+        "reason": "Never publish packages from the agent. Ask the user to run `uv publish`."
+      }
+    ],
+    "default": "allow"
+  },
   "cp": {
     "rules": [
       {
