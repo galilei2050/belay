@@ -213,8 +213,25 @@ def test_commit_offer_triggers(text):
 @pytest.mark.parametrize(
     "text",
     [
+        # Infinitive ship-offers with a trailing purpose clause — the verb is NOT the
+        # last word, so the end-anchored patterns alone miss these (real prod misses).
+        "Запушить и открыть PR в main, чтобы триггернуть деплой?",
+        "pre-commit прошёл. Запушить и открыть PR в main, чтобы триггернуть деплой?",
+        "Запушить и открыть PR в main?",
+        "Push and open a PR to trigger the deploy?",
+        "Open a PR against main to kick off the build?",
+    ],
+)
+def test_infinitive_ship_offer_triggers(text):
+    assert match_shirk(text) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "Закоммитил и запушил — всё на месте.",  # past tense
         "Не коммитил — по политике, закоммичу по запросу.",  # statement, mid-line verb
+        "Запушил изменения, открыл PR #42, деплой зелёный.",  # all done, no question
     ],
 )
 def test_commit_offer_does_not_overmatch(text):
