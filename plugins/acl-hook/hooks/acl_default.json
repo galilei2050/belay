@@ -664,8 +664,8 @@
       },
       {
         "fn": "all_paths_inside_project",
-        "decision": "ask",
-        "reason": "Confirm rm inside project tree"
+        "decision": "allow",
+        "reason": ""
       }
     ],
     "default": "deny",
@@ -1255,8 +1255,8 @@
     "rules": [
       {
         "fn": "all_paths_inside_project",
-        "decision": "ask",
-        "reason": "Confirm rmdir inside project tree"
+        "decision": "allow",
+        "reason": ""
       }
     ],
     "default": "deny",

@@ -12,12 +12,10 @@ import json
 import acl_hook
 import bashlex
 from acl_hook import (
-    chained_sleep,
     check_command,
     has_function_def,
     python_c_not_after_pipe,
     sed_inline_long,
-    until_loop_with_sleep,
 )
 
 
@@ -216,13 +214,14 @@ def test_python_script_invocation_is_allowed(logger):
 # PROJECT_DIR is pinned to a tmp dir by conftest with app/, tests/, etc. created.
 
 
-def test_rm_inside_project_app_is_asked(logger):
-    # Inside-project rm is `ask`, not `allow` — even own code deserves confirmation.
-    assert decide("rm app/old_module.py", logger)[0] == "ask"
+def test_rm_inside_project_app_is_allowed(logger):
+    # Inside-project rm is `allow`: in-tree files are git-tracked (recoverable) or
+    # gitignored (disposable). Confirming every one was pure friction.
+    assert decide("rm app/old_module.py", logger)[0] == "allow"
 
 
-def test_rm_tmp_under_project_is_asked(logger):
-    assert decide("rm tmp/scratch.json", logger)[0] == "ask"
+def test_rm_tmp_under_project_is_allowed(logger):
+    assert decide("rm tmp/scratch.json", logger)[0] == "allow"
 
 
 def test_rm_system_tmp_is_denied(logger):
@@ -239,8 +238,8 @@ def test_rm_relative_outside_project_is_denied(logger):
     assert decide("rm ../sibling/file", logger)[0] == "deny"
 
 
-def test_rmdir_inside_project_is_asked(logger):
-    assert decide("rmdir app/empty", logger)[0] == "ask"
+def test_rmdir_inside_project_is_allowed(logger):
+    assert decide("rmdir app/empty", logger)[0] == "allow"
 
 
 def test_rmdir_system_tmp_is_denied(logger):
@@ -316,14 +315,7 @@ def test_has_function_def_helper_plain_negative():
     assert has_function_def(parse("echo hello")) is False
 
 
-# ── chained sleep / until polling ─────────────────────────────────────────────
-
-
-def test_chained_sleep_is_denied_via_main(monkeypatch, capsys):
-    out = via_main(monkeypatch, capsys, "sleep 90 && python3 foo.py")
-    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
-    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-    assert any(tok in reason for tok in ["ScheduleWakeup", "run_in_background", "schedule"])
+# ── waiting / polling is NOT policed here (harness owns foreground-sleep blocking) ──
 
 
 def test_sleep_alone_is_allowed_via_main(monkeypatch, capsys):
@@ -331,52 +323,21 @@ def test_sleep_alone_is_allowed_via_main(monkeypatch, capsys):
     assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
-def test_until_loop_with_sleep_is_denied_via_main(monkeypatch, capsys):
+def test_chained_sleep_is_allowed_via_main(monkeypatch, capsys):
+    # acl-hook no longer denies foreground polling — that's the harness's job. We must not be
+    # a second, contradicting voice (the harness recommends until-loop+Monitor; we used to deny it).
+    out = via_main(monkeypatch, capsys, "sleep 90 && python3 foo.py")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_until_loop_with_sleep_is_allowed_via_main(monkeypatch, capsys):
     out = via_main(monkeypatch, capsys, "until curl -s http://localhost; do sleep 2; done")
-    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "until" in out["hookSpecificOutput"]["permissionDecisionReason"].lower()
-
-
-def test_for_loop_with_sibling_sleep_is_denied_via_main(monkeypatch, capsys):
-    out = via_main(monkeypatch, capsys, "for i in 1 2 3; do sleep 30; check; done")
-    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
 def test_while_loop_sleep_only_body_is_allowed_via_main(monkeypatch, capsys):
     out = via_main(monkeypatch, capsys, "while true; do sleep 2; done")
     assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
-
-
-def test_chained_sleep_helper_and():
-    assert chained_sleep(parse("sleep 90 && python3 foo.py")) is True
-
-
-def test_chained_sleep_helper_semicolon():
-    assert chained_sleep(parse("sleep 5; echo done")) is True
-
-
-def test_chained_sleep_helper_pipe():
-    assert chained_sleep(parse("sleep 2 | cat")) is True
-
-
-def test_chained_sleep_helper_standalone():
-    assert chained_sleep(parse("sleep 5")) is False
-
-
-def test_until_loop_helper_curl():
-    assert until_loop_with_sleep(parse("until curl -s http://x; do sleep 2; done")) is True
-
-
-def test_until_loop_helper_while_negative():
-    assert until_loop_with_sleep(parse("while true; do sleep 2; done")) is False
-
-
-def test_until_loop_helper_quoted_string_negative():
-    assert until_loop_with_sleep(parse('echo "until 5pm sleep well"')) is False
-
-
-def test_until_loop_helper_until_no_sleep_negative():
-    assert until_loop_with_sleep(parse("until [ -f /tmp/x ]; do echo waiting; done")) is False
 
 
 # ── sed -i inline length cap ─────────────────────────────────────────────────
@@ -529,3 +490,42 @@ def test_project_acl_override_wins(fix_project_dir, logger, monkeypatch):
     monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
     decision, _ = decide("git push --force", logger)
     assert decision == "allow"  # bundled default would have denied this
+
+
+# ── version-gated additive migration of stale project ACLs ───────────────────
+
+
+def test_migration_adds_missing_command_keys(fix_project_dir, monkeypatch):
+    acl_dir = fix_project_dir / ".claude"
+    acl_dir.mkdir(exist_ok=True)
+    # Stale config: predates everything except `git`. No sync stamp → looks legacy.
+    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "deny"}}), encoding="utf-8")
+    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
+    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
+    table = acl_hook.acl()
+    assert "git" in table  # untouched
+    assert "ls" in table  # a bundled key the stale file lacked, now present
+    written = json.loads((acl_dir / "acl.json").read_text(encoding="utf-8"))
+    assert "ls" in written  # persisted to disk
+    assert (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).read_text(encoding="utf-8") == "9.9.9"
+
+
+def test_migration_does_not_clobber_overrides(fix_project_dir, logger, monkeypatch):
+    acl_dir = fix_project_dir / ".claude"
+    acl_dir.mkdir(exist_ok=True)
+    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "allow"}}), encoding="utf-8")
+    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
+    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
+    decision, _ = decide("git push --force", logger)
+    assert decision == "allow"  # the allow-all override survives migration
+
+
+def test_migration_is_skipped_when_version_matches(fix_project_dir, monkeypatch):
+    acl_dir = fix_project_dir / ".claude"
+    acl_dir.mkdir(exist_ok=True)
+    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "deny"}}), encoding="utf-8")
+    (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).write_text("9.9.9", encoding="utf-8")
+    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
+    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
+    table = acl_hook.acl()
+    assert "ls" not in table  # already-synced version → no merge, stale file left as-is

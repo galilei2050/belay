@@ -107,6 +107,13 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
         r"\b(за)?пуш(ить|у)\s*\??\s*$",
         r"\b(commit|push)(\s+it)?\s*\?\s*$",
         r"\bshall\s+i\s+(commit|push)\b",
+        # Infinitive "do the next git step" offers that carry a trailing clause —
+        # e.g. "Запушить и открыть PR, чтобы триггернуть деплой?" The patterns above
+        # only fire when the verb is the LAST word; these catch the offer + tail clause.
+        # [^?]{0,80} keeps the match inside the final question, not spanning earlier ones.
+        r"\b(за)?пуш(ить|у)\b[^?]{0,80}\?\s*$",
+        r"\bоткры(ть|ваю)\s+(pr|mr|пул[\s-]?реквест|пиар)\b[^?]{0,80}\?\s*$",
+        r"\b(open|create|raise)(\s+a)?\s+(pr|mr|pull[\s-]?request|merge[\s-]?request)\b[^?]{0,80}\?\s*$",
     ],
     "out_of_scope": [
         r"\bвне\s+(рамок|скоупа)\b",

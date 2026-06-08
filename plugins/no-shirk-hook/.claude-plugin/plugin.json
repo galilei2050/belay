@@ -1,6 +1,6 @@
 {
   "name": "no-shirk-hook",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Stop hook that blocks the agent from ending a turn with an ask-instead-of-do question.",
   "author": {
     "name": "galilei2050"
