@@ -23,7 +23,7 @@ To keep the token cost down, the **code-specific** rules carry `paths:` frontmat
 | ⭐ [root-cause-not-symptom.md](root-cause-not-symptom.md) | Patching the symptom (special-case, catch-all, retry, test-weakening, wrong-layer) instead of fixing the cause |
 | ⭐ [no-defensive-defaults.md](no-defensive-defaults.md) | Guarding impossible states, swallowing exceptions, "just in case" optionals, silent fallbacks |
 | ⭐ [comments-why-not-what.md](comments-why-not-what.md) | Comments that restate code, narrate changes, or add ceremony — instead of explaining why |
-| [reuse-before-reinvent.md](reuse-before-reinvent.md) | Duplicating, reinventing, or creating a parallel file when one already exists |
+| [reuse-before-reinvent.md](reuse-before-reinvent.md) | Duplicating, reinventing, creating a parallel file, or hand-rolling what a mature library already does |
 | [no-speculative-generality.md](no-speculative-generality.md) | Adding parameters, abstractions, and flags for a future that hasn't arrived |
 | [concrete-types.md](concrete-types.md) | Using `Any`/untyped maps at boundaries or silencing the type checker |
 | [honest-tests.md](honest-tests.md) | Tests that can't fail, unfaithful mocks, or weakening the oracle to go green |

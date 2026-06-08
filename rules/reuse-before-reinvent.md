@@ -33,13 +33,22 @@ If you're about to paste a block you just wrote, extract it instead. Two copies 
 ```
 Prefer editing an existing file to creating a new one. Only create a file when the concern genuinely doesn't belong in any existing one.
 
+**4. Hand-rolling what a mature library already does.** Same reflex, one scope up: before writing a non-trivial chunk from scratch — especially parsing or serializing a structured/recursive format (markdown, HTML, CSV, dates, URLs, semver) — check whether a well-known, maintained package already solves it. A `re.sub` chain over a recursive grammar is the classic tell: it can't hold nesting and accretes a "safety net" special-case for every input that breaks it.
+```
+# BAD — a 200-line re.sub() pipeline converting markdown → Telegram MarkdownV2,
+#       each regex patched after the last broke on italics/links/nesting
+# GOOD — search PyPI/npm first; telegramify-markdown does it with a real parser
+```
+Rule: adding a dependency is the user's call, not yours — surface the mature option with its tradeoff (a new dep) and let them decide. Don't silently add it, and don't silently reinvent it either.
+
 ## Tells
 
 - A new file whose name is a near-synonym of an existing one (`utils2`, `helpers_new`, `*_v2`).
 - A block of code that is a copy of another block with one or two literals changed.
 - Three or more call sites with the same guard/transform pasted in — extract to one place (this is also how wrong-layer fixes sneak in; see `root-cause-not-symptom.md`).
 - Two type definitions with slightly different names for the same shape.
+- A hand-written parser/serializer for a standard format (markdown, HTML, CSV, ISO dates, URLs) — a maintained library almost certainly does it more correctly; regex over a recursive grammar is the loudest version.
 
 ## Why this rule exists
 
-Agents work from a local context window and don't naturally survey the repo before writing, so they reproduce logic that already exists: agent-authored PRs show ~11% higher duplicate-line density (p<0.01) than human PRs, and "duplicate entities" is among the top measured smells in LLM code. Duplication multiplies every future change (fix the bug in all four copies) and reinvention buries the canonical implementation under near-misses. The capability to reuse is there — the discovery step is what's skipped. Make discovery a reflex.
+Agents work from a local context window and don't naturally survey the repo before writing, so they reproduce logic that already exists: agent-authored PRs show ~11% higher duplicate-line density (p<0.01) than human PRs, and "duplicate entities" is among the top measured smells in LLM code. Duplication multiplies every future change (fix the bug in all four copies) and reinvention buries the canonical implementation under near-misses. The same reflex applies one scope up: hand-rolling a battle-tested library reintroduces bugs the ecosystem already fixed — fragile format parsing most of all. The capability to reuse is there — the discovery step is what's skipped. Make discovery a reflex.
