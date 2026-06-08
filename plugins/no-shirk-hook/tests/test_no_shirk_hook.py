@@ -78,9 +78,18 @@ def test_ask_to_run_triggers(text):
         "Хотите, я сделаю это сейчас?",
         "Хочешь, запущу проверку?",
         "Если хочешь, запущу typecheck.",
+        # real-world miss: em-dash + an arbitrary 1st-person verb (проверю/посмотрю)
+        "Если хочешь — проверю по логам, сколько отсеялось по reason=marketing_cooldown.",
+        # real-world miss: "хочешь/хотите, <arbitrary 1st-person verb>" either/or offer
+        "Хочешь, переключу источник на постоянный editable путь, или оставить как есть?",
+        "Хотите, я перенесу зависимость в pyproject, или оставим uv pip install -e?",
         "Want me to fix the second file too?",
         "Would you like me to continue with the refactor?",
         "Do you want me to add tests?",
+        "If you want, I'll check the logs for the cooldown reason.",
+        "If you'd like, I'll dig into the second week's drop.",
+        # real-world miss: either/or "do work" offer framed as a question
+        "Want me to switch the source to the persistent editable path instead, or keep it?",
     ],
 )
 def test_want_me_to_triggers(text):
@@ -295,6 +304,16 @@ def test_shirk_phrase_in_middle_does_not_trigger():
     text = (
         "Раньше я думал — запустить ли тесты прямо сейчас. Решил запустить и "
         "запустил.\n\nИтог: 14/14 зелёные, линт чистый, typecheck без ошибок."
+    )
+    verdict, _, _ = classify(text, user_text="")
+    assert verdict == "ok"
+
+
+def test_if_you_want_mid_text_does_not_trigger():
+    # "если хочешь" buried mid-explanation, with a final report paragraph, is fine.
+    text = (
+        "Если хочешь понять причину падения — смотри на 30-дневный кулдаун.\n\n"
+        "Итог: 21 → 12 SMS, среднее по полным неделям ~16-17."
     )
     verdict, _, _ = classify(text, user_text="")
     assert verdict == "ok"
