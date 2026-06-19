@@ -334,6 +334,31 @@ def all_paths_inside_project(args: list[str]) -> bool:
     return has_path
 
 
+# The agent's scratch dir: the ONE place `rm` is allowed. `.claude/` is already agent-owned, so
+# `.claude/tmp/` is namespaced (won't collide with a project's own top-level `tmp/`).
+SCRATCH_SUBDIR = ".claude/tmp"
+
+
+def all_paths_under_scratch(args: list[str]) -> bool:
+    """True iff every non-flag path arg resolves inside the scratch dir (`.claude/tmp/`).
+
+    Existence is NOT required — `rm -f .claude/tmp/maybe-gone` is fine. `resolve()` collapses any
+    `..` traversal, so `rm .claude/tmp/../../etc/x` lands outside scratch and returns False (deny).
+    """
+    project_root = Path(PROJECT_DIR).resolve()
+    scratch_root = (project_root / SCRATCH_SUBDIR).resolve()
+    has_path = False
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        has_path = True
+        candidate = Path(arg) if Path(arg).is_absolute() else project_root / arg
+        real = candidate.resolve()
+        if real != scratch_root and scratch_root not in real.parents:
+            return False
+    return has_path
+
+
 def sed_inline_long(args: list[str]) -> bool:
     """True iff `sed -i` is passed a single substitution expression longer than the limit."""
     if "-i" not in args and not any(a.startswith("-i") for a in args):
@@ -351,6 +376,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "sed_inline_long": sed_inline_long,
     "rm_recursive": rm_recursive,
     "all_paths_inside_project": all_paths_inside_project,
+    "all_paths_under_scratch": all_paths_under_scratch,
 }
 
 

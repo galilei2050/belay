@@ -32,7 +32,7 @@ Classify every new command (and every new flag combo) into one of three buckets:
   agent context. The reason is shown to the agent; it must redirect, not
   prompt the human. Examples: `git push --force`, `git reset --hard`,
   `git rebase`, `git merge` (merge happens via PR review),
-  `gh pr merge` (user-only), `rm` outside the project tree, `sudo`,
+  `gh pr merge` (user-only), `rm` outside the scratch dir (see below), `sudo`,
   `eval`, `bash <file>` (but `bash -c '<literal>'` is recursed — see below).
 
 When in doubt between `ask` and `deny`, pick `ask`. When in doubt between
@@ -110,6 +110,29 @@ statically vetted, so they keep the deny), it re-runs the full pipeline on the
 script as if typed directly. So `bash -c 'git status'` → allow, `bash -c 'rm -rf
 /etc'` → deny. This keeps smuggling blocked while letting the bounded
 `timeout … bash -c '…'` form (and simple literal scripts) through.
+
+## `rm`: allowed only in the scratch dir, never `ask`
+
+`rm` has exactly two outcomes — `allow` inside the scratch dir `.claude/tmp/`,
+`deny` everywhere else — and **never `ask`**. An `ask` on `rm` is the worst
+shape: it interrupts the human for the agent's own cleanup. So the agent gets a
+sanctioned scratch area where rm / `rm -rf` are free (no prompt), and is denied
+everywhere else with a message that says exactly that.
+
+- `all_paths_under_scratch` (in `acl_hook.py`) is the allow predicate: every
+  non-flag path must resolve under `<project>/.claude/tmp/`. `resolve()`
+  collapses `..`, so a traversal out of scratch falls through to deny.
+- Real in-tree source files are **not** an allow anymore (they used to be). The
+  deny message tells the agent: scratch goes in `.claude/tmp/`; a tracked file
+  that should be removed is left for the user to delete, so the removal stays
+  visible in review instead of vanishing under a silent `rm`.
+- `rmdir` is untouched — it only removes *empty* dirs (no data loss), so it
+  keeps the `all_paths_inside_project` allow.
+
+Why a scratch dir and not `/tmp`: `.claude/tmp/` is in-tree, so the Write tool
+creates files there with no edit prompt; `/tmp` would still prompt on Write.
+`.claude/` is already agent-owned, so the path won't collide with a project's
+own top-level `tmp/`.
 
 ## Anatomy of an ACL entry
 

@@ -222,20 +222,33 @@ def test_python_script_invocation_is_allowed(logger):
 # PROJECT_DIR is pinned to a tmp dir by conftest with app/, tests/, etc. created.
 
 
-def test_rm_inside_project_app_is_allowed(logger):
-    # Inside-project rm is `allow`: in-tree files are git-tracked (recoverable) or
-    # gitignored (disposable). Confirming every one was pure friction.
-    assert decide("rm app/old_module.py", logger)[0] == "allow"
+def test_rm_in_scratch_dir_is_allowed(logger):
+    # The scratch dir `.claude/tmp/` is the ONE place rm is allowed — the agent's throwaways.
+    assert decide("rm .claude/tmp/_cleanup.py", logger)[0] == "allow"
 
 
-def test_rm_tmp_under_project_is_allowed(logger):
-    assert decide("rm tmp/scratch.json", logger)[0] == "allow"
+def test_rm_rf_in_scratch_dir_is_allowed(logger):
+    assert decide("rm -rf .claude/tmp/build", logger)[0] == "allow"
+
+
+def test_rm_inside_project_source_is_denied(logger):
+    # Real in-tree files are no longer a silent allow: rm them and the message points to scratch.
+    decision, reason = decide("rm app/old_module.py", logger)
+    assert decision == "deny"
+    assert ".claude/tmp" in reason
+
+
+def test_rm_tmp_under_project_is_denied(logger):
+    # A project's own top-level tmp/ is NOT the scratch dir.
+    assert decide("rm tmp/scratch.json", logger)[0] == "deny"
+
+
+def test_rm_scratch_traversal_escape_is_denied(logger):
+    assert decide("rm .claude/tmp/../../app/main.py", logger)[0] == "deny"
 
 
 def test_rm_system_tmp_is_denied(logger):
-    decision, reason = decide("rm /tmp/foo", logger)
-    assert decision == "deny"
-    assert "project tree" in reason.lower()
+    assert decide("rm /tmp/foo", logger)[0] == "deny"
 
 
 def test_rm_home_path_is_denied(logger):

@@ -663,13 +663,13 @@
         "reason": "Env files blocked"
       },
       {
-        "fn": "all_paths_inside_project",
+        "fn": "all_paths_under_scratch",
         "decision": "allow",
         "reason": ""
       }
     ],
     "default": "deny",
-    "reason": "rm only allowed inside the project tree — system paths off-limits"
+    "reason": "rm is allowed ONLY under the scratch dir `.claude/tmp/`. Put every throwaway there (temp scripts, scratch output, junk) and rm / rm -rf it freely — no prompt. `mkdir -p .claude/tmp` first if needed; create files there with Write (it's in-tree, no edit prompt). Do NOT rm files elsewhere in the tree: a tracked file you think should go, leave in place and tell the user to delete it, so the removal stays visible in review rather than vanishing silently."
   },
   "nc": {
     "rules": [],
