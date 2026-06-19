@@ -33,7 +33,7 @@ Classify every new command (and every new flag combo) into one of three buckets:
   prompt the human. Examples: `git push --force`, `git reset --hard`,
   `git rebase`, `git merge` (merge happens via PR review),
   `gh pr merge` (user-only), `rm` outside the project tree, `sudo`,
-  `eval`, `bash -c`.
+  `eval`, `bash <file>` (but `bash -c '<literal>'` is recursed — see below).
 
 When in doubt between `ask` and `deny`, pick `ask`. When in doubt between
 `allow` and `ask`, pick `ask`. **Friction at the right level is the product;
@@ -78,20 +78,38 @@ already defines*, that's logged as `acl_drift` (not auto-applied, since it's
 indistinguishable from a deliberate override) — re-sync that command by hand or
 delete `.claude/acl.json` to take the fresh default wholesale.
 
-## Waiting / polling is NOT this plugin's job
+## Waiting / polling: never DENIED, silently BOUNDED
 
-acl-hook does **not** police foreground waits (`until …; do sleep; done`,
-`sleep N && cmd`). That's a harness concern — the harness already blocks
-foreground `sleep` and steers the agent to `run_in_background` + `Monitor`.
-We removed the old `until_loop_with_sleep` / `chained_sleep` detectors because
-duplicating the harness made acl-hook a *second, contradicting voice*: the
-harness recommended an until-loop, acl-hook denied it, and the agent dead-ended
-bouncing between them. Per this plugin's scope ("no harness gates"), waiting is
-the harness's call. Loop *bodies* are still ACL'd for damage via the chained
-resolver (e.g. the `rm` in `rm -rf x && sleep 5` is caught independently).
+We do **not deny or ask** on a wait loop — that's the bug that dropped the old
+`until_loop_with_sleep` / `chained_sleep` detectors: denying made acl-hook a
+*second, contradicting voice* (the harness recommends an until-loop, acl-hook
+denied it, the agent dead-ended bouncing between them).
 
-If you're ever tempted to re-add a "don't block the agent" rule here: don't.
-Same class of bug. It belongs in the harness, not the ACL.
+But an *unbounded* poll loop is a real leak — `until COND; do sleep N; done`
+whose condition never trips (failed deploy, wrong target) runs forever, and a
+background loop has no harness timeout to stop it. A leak IS this plugin's scope.
+So `wait_loop_unbounded` detects a loop body containing `sleep`, and `main()`
+**transparently rewrites** the command to `timeout 600 bash -c '…'` via
+`updatedInput` (`WAIT_TIMEOUT_SECONDS`). This is **not a gate**: `permissionDecision`
+stays `allow`, no prompt fires, the agent never sees it, and it doesn't contradict
+the harness — the loop still runs, just with an upper bound. `updatedInput` does
+not re-trigger the hook, so the emitted `bash -c` is never re-evaluated against
+the `bash` deny. Already-bounded loops (`timeout … bash -c '…'`) hide their body
+inside a quoted word, so the detector skips them — the wrap is idempotent.
+
+The line to hold: **bound, don't block.** Never turn this back into a `deny`/`ask`
+on waiting — that's the contradicting-voice bug. A silent `timeout` wrap is the
+only acceptable shape.
+
+## `bash -c '<literal>'` is recursed, not blanket-denied
+
+`bash`/`sh` stay `deny` by default, but `check_command` first calls
+`_extract_shell_c`: for the exact `<shell> -c '<script>'` shape with a
+**fully-literal** script (no `$…`/backtick — those are non-literal and can't be
+statically vetted, so they keep the deny), it re-runs the full pipeline on the
+script as if typed directly. So `bash -c 'git status'` → allow, `bash -c 'rm -rf
+/etc'` → deny. This keeps smuggling blocked while letting the bounded
+`timeout … bash -c '…'` form (and simple literal scripts) through.
 
 ## Anatomy of an ACL entry
 
