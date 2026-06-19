@@ -462,6 +462,21 @@ def git_push_to_protected_branch(args: list[str]) -> bool:
     return False
 
 
+def git_branch_force_delete(args: list[str]) -> bool:
+    """True iff `git branch` force-deletes — `-D`, or a `-d`/`--delete` combined with `-f`/`--force`.
+
+    Force-delete drops a branch even with unmerged commits (work loss), so it's the one branch-delete
+    worth confirming. A plain `-d`/`--delete` is safe — git refuses to delete an unmerged branch — so
+    it falls through to the `branch` allow.
+    """
+    if not args or args[0] != "branch":
+        return False
+    flags = set(args[1:])
+    if "-D" in flags:
+        return True
+    return bool(flags & {"-d", "--delete"}) and bool(flags & {"-f", "--force"})
+
+
 CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
@@ -470,6 +485,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "all_paths_under_scratch": all_paths_under_scratch,
     "git_config_read": git_config_read,
     "git_push_to_protected_branch": git_push_to_protected_branch,
+    "git_branch_force_delete": git_branch_force_delete,
 }
 
 

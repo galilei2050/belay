@@ -171,6 +171,25 @@ def test_git_push_bare_no_git_dir_is_allowed(logger):
     assert decide("git push", logger)[0] == "allow"
 
 
+def test_git_branch_safe_delete_is_allowed(logger):
+    # `-d` refuses to delete unmerged branches, so it can't lose work — no prompt.
+    assert decide("git branch -d feat/x", logger)[0] == "allow"
+    assert decide("git branch --delete feat/x", logger)[0] == "allow"
+
+
+def test_git_branch_force_delete_is_ask(logger):
+    assert decide("git branch -D feat/x", logger)[0] == "ask"
+
+
+def test_git_branch_long_force_delete_is_ask(logger):
+    assert decide("git branch --delete --force feat/x", logger)[0] == "ask"
+    assert decide("git branch -d -f feat/x", logger)[0] == "ask"
+
+
+def test_git_branch_create_is_allowed(logger):
+    assert decide("git branch feat/x", logger)[0] == "allow"
+
+
 # ── shell escape hatches ──────────────────────────────────────────────────────
 
 
