@@ -223,19 +223,19 @@ def test_python_script_invocation_is_allowed(logger):
 
 
 def test_rm_in_scratch_dir_is_allowed(logger):
-    # The scratch dir `.claude/tmp/` is the ONE place rm is allowed — the agent's throwaways.
-    assert decide("rm .claude/tmp/_cleanup.py", logger)[0] == "allow"
+    # The scratch dir `.scratch/` is the ONE place rm is allowed — the agent's throwaways.
+    assert decide("rm .scratch/_cleanup.py", logger)[0] == "allow"
 
 
 def test_rm_rf_in_scratch_dir_is_allowed(logger):
-    assert decide("rm -rf .claude/tmp/build", logger)[0] == "allow"
+    assert decide("rm -rf .scratch/build", logger)[0] == "allow"
 
 
 def test_rm_inside_project_source_is_denied(logger):
     # Real in-tree files are no longer a silent allow: rm them and the message points to scratch.
     decision, reason = decide("rm app/old_module.py", logger)
     assert decision == "deny"
-    assert ".claude/tmp" in reason
+    assert ".scratch" in reason
 
 
 def test_rm_tmp_under_project_is_denied(logger):
@@ -244,7 +244,7 @@ def test_rm_tmp_under_project_is_denied(logger):
 
 
 def test_rm_scratch_traversal_escape_is_denied(logger):
-    assert decide("rm .claude/tmp/../../app/main.py", logger)[0] == "deny"
+    assert decide("rm .scratch/../app/main.py", logger)[0] == "deny"
 
 
 def test_rm_system_tmp_is_denied(logger):
@@ -265,6 +265,22 @@ def test_rmdir_inside_project_is_allowed(logger):
 
 def test_rmdir_system_tmp_is_denied(logger):
     assert decide("rmdir /tmp/foo", logger)[0] == "deny"
+
+
+def test_ensure_scratch_dir_creates_dir_and_gitignores(fix_project_dir):
+    acl_hook.ensure_scratch_dir()
+    assert (fix_project_dir / ".scratch").is_dir()
+    assert ".scratch/" in (fix_project_dir / ".gitignore").read_text().splitlines()
+
+
+def test_ensure_scratch_dir_is_idempotent(fix_project_dir):
+    gitignore = fix_project_dir / ".gitignore"
+    gitignore.write_text("__pycache__/\n")
+    acl_hook.ensure_scratch_dir()
+    acl_hook.ensure_scratch_dir()
+    lines = gitignore.read_text().splitlines()
+    assert lines.count(".scratch/") == 1
+    assert "__pycache__/" in lines
 
 
 # ── heredoc is uniformly denied ───────────────────────────────────────────────

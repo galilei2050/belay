@@ -11,5 +11,5 @@ venv/
 .idea/
 .vscode/
 .claude/settings.local.json
-.claude/tmp/
+.scratch/
 *.egg-info/

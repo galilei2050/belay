@@ -669,7 +669,7 @@
       }
     ],
     "default": "deny",
-    "reason": "rm is allowed ONLY under the scratch dir `.claude/tmp/`. Put every throwaway there (temp scripts, scratch output, junk) and rm / rm -rf it freely — no prompt. `mkdir -p .claude/tmp` first if needed; create files there with Write (it's in-tree, no edit prompt). Do NOT rm files elsewhere in the tree: a tracked file you think should go, leave in place and tell the user to delete it, so the removal stays visible in review rather than vanishing silently."
+    "reason": "rm is allowed ONLY under the scratch dir `.scratch/` at the repo root (the hook creates it and gitignores it for you). Put every throwaway there (temp scripts, scratch output, junk) and rm / rm -rf it freely — no prompt. Create files there with Write (it's in-tree and not under `.claude/`, so no edit prompt). Do NOT rm files elsewhere in the tree: a tracked file you think should go, leave in place and tell the user to delete it, so the removal stays visible in review rather than vanishing silently."
   },
   "nc": {
     "rules": [],

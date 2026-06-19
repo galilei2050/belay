@@ -12,6 +12,12 @@ belong in separate plugins.
 If you find yourself adding logic that needs to read git history, parse a plan
 file, hit the network, or call out to a test runner — stop. Wrong plugin.
 
+**The one allowed side effect: bootstrapping project state the rules depend on.**
+The hook installs `.claude/acl.json` on first run, and `ensure_scratch_dir()`
+creates `.scratch/` + adds it to `.gitignore` (so the `rm`-in-scratch rule has a
+place to point). These are setup for the decision, not other concerns. Don't add
+side effects beyond preparing what the allow/ask/deny decision itself needs.
+
 ## The decision rule
 
 Classify every new command (and every new flag combo) into one of three buckets:
@@ -120,19 +126,34 @@ sanctioned scratch area where rm / `rm -rf` are free (no prompt), and is denied
 everywhere else with a message that says exactly that.
 
 - `all_paths_under_scratch` (in `acl_hook.py`) is the allow predicate: every
-  non-flag path must resolve under `<project>/.claude/tmp/`. `resolve()`
-  collapses `..`, so a traversal out of scratch falls through to deny.
+  non-flag path must resolve under `<project>/.scratch/`. `resolve()` collapses
+  `..`, so a traversal out of scratch falls through to deny.
 - Real in-tree source files are **not** an allow anymore (they used to be). The
-  deny message tells the agent: scratch goes in `.claude/tmp/`; a tracked file
+  deny message tells the agent: scratch goes in `.scratch/`; a tracked file
   that should be removed is left for the user to delete, so the removal stays
   visible in review instead of vanishing under a silent `rm`.
 - `rmdir` is untouched — it only removes *empty* dirs (no data loss), so it
   keeps the `all_paths_inside_project` allow.
 
-Why a scratch dir and not `/tmp`: `.claude/tmp/` is in-tree, so the Write tool
-creates files there with no edit prompt; `/tmp` would still prompt on Write.
-`.claude/` is already agent-owned, so the path won't collide with a project's
-own top-level `tmp/`.
+**Why `.scratch/` and not `/tmp` or `.claude/tmp/`.** Three constraints, one
+location satisfies all:
+- *In-tree* → the Write tool creates files there with no edit prompt; `/tmp` is
+  out-of-tree and prompts on every Write.
+- *Not under `.claude/`* → the harness guards edits to the agent's own config
+  dir and prompts for them, so `.claude/tmp/` defeated the no-prompt goal.
+- *Hidden, uncommon name* → won't collide with a project's own `tmp/`/`build/`.
+
+**Why it's universal across repos** (the design requirement): the predicate
+resolves `<PROJECT_DIR>/.scratch/` from the per-invocation `PROJECT_DIR`, so
+"rm allowed in `.scratch/`" automatically means *this* repo's scratch in every
+repo — zero per-repo config. And the plugin **owns the dir it polices**:
+`ensure_scratch_dir()` runs in `main()` on every Bash invocation and idempotently
+(a) `mkdir`s `.scratch/` (recreating it if a prior `rm -rf` removed it) and
+(b) appends `.scratch/` to *this repo's* `.gitignore` if absent. So the agent
+never `mkdir`s it, never edits `.gitignore`, and is never prompted for either —
+it just writes scratch files and rm's them. This is a deliberate, documented
+side effect (see Scope below), the same shape as the first-run `.claude/acl.json`
+bootstrap: the hook sets up the project state its rules depend on.
 
 ## Anatomy of an ACL entry
 

@@ -334,13 +334,14 @@ def all_paths_inside_project(args: list[str]) -> bool:
     return has_path
 
 
-# The agent's scratch dir: the ONE place `rm` is allowed. `.claude/` is already agent-owned, so
-# `.claude/tmp/` is namespaced (won't collide with a project's own top-level `tmp/`).
-SCRATCH_SUBDIR = ".claude/tmp"
+# The agent's scratch dir: the ONE place `rm` is allowed. A root-level hidden dir (NOT under
+# `.claude/`, whose edits the harness prompts for — that's why scratch can't live there) that
+# won't collide with a project's own top-level `tmp/`.
+SCRATCH_SUBDIR = ".scratch"
 
 
 def all_paths_under_scratch(args: list[str]) -> bool:
-    """True iff every non-flag path arg resolves inside the scratch dir (`.claude/tmp/`).
+    """True iff every non-flag path arg resolves inside the scratch dir (`.scratch/`).
 
     Existence is NOT required — `rm -f .claude/tmp/maybe-gone` is fine. `resolve()` collapses any
     `..` traversal, so `rm .claude/tmp/../../etc/x` lands outside scratch and returns False (deny).
@@ -357,6 +358,26 @@ def all_paths_under_scratch(args: list[str]) -> bool:
         if real != scratch_root and scratch_root not in real.parents:
             return False
     return has_path
+
+
+def ensure_scratch_dir() -> None:
+    """Guarantee `<project>/.scratch/` exists and is gitignored — the one dir where `rm` is allowed.
+
+    The hook owns the scratch area it polices, so the agent never has to `mkdir` it or hand-edit
+    `.gitignore` (and never gets prompted for either). Idempotent and cheap: `mkdir(exist_ok)` plus
+    a one-line append done only when the entry is absent — so it's safe on every invocation and
+    recreates the dir if a prior `rm -rf .scratch` removed it.
+    """
+    project_root = Path(PROJECT_DIR)
+    (project_root / SCRATCH_SUBDIR).mkdir(parents=True, exist_ok=True)
+    gitignore = project_root / ".gitignore"
+    entry = f"{SCRATCH_SUBDIR}/"
+    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if entry in existing.splitlines():
+        return
+    prefix = "" if existing == "" or existing.endswith("\n") else "\n"
+    with gitignore.open("a", encoding="utf-8") as fh:
+        fh.write(f"{prefix}{entry}\n")
 
 
 def sed_inline_long(args: list[str]) -> bool:
@@ -821,6 +842,7 @@ def main() -> None:
     command = tool_input.get("command", "")
     if not command:
         return
+    ensure_scratch_dir()
     agent_type = data.get("agent_type") if data.get("agent_id") is not None else "main"
     logger = setup_logging()
     decision, reason = _decide(command, logger, agent_type)
