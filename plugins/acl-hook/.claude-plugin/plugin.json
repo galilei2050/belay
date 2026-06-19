@@ -1,6 +1,6 @@
 {
   "name": "acl-hook",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "description": "PreToolUse Bash gate enforcing a project ACL with pattern-based allow/ask/deny rules.",
   "author": {
     "name": "galilei2050"

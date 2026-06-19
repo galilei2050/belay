@@ -52,6 +52,16 @@ _MIN_PARAGRAPHS_FOR_GRAB_PREV = 2
 # ── shirking patterns (RU + EN, case-insensitive, matched on the tail) ───────
 
 SHIRK_PATTERNS: dict[str, list[str]] = {
+    # Listed first so a read-only "want me to look?" offer is tagged here (not as want_me_to):
+    # looking is never the destructive act, so this group bypasses the destructive guard
+    # (see _firing_guard) — when info is needed, just gather it and report the finding.
+    "offer_to_investigate": [
+        r"\b(хочешь|хотите)\b[\s,—–-]+(я\s+)?(посмотр|погляж|глян|провер|пров|загляну|чекн|изуч)\w*",
+        r"\bмогу\s+(посмотреть|проверить|глянуть|заглянуть|изучить)\b",
+        r"\bwant\s+me\s+to\s+(check|look|take\s+a\s+look|inspect|verify|review|see|investigate)\b",
+        r"\b(should\s+i|do\s+you\s+want\s+me\s+to)\s+(check|look|verify|inspect|investigate)\b",
+        r"\bi\s+can\s+(check|look|take\s+a\s+look|verify|investigate)\b[^?]{0,40}\bif\s+you",
+    ],
     "ask_to_run": [
         r"\bзапустить\s*\??\s*$",
         r"\bпрогнать\s+(тесты|линт|typecheck)\s*\??\s*$",
@@ -106,6 +116,15 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
         r"\bshall\s+i\s+(proceed|continue)\b",
         r"\bproceed\s*\?\s*$",
     ],
+    "offer_to_act": [
+        # Generic "shall I do it?" offer after laying out a reversible plan, e.g. "Сделать сейчас?",
+        # "Делать?", "Сделать это?". [^?]{0,25} keeps the match inside the final question.
+        r"\bсдела(ть|ю)\b[^?]{0,25}\?\s*$",
+        r"\bделать\s*\??\s*$",
+        r"\bshall\s+i\s+(do\s+it|go\s+ahead)\b",
+        r"\b(should\s+i|do\s+you\s+want\s+me\s+to)\s+go\s+ahead\b",
+        r"\bgo\s+ahead\s*\?\s*$",
+    ],
     "commit_offer": [
         r"\b(за)?коммит(ить|нуть)\s*\??\s*$",
         r"\b(за)?коммичу\s*\??\s*$",
@@ -138,7 +157,9 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
 
 # ── false-positive guards: when asking the human IS legitimate ───────────────
 
-DESTRUCTIVE_KEYWORDS = [
+# Hard-destructive: irreversible history/data ops. Asking before these is ALWAYS legitimate —
+# they suppress a block regardless of what else the turn offers.
+HARD_DESTRUCTIVE_KEYWORDS = [
     r"force[-\s]?push",
     r"--force\b",
     r"--force-with-lease\b",
@@ -146,20 +167,41 @@ DESTRUCTIVE_KEYWORDS = [
     r"\bdrop\s+table\b",
     r"\btruncate\b",
     r"\bdelete\s+from\b",
+    r"\bудал(и(ть|ение)|яю|им)\b",
+    r"\bснести\b",
+    r"\bснесу\b",
+]
+
+# Soft deploy-ish: a downstream/automatic effect (deploy on merge, a release, a migration) that the
+# agent often just MENTIONS while offering reversible work. These suppress a block ONLY when the turn
+# offers no reversible action — so "deploy to prod?" stays guarded, but "commit, push, PR (then it
+# deploys)?" does not. A genuine manual deploy with no reversible step offered is still guarded.
+SOFT_DEPLOY_KEYWORDS = [
     r"\bmigration\b",
     r"\bschema\s+change\b",
     r"\bprod\b",
     r"\bproduction\b",
     r"\bdeploy\b",
     r"\brelease\b",
-    r"\bудал(и(ть|ение)|яю|им)\b",
-    r"\bснести\b",
-    r"\bснесу\b",
     r"\bпрод(а|е|у)?\b",
     r"\bмиграц\w+",
     r"\bзадеплои(ть|м|шь)\b",
+    r"\bвыкладк\w+",
     r"\bв\s+проде\b",
     r"\bна\s+проде\b",
+]
+
+DESTRUCTIVE_KEYWORDS = HARD_DESTRUCTIVE_KEYWORDS + SOFT_DEPLOY_KEYWORDS
+
+# Reversible actions the agent should just DO, not ask about — committing, pushing a branch, opening
+# a PR. (A force-push is caught by HARD_DESTRUCTIVE_KEYWORDS first, so "push" here is the safe kind.)
+REVERSIBLE_OFFER_MARKERS = [
+    r"\b(commit|push)\b",
+    r"\b(за)?комм(ит|ич)\w*",
+    r"\b(за)?пуш\w*",
+    r"\b(pr|mr|pull[-\s]?request|merge[-\s]?request|пул[-\s]?реквест|пиар)\b",
+    r"\bветк\w+",
+    r"\bbranch\b",
 ]
 
 BUSINESS_AMBIGUITY_MARKERS = [
@@ -317,12 +359,18 @@ def match_shirk(tail: str) -> Match | None:
     return None
 
 
+def _any_match(patterns: list[str], tail: str) -> bool:
+    return any(re.search(p, tail, flags=re.IGNORECASE) for p in patterns)
+
+
 def has_destructive_context(tail: str) -> bool:
-    """True iff the tail mentions a destructive/irreversible action keyword."""
-    for kw in DESTRUCTIVE_KEYWORDS:
-        if re.search(kw, tail, flags=re.IGNORECASE):
-            return True
-    return False
+    """True iff the tail mentions any destructive/irreversible action keyword (hard or soft)."""
+    return _any_match(DESTRUCTIVE_KEYWORDS, tail)
+
+
+def offers_reversible(tail: str) -> bool:
+    """True iff the tail offers a reversible action (commit / push branch / PR) the agent should do."""
+    return _any_match(REVERSIBLE_OFFER_MARKERS, tail)
 
 
 def has_business_ambiguity(tail: str) -> bool:
@@ -339,9 +387,14 @@ def user_asked_open_question(user_text: str) -> bool:
     return bool(text) and text.endswith("?") and len(text) < _USER_Q_MAX_LEN
 
 
-def _firing_guard(tail: str, user_text: str) -> str | None:
-    if has_destructive_context(tail):
-        return "destructive"
+def _firing_guard(tail: str, user_text: str, group: str) -> str | None:
+    # A read-only "want me to look?" offer is never the destructive act — looking is exactly what to
+    # just do, even (especially) when a deploy is downstream. So this group skips the destructive guard.
+    if group != "offer_to_investigate":
+        if _any_match(HARD_DESTRUCTIVE_KEYWORDS, tail):
+            return "destructive"
+        if _any_match(SOFT_DEPLOY_KEYWORDS, tail) and not offers_reversible(tail):
+            return "destructive"
     if has_business_ambiguity(tail):
         return "ambiguity"
     if user_asked_open_question(user_text):
@@ -355,7 +408,7 @@ def classify(assistant_text: str, user_text: str) -> Classification:
     hit = match_shirk(tail) if tail else None
     if hit is None:
         return Classification("ok", None, None)
-    guard = _firing_guard(tail, user_text)
+    guard = _firing_guard(tail, user_text, hit.group)
     verdict = f"guard:{guard}" if guard else "shirk"
     return Classification(verdict, hit.group, hit.snippet)
 

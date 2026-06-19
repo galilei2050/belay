@@ -318,6 +318,67 @@ def test_destructive_keyword_alone_no_shirk_keeps_ok():
     assert verdict == "ok"
 
 
+# ── offer_to_act: generic "shall I do it?" after a reversible plan ─────────────
+
+
+def test_offer_to_act_sdelat_seychas_is_shirk():
+    text = "Вот план: симлинк правил, path-scoping, бамп версии. Сделать сейчас?"
+    assert classify(text, user_text="")[0] == "shirk"
+
+
+def test_offer_to_act_delat_is_shirk():
+    assert classify("Готово локально. Делать?", user_text="")[0] == "shirk"
+
+
+def test_offer_to_act_statement_not_question_is_ok():
+    # No trailing '?' → a statement of intent, not an ask.
+    assert classify("Я сделаю это сейчас.", user_text="")[0] == "ok"
+
+
+def test_offer_to_act_with_deploy_but_reversible_is_shirk():
+    # The real case: reversible work (commit) offered, deploy merely mentioned downstream.
+    text = (
+        "Это outward-шаги (релиз + прод-деплой). Сказать — закоммичу baski, "
+        "бампну sha в nisse, закоммичу nisse, потом деплой. Делать?"
+    )
+    assert classify(text, user_text="")[0] == "shirk"
+
+
+def test_pure_deploy_question_stays_guarded():
+    # Shirk pattern present ("Сделать?") but only a deploy is offered, nothing reversible → guarded.
+    text = "Контейнер собран, осталось выкатить на прод. Сделать?"
+    assert classify(text, user_text="")[0] == "guard:destructive"
+
+
+def test_hard_destructive_guards_even_with_reversible_offer():
+    # A force-push is hard-destructive: reversible commit alongside doesn't override the guard.
+    text = "Закоммичу и сделаю force-push в ветку. Сделать?"
+    assert classify(text, user_text="")[0] == "guard:destructive"
+
+
+# ── offer_to_investigate: read-only "want me to look?" offers ─────────────────
+
+
+def test_offer_to_investigate_ru_is_shirk():
+    text = "Не уверен, прошла ли выкладка. Хочешь — посмотрю статус пайплайна (read-only)?"
+    result = classify(text, user_text="")
+    assert result[0] == "shirk"
+    assert result[1] == "offer_to_investigate"
+
+
+def test_offer_to_investigate_en_bypasses_deploy_guard():
+    # "deploy" in the tail must NOT excuse a read-only check — looking is never the destructive act.
+    text = "I haven't verified the deploy went through. Want me to check the pipeline status?"
+    result = classify(text, user_text="")
+    assert result[0] == "shirk"
+    assert result[1] == "offer_to_investigate"
+
+
+def test_investigate_past_tense_statement_is_ok():
+    # A report of having checked is not an offer to check.
+    assert classify("I checked Cloud Build: it has not deployed.", user_text="")[0] == "ok"
+
+
 # ── tail-only matching: shirk in the middle doesn't trigger ──────────────────
 
 

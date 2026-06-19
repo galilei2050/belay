@@ -22,9 +22,23 @@ If a feature needs any of the above, it's a different plugin.
    and EN pairs together — split coverage rots fast. Anchor on word boundaries
    (`\b`) or end-of-string (`\s*\??\s*$`); avoid unanchored `.*` matches that
    leak into mid-text.
-2. **`DESTRUCTIVE_KEYWORDS`** — false-positive guard №1. If the tail mentions
-   any of these, asking is legitimate. Err on the side of adding terms: a
-   missed shirk is cheaper than a wrongful block on a force-push question.
+2. **`HARD_DESTRUCTIVE_KEYWORDS` / `SOFT_DEPLOY_KEYWORDS`** — false-positive
+   guard №1, split by reversibility:
+   - *Hard* (force-push, drop table, rm -rf, data deletion) — irreversible, so
+     asking is ALWAYS legitimate; suppresses a block no matter what else the
+     turn offers.
+   - *Soft* (deploy, prod, release, migration) — usually a downstream/automatic
+     effect the agent just *mentions* while offering reversible work. Suppresses
+     a block ONLY when the turn offers no reversible action. So "deploy to prod?"
+     stays guarded, but "commit, push, open PR (then it deploys)?" does not —
+     the reversible part must just be done. `REVERSIBLE_OFFER_MARKERS`
+     (commit / push branch / PR) is what flips that. (`DESTRUCTIVE_KEYWORDS` is
+     the union, kept for `has_destructive_context`.) Err toward adding *hard*
+     terms; be conservative with *soft* — a soft term that's really irreversible
+     belongs in hard.
+   - The `offer_to_investigate` group bypasses this guard entirely: a read-only
+     "want me to look/check?" is never the destructive act, so it's blocked even
+     when a deploy is downstream — looking is exactly what to just do.
 3. **`BUSINESS_AMBIGUITY_MARKERS`** — false-positive guard №2. Phrases that
    indicate a tradeoff or named-alternative question that humans must own.
 

@@ -297,10 +297,16 @@ def curl_mutating_remote(args: list[str]) -> bool:
     return not any(not arg.startswith("-") and any(h in arg for h in LOCALHOST) for arg in args)
 
 
-# Standalone `python -c "…"` is denied at top level in main() — see python_c_not_after_pipe.
+# Standalone `python -c "…"` is gated in _ast_gate — see python_c_not_after_pipe.
 MAX_BASH_LEN = 1500
 MAX_BASH_LINES = 10
 SED_INLINE_EXPR_MAX = 300
+# A standalone `python3 -c` is allowed up to this length on a single line (the import/version
+# introspection one-liners the agent needs); longer/multiline scripts go to a file (reviewability).
+PYTHON_C_INLINE_MAX = 200
+# Cap an unbounded poll loop so a condition that never trips can't hang forever (foreground tool
+# timeout maxes at 600s; a background loop has no such cap, so this is the real guard). Tunable.
+WAIT_TIMEOUT_SECONDS = 600
 
 
 def rm_recursive(args: list[str]) -> bool:
@@ -328,6 +334,52 @@ def all_paths_inside_project(args: list[str]) -> bool:
     return has_path
 
 
+# The agent's scratch dir: the ONE place `rm` is allowed. A root-level hidden dir (NOT under
+# `.claude/`, whose edits the harness prompts for — that's why scratch can't live there) that
+# won't collide with a project's own top-level `tmp/`.
+SCRATCH_SUBDIR = ".scratch"
+
+
+def all_paths_under_scratch(args: list[str]) -> bool:
+    """True iff every non-flag path arg resolves inside the scratch dir (`.scratch/`).
+
+    Existence is NOT required — `rm -f .claude/tmp/maybe-gone` is fine. `resolve()` collapses any
+    `..` traversal, so `rm .claude/tmp/../../etc/x` lands outside scratch and returns False (deny).
+    """
+    project_root = Path(PROJECT_DIR).resolve()
+    scratch_root = (project_root / SCRATCH_SUBDIR).resolve()
+    has_path = False
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        has_path = True
+        candidate = Path(arg) if Path(arg).is_absolute() else project_root / arg
+        real = candidate.resolve()
+        if real != scratch_root and scratch_root not in real.parents:
+            return False
+    return has_path
+
+
+def ensure_scratch_dir() -> None:
+    """Guarantee `<project>/.scratch/` exists and is gitignored — the one dir where `rm` is allowed.
+
+    The hook owns the scratch area it polices, so the agent never has to `mkdir` it or hand-edit
+    `.gitignore` (and never gets prompted for either). Idempotent and cheap: `mkdir(exist_ok)` plus
+    a one-line append done only when the entry is absent — so it's safe on every invocation and
+    recreates the dir if a prior `rm -rf .scratch` removed it.
+    """
+    project_root = Path(PROJECT_DIR)
+    (project_root / SCRATCH_SUBDIR).mkdir(parents=True, exist_ok=True)
+    gitignore = project_root / ".gitignore"
+    entry = f"{SCRATCH_SUBDIR}/"
+    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if entry in existing.splitlines():
+        return
+    prefix = "" if existing == "" or existing.endswith("\n") else "\n"
+    with gitignore.open("a", encoding="utf-8") as fh:
+        fh.write(f"{prefix}{entry}\n")
+
+
 def sed_inline_long(args: list[str]) -> bool:
     """True iff `sed -i` is passed a single substitution expression longer than the limit."""
     if "-i" not in args and not any(a.startswith("-i") for a in args):
@@ -340,11 +392,84 @@ def sed_inline_long(args: list[str]) -> bool:
     return False
 
 
+_GIT_CONFIG_WRITE_FLAGS = {
+    "--add",
+    "--unset",
+    "--unset-all",
+    "--replace-all",
+    "--rename-section",
+    "--remove-section",
+    "--edit",
+    "-e",
+}
+
+
+def git_config_read(args: list[str]) -> bool:
+    """True iff a `git config …` invocation only reads (sets no value, uses no mutating flag).
+
+    A read sets at most one positional — the key, e.g. `git config user.name` — and no write flag.
+    A write either sets a value (`git config user.name X`: two positionals) or carries --add/--unset/
+    etc. Scope flags (`--global`/`--local`) and read flags (`--get`/`--list`) start with `-`, so they
+    don't count as positionals. This is the read/write distinction the args matchers can't make:
+    `git config user.name` (read) and `git config user.name X` (write) share the same `config user.name`
+    prefix, so an ordered-subsequence rule can't tell them apart.
+    """
+    if not args or args[0] != "config":
+        return False
+    rest = args[1:]
+    if any(flag in _GIT_CONFIG_WRITE_FLAGS for flag in rest):
+        return False
+    positionals = [a for a in rest if not a.startswith("-")]
+    return len(positionals) <= 1
+
+
+_PROTECTED_BRANCHES = {"main", "master"}
+
+
+def _current_branch_protected() -> bool:
+    """True iff the repo's checked-out branch is main/master, read from `.git/HEAD` (no subprocess).
+
+    `.git/HEAD` holds `ref: refs/heads/<branch>` on a normal checkout; a detached HEAD holds a raw
+    sha (no branch, not protected). If `.git` is a file (worktree/submodule) or unreadable we can't
+    tell, so we return False — the explicit-arg forms still catch a deliberate `git push origin main`.
+    """
+    try:
+        content = (Path(PROJECT_DIR) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return content.startswith("ref:") and content.rsplit("/", 1)[-1] in _PROTECTED_BRANCHES
+
+
+def git_push_to_protected_branch(args: list[str]) -> bool:
+    """True iff a `git push …` would update main/master on the remote.
+
+    Explicit refspecs are read from the args — the destination is the part after `:` (so `HEAD:main`,
+    `main`, and `:main` all count). A bare `git push` / `git push <remote>` pushes the current branch,
+    so we consult `.git/HEAD`. `HEAD` as an explicit ref also means the current branch.
+    """
+    if not args or args[0] != "push":
+        return False
+    positionals = [a for a in args[1:] if not a.startswith("-")]
+    refs = positionals[1:]  # positionals[0] is the remote; the rest are refspecs
+    if not refs:
+        return _current_branch_protected()
+    for ref in refs:
+        dst = ref.split(":")[-1]
+        if dst.rsplit("/", 1)[-1] in _PROTECTED_BRANCHES:
+            return True
+        if dst == "HEAD" and _current_branch_protected():
+            return True
+    return False
+
+
 CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
     "rm_recursive": rm_recursive,
     "all_paths_inside_project": all_paths_inside_project,
+    "all_paths_under_scratch": all_paths_under_scratch,
+    "git_config_read": git_config_read,
+    "git_push_to_protected_branch": git_push_to_protected_branch,
 }
 
 
@@ -404,28 +529,63 @@ def has_function_def(trees: Iterable[BashNode]) -> bool:
     return False
 
 
+def _c_arg(words: list[str]) -> str | None:
+    """The token following the first `-c` flag in a command word list, if present."""
+    for i, word in enumerate(words):
+        if word == "-c" and i + 1 < len(words):
+            return words[i + 1]
+    return None
+
+
 def python_c_not_after_pipe(trees: Iterable[BashNode]) -> bool:
-    """True iff any `python[3] -c …` invocation is NOT positioned as a pipe receiver."""
+    """True iff a `python[3] -c …` script should be denied: standalone (not a pipe receiver) AND long.
+
+    A pipe filter (`<cmd> | python3 -c "…"`) is always allowed. A standalone `python3 -c` is allowed
+    only when its script is a single line ≤ PYTHON_C_INLINE_MAX — the import/version introspection
+    the agent needs. Longer or multiline scripts are denied: hidden in one opaque arg they bypass
+    the size/line gates and aren't reviewable, so they belong in a file.
+    """
     for tree in trees:
         for node, parent, position in _walk_with_parent(tree):
             words = _command_words(node)
-            if not words:
-                continue
-            if Path(words[0]).name not in ("python", "python3"):
+            if not words or Path(words[0]).name not in ("python", "python3"):
                 continue
             if "-c" not in words[1:]:
                 continue
             if parent is not None and getattr(parent, "kind", None) == "pipeline" and (position or 0) > 0:
                 continue
+            script = _c_arg(words)
+            if script is not None and "\n" not in script and len(script) <= PYTHON_C_INLINE_MAX:
+                continue
             return True
     return False
 
 
-# Foreground-blocking waits (`until …; do sleep; done`, `sleep N && cmd`) are intentionally
-# NOT policed here. That's a harness concern — the harness already blocks foreground `sleep`
-# and steers the agent to run_in_background / Monitor. Duplicating it made acl-hook a second,
-# contradicting voice (harness said "use an until-loop", acl-hook denied it). Per this plugin's
-# scope ("no harness gates"), waiting is the harness's job; we only ACL for damage/leak.
+_LOOP_RESERVED_WORDS = {"until", "while", "for"}
+
+
+def wait_loop_unbounded(trees: Iterable[BashNode]) -> bool:
+    """True iff a loop (until/while/for) body contains a `sleep` — a poll with no upper time bound.
+
+    A bare poll loop runs until its condition trips; if it never does (failed deploy, wrong target)
+    it hangs forever. We do NOT deny it — that contradicts the harness, which recommends until-loops
+    (the bug that dropped the old `until_loop_with_sleep`/`chained_sleep` detectors). Instead main()
+    transparently wraps it in `timeout` via updatedInput: no prompt, no block, agent unaware. An
+    unbounded background loop is a leak, which IS this plugin's scope ("we only ACL for damage/leak").
+    A loop already wrapped in `timeout … bash -c '…'` hides its body inside a quoted word, so bashlex
+    never yields these nodes and this returns False — the wrap is idempotent for free.
+    """
+    for tree in trees:
+        has_loop = has_sleep = False
+        for node, _parent, _pos in _walk_with_parent(tree):
+            if getattr(node, "kind", None) == "reservedword" and getattr(node, "word", "") in _LOOP_RESERVED_WORDS:
+                has_loop = True
+            words = _command_words(node)
+            if words and Path(words[0]).name == "sleep":
+                has_sleep = True
+            if has_loop and has_sleep:
+                return True
+    return False
 
 
 # ── Per-command ACL check (split into helpers to keep complexity bounded) ────
@@ -458,6 +618,31 @@ def _strip_timeout(parts: list[str]) -> list[str]:
     if parts:  # consume the <duration> positional
         parts = parts[1:]
     return parts
+
+
+_SHELL_CMDS = {"bash", "sh"}
+_SHELL_C_PARTS = 3  # exactly `<shell> -c <script>` after stripping env/wrapper/timeout
+
+
+def _extract_shell_c(command: str) -> str | None:
+    """Return the script of a verifiable `bash -c '<script>'` / `sh -c '<script>'`, else None.
+
+    Only the exact `[env] [wrapper] [timeout] <shell> -c <script>` shape with a fully-literal script
+    is recursed into — the ACL re-checks the script as if typed directly (so `bash -c 'rm -rf /etc'`
+    is denied, `bash -c 'git status'` allowed). Any expansion (`$…`, backtick) is non-literal: its
+    runtime value can't be statically vetted, so we return None and let the blanket `bash` deny
+    stand. Other forms (`bash -lc`, extra args, `bash file.sh`) also fall through to deny.
+    """
+    try:
+        parts = _strip_timeout(_strip_wrapper(_strip_env_assignments(shlex.split(command))))
+    except ValueError:
+        return None
+    if len(parts) != _SHELL_C_PARTS or parts[1] != "-c" or Path(parts[0]).name not in _SHELL_CMDS:
+        return None
+    script = parts[2]
+    if "$" in script or "`" in script:
+        return None
+    return script
 
 
 def _is_claude_script(command: str) -> bool:
@@ -532,6 +717,12 @@ def _apply_acl(command: str, args: list[str]) -> Decision:
 
 def check_command(cmd_str: str, logger: logging.Logger, *, agent_type: str) -> Decision:
     """Check a single command against ACL. Returns (decision, reason, log_detail)."""
+    script = _extract_shell_c(cmd_str)
+    if script is not None:
+        # `bash -c '<literal>'`: re-run the full pipeline on the script, as if it were typed directly.
+        verdict, reason = _decide(script, logger, agent_type)
+        logger.info('decision=%s command="%s" matched=shell_c_recurse agent=%s', verdict, cmd_str[:200], agent_type)
+        return verdict, reason, "shell_c_recurse"
     decision = _classify(cmd_str)
     verdict, _, detail = decision
     logger.info('decision=%s command="%s" matched=%s agent=%s', verdict, cmd_str[:200], detail, agent_type)
@@ -585,6 +776,23 @@ def _emit(decision: str, reason: str) -> None:
     )
 
 
+def _emit_rewrite(tool_input: dict[str, object], new_command: str) -> None:
+    """Emit `allow` while transparently replacing the command — no prompt, and no hook re-trigger."""
+    sys.stdout.write(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "",
+                    "updatedInput": {**tool_input, "command": new_command},
+                }
+            }
+        )
+        + "\n"
+    )
+
+
 def _log_deny(logger: logging.Logger, command: str, agent_type: str, tag: str) -> None:
     logger.info('decision=deny command="%s" matched=%s agent=%s', command[:120], tag, agent_type)
 
@@ -608,8 +816,9 @@ _FUNCTION_DEF_REASON = (
     "multiple simple Bash calls. If you need reusable logic, Write it as a script file."
 )
 _PYTHON_C_REASON = (
-    '`python -c` is allowed only as a pipe filter (`<cmd> | python3 -c "…"`). Standalone or '
-    "`$(python -c …)` is a script masquerading as a command. Options: (1) pipe data in; "
+    f"`python -c` standalone is allowed only as a short single-line check (≤{PYTHON_C_INLINE_MAX} "
+    'chars), or as a pipe filter (`<cmd> | python3 -c "…"`). This script is longer/multiline: '
+    "hidden in one arg it bypasses the size gate and isn't reviewable. Options: (1) pipe data in; "
     "(2) Write the script to a file and run it; (3) split into simple Bash builtins or `jq`."
 )
 _AST_DETECTORS: list[tuple[Callable[[Iterable[BashNode]], bool], str, str]] = [
@@ -673,14 +882,49 @@ def _decide(command: str, logger: logging.Logger, agent_type: str) -> Verdict:
     return _resolve_chained(command, logger, agent_type)
 
 
+def _has_timeout_prefix(command: str) -> bool:
+    """True iff the command already runs under a leading `timeout` (so its wait is bounded)."""
+    try:
+        parts = _strip_wrapper(_strip_env_assignments(shlex.split(command)))
+    except ValueError:
+        return False
+    return bool(parts) and Path(parts[0]).name == "timeout"
+
+
+def _bound_wait_loop(command: str) -> str | None:
+    """If `command` is an unbounded poll loop, return it wrapped in `timeout`; else None.
+
+    Reached only for an otherwise-`allow` command, so bashlex already parsed it cleanly. Covers a
+    bare loop and a loop hidden inside `bash -c '…'`; a loop already under `timeout` is left alone.
+    """
+    if _has_timeout_prefix(command):
+        return None
+    if wait_loop_unbounded(bashlex.parse(command)):
+        return f"timeout {WAIT_TIMEOUT_SECONDS} bash -c {shlex.quote(command)}"
+    script = _extract_shell_c(command)
+    if script is not None and wait_loop_unbounded(bashlex.parse(script)):
+        return f"timeout {WAIT_TIMEOUT_SECONDS} {command}"
+    return None
+
+
 def main() -> None:
-    """PreToolUse entry point: read stdin payload, emit allow/ask/deny decision."""
+    """PreToolUse entry point: read stdin payload, emit allow/ask/deny (or a bounded rewrite)."""
     data = json.loads(sys.stdin.read())
-    command = data.get("tool_input", {}).get("command", "") if data.get("tool_name") == "Bash" else ""
+    tool_input = data.get("tool_input", {}) if data.get("tool_name") == "Bash" else {}
+    command = tool_input.get("command", "")
     if not command:
         return
+    ensure_scratch_dir()
     agent_type = data.get("agent_type") if data.get("agent_id") is not None else "main"
-    _emit(*_decide(command, setup_logging(), agent_type))
+    logger = setup_logging()
+    decision, reason = _decide(command, logger, agent_type)
+    if decision == "allow":
+        wrapped = _bound_wait_loop(command)
+        if wrapped is not None:
+            logger.info('decision=rewrite command="%s" matched=wait_loop_unbounded agent=%s', command[:120], agent_type)
+            _emit_rewrite(tool_input, wrapped)
+            return
+    _emit(decision, reason)
 
 
 if __name__ == "__main__":

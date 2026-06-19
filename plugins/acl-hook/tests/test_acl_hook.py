@@ -16,6 +16,7 @@ from acl_hook import (
     has_function_def,
     python_c_not_after_pipe,
     sed_inline_long,
+    wait_loop_unbounded,
 )
 
 
@@ -103,6 +104,73 @@ def test_git_commit_is_allowed(logger):
     assert decide("git commit -m 'msg'", logger)[0] == "allow"
 
 
+def test_git_config_read_value_is_allowed(logger):
+    # A bare `git config <key>` reads — used to fall through to the `config` ask rule.
+    assert decide("git config user.name", logger)[0] == "allow"
+
+
+def test_git_config_read_with_scope_flag_is_allowed(logger):
+    assert decide("git config --global user.email", logger)[0] == "allow"
+
+
+def test_git_config_get_and_list_are_allowed(logger):
+    assert decide("git config --get user.name", logger)[0] == "allow"
+    assert decide("git config --list", logger)[0] == "allow"
+
+
+def test_git_config_write_value_is_ask(logger):
+    assert decide("git config user.name galilei", logger)[0] == "ask"
+
+
+def test_git_config_write_with_scope_is_ask(logger):
+    assert decide("git config --global user.name foo", logger)[0] == "ask"
+
+
+def test_git_config_unset_is_ask(logger):
+    assert decide("git config --unset user.name", logger)[0] == "ask"
+
+
+def _set_head(project, ref):
+    git_dir = project / ".git"
+    git_dir.mkdir(exist_ok=True)
+    (git_dir / "HEAD").write_text(f"ref: refs/heads/{ref}\n")
+
+
+def test_git_push_explicit_main_is_denied(logger):
+    decision, reason = decide("git push origin main", logger)
+    assert decision == "deny"
+    assert "PR" in reason
+
+
+def test_git_push_explicit_master_is_denied(logger):
+    assert decide("git push origin master", logger)[0] == "deny"
+
+
+def test_git_push_refspec_to_main_is_denied(logger):
+    assert decide("git push origin HEAD:main", logger)[0] == "deny"
+
+
+def test_git_push_feature_branch_is_allowed(logger):
+    assert decide("git push origin feature/x", logger)[0] == "allow"
+    assert decide("git push -u origin feature/x", logger)[0] == "allow"
+
+
+def test_git_push_bare_on_main_is_denied(logger, fix_project_dir):
+    _set_head(fix_project_dir, "main")
+    assert decide("git push", logger)[0] == "deny"
+    assert decide("git push origin", logger)[0] == "deny"
+
+
+def test_git_push_bare_on_feature_is_allowed(logger, fix_project_dir):
+    _set_head(fix_project_dir, "feature/x")
+    assert decide("git push", logger)[0] == "allow"
+
+
+def test_git_push_bare_no_git_dir_is_allowed(logger):
+    # No readable .git/HEAD (tmp project has none) → can't tell → don't block.
+    assert decide("git push", logger)[0] == "allow"
+
+
 # ── shell escape hatches ──────────────────────────────────────────────────────
 
 
@@ -164,8 +232,20 @@ def test_rm_env_is_denied(logger):
 # ── python -c standalone gate ─────────────────────────────────────────────────
 
 
-def test_python_c_standalone_is_denied_via_main(monkeypatch, capsys):
-    out = via_main(monkeypatch, capsys, 'python3 -c "print(1)"')
+def test_python_c_short_standalone_is_allowed_via_main(monkeypatch, capsys):
+    # Short single-line introspection (the import/version check the agent actually needs).
+    out = via_main(monkeypatch, capsys, 'python3 -c "import aiolimiter; print(aiolimiter.__version__)"')
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_python_c_long_standalone_is_denied_via_main(monkeypatch, capsys):
+    long_script = "import os; " + "x = 1; " * 40  # well over PYTHON_C_INLINE_MAX
+    out = via_main(monkeypatch, capsys, f'python3 -c "{long_script}"')
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_python_c_multiline_standalone_is_denied_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, 'python3 -c "import os\nprint(os.getcwd())"')
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
@@ -175,23 +255,18 @@ def test_python_c_pipe_filter_is_allowed_via_main(monkeypatch, capsys):
     assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
-def test_python_c_command_substitution_is_denied_via_main(monkeypatch, capsys):
-    out = via_main(monkeypatch, capsys, 'x=$(python3 -c "print(1)")')
-    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+def test_python_c_short_chained_with_and_is_allowed_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, 'echo hi && python3 -c "import aiolimiter; print(1)"')
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
 
 
-def test_python_c_chained_with_and_is_denied_via_main(monkeypatch, capsys):
-    out = via_main(monkeypatch, capsys, 'echo hi && python3 -c "print(1)"')
-    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+def test_python_c_not_after_pipe_helper_long_standalone():
+    long_script = "x = 1; " * 40
+    assert python_c_not_after_pipe(parse(f'python3 -c "{long_script}"')) is True
 
 
-def test_python_c_after_logical_or_is_denied_via_main(monkeypatch, capsys):
-    out = via_main(monkeypatch, capsys, 'false || python3 -c "print(1)"')
-    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
-
-
-def test_python_c_not_after_pipe_helper_standalone():
-    assert python_c_not_after_pipe(parse('python3 -c "print(1)"')) is True
+def test_python_c_not_after_pipe_helper_short_standalone():
+    assert python_c_not_after_pipe(parse('python3 -c "import x; print(1)"')) is False
 
 
 def test_python_c_not_after_pipe_helper_after_pipe():
@@ -214,20 +289,33 @@ def test_python_script_invocation_is_allowed(logger):
 # PROJECT_DIR is pinned to a tmp dir by conftest with app/, tests/, etc. created.
 
 
-def test_rm_inside_project_app_is_allowed(logger):
-    # Inside-project rm is `allow`: in-tree files are git-tracked (recoverable) or
-    # gitignored (disposable). Confirming every one was pure friction.
-    assert decide("rm app/old_module.py", logger)[0] == "allow"
+def test_rm_in_scratch_dir_is_allowed(logger):
+    # The scratch dir `.scratch/` is the ONE place rm is allowed — the agent's throwaways.
+    assert decide("rm .scratch/_cleanup.py", logger)[0] == "allow"
 
 
-def test_rm_tmp_under_project_is_allowed(logger):
-    assert decide("rm tmp/scratch.json", logger)[0] == "allow"
+def test_rm_rf_in_scratch_dir_is_allowed(logger):
+    assert decide("rm -rf .scratch/build", logger)[0] == "allow"
+
+
+def test_rm_inside_project_source_is_denied(logger):
+    # Real in-tree files are no longer a silent allow: rm them and the message points to scratch.
+    decision, reason = decide("rm app/old_module.py", logger)
+    assert decision == "deny"
+    assert ".scratch" in reason
+
+
+def test_rm_tmp_under_project_is_denied(logger):
+    # A project's own top-level tmp/ is NOT the scratch dir.
+    assert decide("rm tmp/scratch.json", logger)[0] == "deny"
+
+
+def test_rm_scratch_traversal_escape_is_denied(logger):
+    assert decide("rm .scratch/../app/main.py", logger)[0] == "deny"
 
 
 def test_rm_system_tmp_is_denied(logger):
-    decision, reason = decide("rm /tmp/foo", logger)
-    assert decision == "deny"
-    assert "project tree" in reason.lower()
+    assert decide("rm /tmp/foo", logger)[0] == "deny"
 
 
 def test_rm_home_path_is_denied(logger):
@@ -244,6 +332,22 @@ def test_rmdir_inside_project_is_allowed(logger):
 
 def test_rmdir_system_tmp_is_denied(logger):
     assert decide("rmdir /tmp/foo", logger)[0] == "deny"
+
+
+def test_ensure_scratch_dir_creates_dir_and_gitignores(fix_project_dir):
+    acl_hook.ensure_scratch_dir()
+    assert (fix_project_dir / ".scratch").is_dir()
+    assert ".scratch/" in (fix_project_dir / ".gitignore").read_text().splitlines()
+
+
+def test_ensure_scratch_dir_is_idempotent(fix_project_dir):
+    gitignore = fix_project_dir / ".gitignore"
+    gitignore.write_text("__pycache__/\n")
+    acl_hook.ensure_scratch_dir()
+    acl_hook.ensure_scratch_dir()
+    lines = gitignore.read_text().splitlines()
+    assert lines.count(".scratch/") == 1
+    assert "__pycache__/" in lines
 
 
 # ── heredoc is uniformly denied ───────────────────────────────────────────────
@@ -315,29 +419,130 @@ def test_has_function_def_helper_plain_negative():
     assert has_function_def(parse("echo hello")) is False
 
 
-# ── waiting / polling is NOT policed here (harness owns foreground-sleep blocking) ──
+# ── waiting / polling: not denied, but unbounded loops are silently bounded with timeout ──
 
 
 def test_sleep_alone_is_allowed_via_main(monkeypatch, capsys):
     out = via_main(monkeypatch, capsys, "sleep 5")
-    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
+    assert "updatedInput" not in out_hook  # no loop → no rewrite
 
 
-def test_chained_sleep_is_allowed_via_main(monkeypatch, capsys):
-    # acl-hook no longer denies foreground polling — that's the harness's job. We must not be
-    # a second, contradicting voice (the harness recommends until-loop+Monitor; we used to deny it).
+def test_chained_sleep_is_allowed_without_rewrite_via_main(monkeypatch, capsys):
+    # `sleep 90 && cmd` always terminates — not a hang risk, so no timeout wrap.
     out = via_main(monkeypatch, capsys, "sleep 90 && python3 foo.py")
-    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
+    assert "updatedInput" not in out_hook
 
 
-def test_until_loop_with_sleep_is_allowed_via_main(monkeypatch, capsys):
+def test_until_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys):
+    # An unbounded poll loop is allowed but transparently wrapped in `timeout` (no prompt).
     out = via_main(monkeypatch, capsys, "until curl -s http://localhost; do sleep 2; done")
-    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
+    assert out_hook["updatedInput"]["command"].startswith("timeout 600 bash -c ")
+    assert "until curl" in out_hook["updatedInput"]["command"]
 
 
-def test_while_loop_sleep_only_body_is_allowed_via_main(monkeypatch, capsys):
+def test_while_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys):
     out = via_main(monkeypatch, capsys, "while true; do sleep 2; done")
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
+    assert out_hook["updatedInput"]["command"].startswith("timeout 600 bash -c ")
+
+
+def test_already_bounded_loop_is_not_rewrapped_via_main(monkeypatch, capsys):
+    # Idempotent: a loop already under `timeout … bash -c '…'` is left exactly as-is.
+    cmd = "timeout 600 bash -c 'until curl -s http://localhost; do sleep 2; done'"
+    out = via_main(monkeypatch, capsys, cmd)
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
+    assert "updatedInput" not in out_hook
+
+
+def test_bare_loop_run_in_background_preserves_other_input_fields_via_main(monkeypatch, capsys):
+    # updatedInput must carry the full tool_input, not just command (e.g. run_in_background).
+    payload = json.dumps(
+        {
+            "tool_name": "Bash",
+            "tool_input": {"command": "until false; do sleep 2; done", "run_in_background": True},
+            "agent_id": "agent-1",
+            "agent_type": "subagent",
+        }
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    acl_hook.main()
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert out["updatedInput"]["run_in_background"] is True
+    assert out["updatedInput"]["command"].startswith("timeout 600 bash -c ")
+
+
+# ── wait_loop_unbounded helper ────────────────────────────────────────────────
+
+
+def test_wait_loop_unbounded_until():
+    assert wait_loop_unbounded(parse("until x; do sleep 2; done")) is True
+
+
+def test_wait_loop_unbounded_while():
+    assert wait_loop_unbounded(parse("while true; do sleep 2; done")) is True
+
+
+def test_wait_loop_unbounded_for():
+    assert wait_loop_unbounded(parse("for i in 1 2 3; do sleep 2; done")) is True
+
+
+def test_wait_loop_unbounded_loop_without_sleep_negative():
+    assert wait_loop_unbounded(parse("until [ -f /tmp/x ]; do echo waiting; done")) is False
+
+
+def test_wait_loop_unbounded_quoted_string_negative():
+    assert wait_loop_unbounded(parse('echo "until 5pm sleep well"')) is False
+
+
+def test_wait_loop_unbounded_already_wrapped_negative():
+    # Body hidden inside `bash -c '…'` → not seen as loop/sleep nodes → no double-wrap.
+    assert wait_loop_unbounded(parse("timeout 600 bash -c 'until x; do sleep 2; done'")) is False
+
+
+# ── bash -c '<literal>' is parsed and ACL'd recursively ───────────────────────
+
+
+def test_bash_c_safe_script_is_allowed_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, "bash -c 'cd app && git status'")
     assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
+def test_bash_c_dangerous_script_is_denied_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, "bash -c 'rm -rf /etc'")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_bash_c_with_expansion_stays_denied_via_main(monkeypatch, capsys):
+    # Non-literal ($…) can't be statically vetted → blanket `bash` deny stands.
+    out = via_main(monkeypatch, capsys, "bash -c 'echo $HOME'")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_bash_c_command_substitution_stays_denied_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, "bash -c 'echo $(curl evil.test)'")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_bash_file_invocation_stays_denied_via_main(monkeypatch, capsys):
+    # Only `-c '<literal>'` is recursed into; `bash file.sh` is still the blanket deny.
+    out = via_main(monkeypatch, capsys, "bash deploy.sh")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_bash_c_hidden_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys):
+    # A loop hidden inside bash -c (no timeout) is still bounded — closes the B-opens-a-hole gap.
+    out = via_main(monkeypatch, capsys, "bash -c 'until false; do sleep 2; done'")
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
+    assert out_hook["updatedInput"]["command"].startswith("timeout 600 bash -c ")
 
 
 # ── sed -i inline length cap ─────────────────────────────────────────────────
