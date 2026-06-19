@@ -23,9 +23,15 @@ legitimate, so the agent learns the rule, not just the verdict.
 The hook deliberately stays out of the way when stopping to ask is the right
 move:
 
-1. **Destructive context** — the tail mentions `--force`, `drop table`,
-   `migration`, `prod`, `production`, `deploy`, `удалить`, `миграц…`, `проде`,
-   etc. Destructive/irreversible actions should be confirmed.
+1. **Destructive context** — split by reversibility:
+   - *Hard* (`--force`, `drop table`, `rm -rf`, `удалить`, …) — irreversible,
+     always confirmed.
+   - *Soft deploy-ish* (`deploy`, `prod`, `release`, `migration`, `выкладк…`) —
+     confirmed only when the turn offers no reversible action. "deploy to prod?"
+     stays guarded; "commit, push, open PR (then it deploys)?" does not — the
+     reversible part is just done.
+   A read-only "want me to check/look?" offer is **not** excused by this guard —
+   looking is never the destructive act, so it's still blocked.
 2. **Business ambiguity** — the tail offers a tradeoff or two named
    alternatives («какой вариант», "which approach", "A or B?"). Business
    decisions belong to the human.
@@ -51,7 +57,8 @@ Pure stdlib — no `pip install` needed.
 Patterns and guards live as Python lists at the top of
 `hooks/no_shirk_hook.py`. Add a new RU/EN phrase pair, write one positive and
 one negative test in `tests/test_no_shirk_hook.py`, run `pytest plugins/`. If
-the hook starts blocking legitimate turns, extend `DESTRUCTIVE_KEYWORDS` or
-`BUSINESS_AMBIGUITY_MARKERS` rather than weakening the patterns.
+the hook starts blocking legitimate turns, extend `HARD_DESTRUCTIVE_KEYWORDS` /
+`SOFT_DEPLOY_KEYWORDS` or `BUSINESS_AMBIGUITY_MARKERS` rather than weakening the
+patterns.
 
 Logs: `~/.claude/logs/no-shirk-hook.log`.
