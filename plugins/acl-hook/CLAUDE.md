@@ -18,6 +18,12 @@ creates `.scratch/` + adds it to `.gitignore` (so the `rm`-in-scratch rule has a
 place to point). These are setup for the decision, not other concerns. Don't add
 side effects beyond preparing what the allow/ask/deny decision itself needs.
 
+**Reading trivial git state is OK; running git is not.** `git_push_to_protected_branch`
+reads `.git/HEAD` (one file) to know the current branch for a bare `git push`.
+That's reading a single state file, not a subprocess and not history — fine. The
+line stays: no `git log`/`git rev-parse` subprocesses, no network, no parsing
+history. If a decision needs more than reading one cheap state file, reconsider.
+
 ## The decision rule
 
 Classify every new command (and every new flag combo) into one of three buckets:
@@ -38,8 +44,9 @@ Classify every new command (and every new flag combo) into one of three buckets:
   agent context. The reason is shown to the agent; it must redirect, not
   prompt the human. Examples: `git push --force`, `git reset --hard`,
   `git rebase`, `git merge` (merge happens via PR review),
-  `gh pr merge` (user-only), `rm` outside the scratch dir (see below), `sudo`,
-  `eval`, `bash <file>` (but `bash -c '<literal>'` is recursed — see below).
+  `git push` to main/master (`git_push_to_protected_branch` — branch + PR
+  instead), `gh pr merge` (user-only), `rm` outside the scratch dir (see below),
+  `sudo`, `eval`, `bash <file>` (but `bash -c '<literal>'` is recursed — below).
 
 When in doubt between `ask` and `deny`, pick `ask`. When in doubt between
 `allow` and `ask`, pick `ask`. **Friction at the right level is the product;

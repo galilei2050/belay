@@ -114,18 +114,7 @@
         "reason": ""
       },
       {
-        "args": [
-          "config",
-          "--get"
-        ],
-        "decision": "allow",
-        "reason": ""
-      },
-      {
-        "args": [
-          "config",
-          "--list"
-        ],
+        "fn": "git_config_read",
         "decision": "allow",
         "reason": ""
       },
@@ -134,7 +123,7 @@
           "config"
         ],
         "decision": "ask",
-        "reason": "Confirm git config write"
+        "reason": "Confirm git config write. Reads (`git config user.name`, `--get`, `--list`) are allowed; this sets or removes a value — confirm, or ask the user to run it."
       },
       {
         "args": [
@@ -219,6 +208,11 @@
         ],
         "decision": "allow",
         "reason": ""
+      },
+      {
+        "fn": "git_push_to_protected_branch",
+        "decision": "deny",
+        "reason": "Don't push to main/master directly — main moves only via a reviewed PR merge. INSTEAD: put the work on a feature branch and open a PR — `git checkout -b <feature>`, `git push -u origin <feature>`, then `gh pr create`. If you're already on main with commits, branch from here (`git checkout -b <feature>`) and push that branch; don't reset or force-push to fix history."
       },
       {
         "args": [

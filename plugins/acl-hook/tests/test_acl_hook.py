@@ -104,6 +104,73 @@ def test_git_commit_is_allowed(logger):
     assert decide("git commit -m 'msg'", logger)[0] == "allow"
 
 
+def test_git_config_read_value_is_allowed(logger):
+    # A bare `git config <key>` reads — used to fall through to the `config` ask rule.
+    assert decide("git config user.name", logger)[0] == "allow"
+
+
+def test_git_config_read_with_scope_flag_is_allowed(logger):
+    assert decide("git config --global user.email", logger)[0] == "allow"
+
+
+def test_git_config_get_and_list_are_allowed(logger):
+    assert decide("git config --get user.name", logger)[0] == "allow"
+    assert decide("git config --list", logger)[0] == "allow"
+
+
+def test_git_config_write_value_is_ask(logger):
+    assert decide("git config user.name galilei", logger)[0] == "ask"
+
+
+def test_git_config_write_with_scope_is_ask(logger):
+    assert decide("git config --global user.name foo", logger)[0] == "ask"
+
+
+def test_git_config_unset_is_ask(logger):
+    assert decide("git config --unset user.name", logger)[0] == "ask"
+
+
+def _set_head(project, ref):
+    git_dir = project / ".git"
+    git_dir.mkdir(exist_ok=True)
+    (git_dir / "HEAD").write_text(f"ref: refs/heads/{ref}\n")
+
+
+def test_git_push_explicit_main_is_denied(logger):
+    decision, reason = decide("git push origin main", logger)
+    assert decision == "deny"
+    assert "PR" in reason
+
+
+def test_git_push_explicit_master_is_denied(logger):
+    assert decide("git push origin master", logger)[0] == "deny"
+
+
+def test_git_push_refspec_to_main_is_denied(logger):
+    assert decide("git push origin HEAD:main", logger)[0] == "deny"
+
+
+def test_git_push_feature_branch_is_allowed(logger):
+    assert decide("git push origin feature/x", logger)[0] == "allow"
+    assert decide("git push -u origin feature/x", logger)[0] == "allow"
+
+
+def test_git_push_bare_on_main_is_denied(logger, fix_project_dir):
+    _set_head(fix_project_dir, "main")
+    assert decide("git push", logger)[0] == "deny"
+    assert decide("git push origin", logger)[0] == "deny"
+
+
+def test_git_push_bare_on_feature_is_allowed(logger, fix_project_dir):
+    _set_head(fix_project_dir, "feature/x")
+    assert decide("git push", logger)[0] == "allow"
+
+
+def test_git_push_bare_no_git_dir_is_allowed(logger):
+    # No readable .git/HEAD (tmp project has none) → can't tell → don't block.
+    assert decide("git push", logger)[0] == "allow"
+
+
 # ── shell escape hatches ──────────────────────────────────────────────────────
 
 

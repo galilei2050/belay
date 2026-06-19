@@ -392,12 +392,84 @@ def sed_inline_long(args: list[str]) -> bool:
     return False
 
 
+_GIT_CONFIG_WRITE_FLAGS = {
+    "--add",
+    "--unset",
+    "--unset-all",
+    "--replace-all",
+    "--rename-section",
+    "--remove-section",
+    "--edit",
+    "-e",
+}
+
+
+def git_config_read(args: list[str]) -> bool:
+    """True iff a `git config …` invocation only reads (sets no value, uses no mutating flag).
+
+    A read sets at most one positional — the key, e.g. `git config user.name` — and no write flag.
+    A write either sets a value (`git config user.name X`: two positionals) or carries --add/--unset/
+    etc. Scope flags (`--global`/`--local`) and read flags (`--get`/`--list`) start with `-`, so they
+    don't count as positionals. This is the read/write distinction the args matchers can't make:
+    `git config user.name` (read) and `git config user.name X` (write) share the same `config user.name`
+    prefix, so an ordered-subsequence rule can't tell them apart.
+    """
+    if not args or args[0] != "config":
+        return False
+    rest = args[1:]
+    if any(flag in _GIT_CONFIG_WRITE_FLAGS for flag in rest):
+        return False
+    positionals = [a for a in rest if not a.startswith("-")]
+    return len(positionals) <= 1
+
+
+_PROTECTED_BRANCHES = {"main", "master"}
+
+
+def _current_branch_protected() -> bool:
+    """True iff the repo's checked-out branch is main/master, read from `.git/HEAD` (no subprocess).
+
+    `.git/HEAD` holds `ref: refs/heads/<branch>` on a normal checkout; a detached HEAD holds a raw
+    sha (no branch, not protected). If `.git` is a file (worktree/submodule) or unreadable we can't
+    tell, so we return False — the explicit-arg forms still catch a deliberate `git push origin main`.
+    """
+    try:
+        content = (Path(PROJECT_DIR) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    return content.startswith("ref:") and content.rsplit("/", 1)[-1] in _PROTECTED_BRANCHES
+
+
+def git_push_to_protected_branch(args: list[str]) -> bool:
+    """True iff a `git push …` would update main/master on the remote.
+
+    Explicit refspecs are read from the args — the destination is the part after `:` (so `HEAD:main`,
+    `main`, and `:main` all count). A bare `git push` / `git push <remote>` pushes the current branch,
+    so we consult `.git/HEAD`. `HEAD` as an explicit ref also means the current branch.
+    """
+    if not args or args[0] != "push":
+        return False
+    positionals = [a for a in args[1:] if not a.startswith("-")]
+    refs = positionals[1:]  # positionals[0] is the remote; the rest are refspecs
+    if not refs:
+        return _current_branch_protected()
+    for ref in refs:
+        dst = ref.split(":")[-1]
+        if dst.rsplit("/", 1)[-1] in _PROTECTED_BRANCHES:
+            return True
+        if dst == "HEAD" and _current_branch_protected():
+            return True
+    return False
+
+
 CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
     "rm_recursive": rm_recursive,
     "all_paths_inside_project": all_paths_inside_project,
     "all_paths_under_scratch": all_paths_under_scratch,
+    "git_config_read": git_config_read,
+    "git_push_to_protected_branch": git_push_to_protected_branch,
 }
 
 
