@@ -177,13 +177,33 @@ def test_git_branch_safe_delete_is_allowed(logger):
     assert decide("git branch --delete feat/x", logger)[0] == "allow"
 
 
-def test_git_branch_force_delete_is_ask(logger):
+def test_git_branch_force_delete_unpushed_is_ask(logger):
+    # No remote-tracking ref in the tmp project → unpushed → force-delete could lose work → ask.
     assert decide("git branch -D feat/x", logger)[0] == "ask"
 
 
-def test_git_branch_long_force_delete_is_ask(logger):
+def test_git_branch_long_force_delete_unpushed_is_ask(logger):
     assert decide("git branch --delete --force feat/x", logger)[0] == "ask"
     assert decide("git branch -d -f feat/x", logger)[0] == "ask"
+
+
+def _add_remote_ref(project, name, remote="origin"):
+    ref = project / ".git" / "refs" / "remotes" / remote / name
+    ref.parent.mkdir(parents=True, exist_ok=True)
+    ref.write_text("deadbeef\n")
+
+
+def test_git_branch_force_delete_pushed_is_allowed(logger, fix_project_dir):
+    # Branch exists on a remote → commits recoverable → force-delete is safe, no prompt.
+    _add_remote_ref(fix_project_dir, "feat/x")
+    assert decide("git branch -D feat/x", logger)[0] == "allow"
+
+
+def test_git_branch_force_delete_pushed_packed_ref_is_allowed(logger, fix_project_dir):
+    git = fix_project_dir / ".git"
+    git.mkdir(exist_ok=True)
+    (git / "packed-refs").write_text("# pack-refs with: peeled\nabc123 refs/remotes/origin/feat/y\n")
+    assert decide("git branch -D feat/y", logger)[0] == "allow"
 
 
 def test_git_branch_create_is_allowed(logger):
