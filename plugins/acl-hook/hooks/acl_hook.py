@@ -462,6 +462,49 @@ def git_push_to_protected_branch(args: list[str]) -> bool:
     return False
 
 
+def _branch_on_remote(name: str) -> bool:
+    """True iff branch `name` has a remote-tracking ref (it's been pushed) — loose or packed.
+
+    Reads `.git/refs/remotes/<remote>/<name>` and `.git/packed-refs` (files, no subprocess). If the
+    branch is on a remote, its commits are recoverable, so even a force-delete loses nothing.
+    """
+    git = Path(PROJECT_DIR) / ".git"
+    remotes_dir = git / "refs" / "remotes"
+    if remotes_dir.is_dir():
+        for remote in remotes_dir.iterdir():
+            if (remote / name).exists():
+                return True
+    packed = git / "packed-refs"
+    try:
+        lines = packed.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+    prefix = "refs/remotes/"
+    for line in lines:
+        ref = line.split(" ", 1)[1].strip() if " " in line else ""
+        if ref.startswith(prefix) and ref[len(prefix) :].partition("/")[2] == name:
+            return True
+    return False
+
+
+def git_branch_force_delete(args: list[str]) -> bool:
+    """True iff `git branch` force-deletes a branch that is NOT on any remote (so work could be lost).
+
+    Force-delete (`-D`, or `-d`/`--delete` with `-f`/`--force`) drops a branch even with unmerged
+    commits. If the branch is on a remote (pushed), the commits are recoverable, so we allow it — only
+    an unpushed force-delete asks. A plain `-d`/`--delete` is safe regardless (git refuses to delete an
+    unmerged branch) and falls through to the `branch` allow.
+    """
+    if not args or args[0] != "branch":
+        return False
+    flags = set(args[1:])
+    forcing = "-D" in flags or (bool(flags & {"-d", "--delete"}) and bool(flags & {"-f", "--force"}))
+    if not forcing:
+        return False
+    names = [a for a in args[1:] if not a.startswith("-")]
+    return any(not _branch_on_remote(n) for n in names)
+
+
 CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
@@ -470,6 +513,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "all_paths_under_scratch": all_paths_under_scratch,
     "git_config_read": git_config_read,
     "git_push_to_protected_branch": git_push_to_protected_branch,
+    "git_branch_force_delete": git_branch_force_delete,
 }
 
 

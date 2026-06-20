@@ -63,20 +63,9 @@
         "reason": "Confirm git clean"
       },
       {
-        "args": [
-          "branch",
-          "-D"
-        ],
+        "fn": "git_branch_force_delete",
         "decision": "ask",
-        "reason": "Confirm force-delete branch"
-      },
-      {
-        "args": [
-          "branch",
-          "-d"
-        ],
-        "decision": "ask",
-        "reason": "Confirm delete branch"
+        "reason": "Confirm force-delete of an UNPUSHED branch — `-D` (and `--delete --force`) drops it even with unmerged commits, and it's not on a remote, so the work isn't recoverable. Force-deleting a pushed branch, or a safe `git branch -d <name>`, is allowed with no prompt. If you meant to keep the work, push the branch first, then delete."
       },
       {
         "args": [
