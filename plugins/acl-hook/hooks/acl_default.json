@@ -542,6 +542,14 @@
       },
       {
         "args": [
+          "pr",
+          "merge"
+        ],
+        "decision": "deny",
+        "reason": "Never merge PRs from the agent — merging is the user's decision after review. Open the PR (`gh pr create`) and leave it for the user to merge. If the work is ready, say so to the user."
+      },
+      {
+        "args": [
           "repo",
           "view"
         ],

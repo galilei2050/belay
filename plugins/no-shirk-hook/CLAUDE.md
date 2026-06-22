@@ -15,6 +15,28 @@ ask-instead-of-do question that shouldn't be there?* It does NOT:
 
 If a feature needs any of the above, it's a different plugin.
 
+## What "done" means (why commit/push/PR offers are shirks)
+
+There is **no "push only when the user asks" rule** — that framing is wrong.
+Committing, pushing a branch, and opening a PR are reversible and are part of
+*finishing the task*, not outward actions to request permission for. So "should
+I push?" / "запушить?" / "open a PR?" are shirks — the `commit_offer` group
+blocks them. The agent does them and reports; it does not ask.
+
+**Done** = the PR is ready to merge (pushed, CI green, description written) AND,
+after the user merges, the change is verified on production. Concretely the agent:
+
+- pushes the branch and opens the PR itself — never asks first;
+- **never merges** — `gh pr merge` is the user's decision after review (and is
+  denied in acl-hook);
+- after merge, **verifies prod** with read-only checks rather than asking "want
+  me to check prod?" — that's an `offer_to_investigate` shirk.
+
+The only legitimate stop before an outward step is a genuinely destructive,
+irreversible action (force-push, drop table, a *manual* prod deploy with no
+reversible step) — that's what the `HARD_DESTRUCTIVE` / `SOFT_DEPLOY` guards are
+for. They are not a license to ask before pushing or opening a PR.
+
 ## Three knobs and only three
 
 1. **`SHIRK_PATTERNS`** — regexes that match in the *tail* of the agent's last

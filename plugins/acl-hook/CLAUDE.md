@@ -80,24 +80,26 @@ understand the rule well enough to ship it. Write a real one before merging.
 A bad reason is "Not allowed." or "Blocked." A good reason names the
 antipattern, explains the failure mode in one clause, and prescribes the fix.
 
-## Where the ACL config lives
+## Where the ACL config lives — the bundled default is the source of truth
 
-The full rule table is **`.claude/acl.json`** inside each project. On the
-first Bash invocation in a fresh project, the hook copies its bundled default
-(`plugins/acl-hook/hooks/acl_default.json`) to that path; from then on the
-project file is authoritative — edit it freely without forking the plugin.
+The canonical rule table is the **bundled `plugins/acl-hook/hooks/acl_default.json`**.
+On first run in a project the hook installs it to **`.claude/acl.json`**, and that
+project copy is read on every subsequent invocation.
 
-To change rules: edit `.claude/acl.json`. To start over: delete the file and
-the next hook run re-installs the bundled default.
+**To change rules, edit the bundled `acl_default.json` and bump the plugin
+`version`.** Don't hand-edit a project's `.claude/acl.json` for anything durable —
+see below.
 
-**Version-gated migration.** When the plugin `version` bumps, the next hook run
-*additively* merges in any **wholly-missing command keys** from the bundled
-default (tracked via `.claude/.acl-synced-version`). It never rewrites an
-existing command's rules — a project override (e.g. `git` set to allow-all)
-always wins. If the bundled default has *new rules for a command the project
-already defines*, that's logged as `acl_drift` (not auto-applied, since it's
-indistinguishable from a deliberate override) — re-sync that command by hand or
-delete `.claude/acl.json` to take the fresh default wholesale.
+**Version bump = automatic refresh (overwrite).** The next hook run after a
+`version` change **overwrites** `.claude/acl.json` from the bundled default
+(tracked via `.claude/.acl-synced-version`; logged as `acl_refreshed`). This is the
+deliberate, automated equivalent of "delete the stale file and reinstall" — so a
+new or changed rule on an *existing* command (which an additive merge couldn't
+safely place) propagates to every project with zero manual cleanup. The trade:
+**per-project edits to `.claude/acl.json` do not survive a bump.** They hold only
+within a version; durable changes belong in the bundled default. (Within a single
+version the project copy is untouched, so a temporary local tweak still works until
+the next bump.)
 
 ## Waiting / polling: never DENIED, silently BOUNDED
 
