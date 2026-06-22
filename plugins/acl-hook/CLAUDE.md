@@ -18,11 +18,13 @@ creates `.scratch/` + adds it to `.gitignore` (so the `rm`-in-scratch rule has a
 place to point). These are setup for the decision, not other concerns. Don't add
 side effects beyond preparing what the allow/ask/deny decision itself needs.
 
-**Reading trivial git state is OK; running git is not.** A couple of predicates
+**Reading trivial git state is OK; running git is not.** Several predicates
 read ref files directly: `git_push_to_protected_branch` reads `.git/HEAD` (current
-branch, for a bare `git push`), and `git_branch_force_delete` reads
+branch, for a bare `git push`), `git_branch_force_delete` reads
 `.git/refs/remotes/*` + `.git/packed-refs` (is the branch pushed?, so a recoverable
-force-delete doesn't prompt). These are cheap file reads, not subprocesses and not
+force-delete doesn't prompt), and `git_branch_off_protected` / `git_branch_off_stale_main`
+read `.git/HEAD` + `refs/heads/*` + `refs/remotes/origin/*` (branch only off an
+up-to-date main/master — see below). These are cheap file reads, not subprocesses and not
 history. The line stays: no `git log`/`git rev-parse` subprocesses, no network, no
 parsing history. If a decision needs more than reading a few ref files, reconsider.
 
@@ -47,7 +49,11 @@ Classify every new command (and every new flag combo) into one of three buckets:
   prompt the human. Examples: `git push --force`, `git reset --hard`,
   `git rebase`, `git merge` (merge happens via PR review),
   `git push` to main/master (`git_push_to_protected_branch` — branch + PR
-  instead), `gh pr merge` (user-only), `rm` outside the scratch dir (see below),
+  instead), creating a branch off a non-trunk or stale base
+  (`git_branch_off_protected` / `git_branch_off_stale_main` — branch only off an
+  up-to-date main/master), reading `.git/` with cat/head/tail/less/more/grep/rg
+  (`any_path_under_git` — use `git` commands, `.git` is off-limits),
+  `gh pr merge` (user-only), `rm` outside the scratch dir (see below),
   `sudo`, `eval`, `bash <file>` (but `bash -c '<literal>'` is recursed — below).
 
 When in doubt between `ask` and `deny`, pick `ask`. When in doubt between
@@ -128,7 +134,7 @@ script as if typed directly. So `bash -c 'git status'` → allow, `bash -c 'rm -
 
 ## `rm`: allowed only in the scratch dir, never `ask`
 
-`rm` has exactly two outcomes — `allow` inside the scratch dir `.claude/tmp/`,
+`rm` has exactly two outcomes — `allow` inside the scratch dir `.scratch/`,
 `deny` everywhere else — and **never `ask`**. An `ask` on `rm` is the worst
 shape: it interrupts the human for the agent's own cleanup. So the agent gets a
 sanctioned scratch area where rm / `rm -rf` are free (no prompt), and is denied

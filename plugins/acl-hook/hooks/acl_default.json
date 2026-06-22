@@ -68,6 +68,16 @@
         "reason": "Confirm force-delete of an UNPUSHED branch — `-D` (and `--delete --force`) drops it even with unmerged commits, and it's not on a remote, so the work isn't recoverable. Force-deleting a pushed branch, or a safe `git branch -d <name>`, is allowed with no prompt. If you meant to keep the work, push the branch first, then delete."
       },
       {
+        "fn": "git_branch_off_protected",
+        "decision": "deny",
+        "reason": "Create branches only off main/master. You're on a feature branch (or a non-trunk base). INSTEAD: `git switch main && git switch -c <name>`, or name the base explicitly: `git switch -c <name> main`. Rooting every branch at the trunk keeps PR diffs clean and avoids accidental stacking."
+      },
+      {
+        "fn": "git_branch_off_stale_main",
+        "decision": "deny",
+        "reason": "Local main/master differs from origin (last fetched) — you'd branch off a stale base. INSTEAD: `git switch main && git pull --ff-only`, then create your branch. If you haven't fetched, run `git fetch origin` first. (Compares the cached origin ref; only a provable divergence blocks.)"
+      },
+      {
         "args": [
           "rebase"
         ],
@@ -346,6 +356,11 @@
   "cat": {
     "rules": [
       {
+        "fn": "any_path_under_git",
+        "decision": "deny",
+        "reason": "Reading `.git/` is off-limits — inspect git state with `git` commands (status/log/show/diff/cat-file), not by reading internal files."
+      },
+      {
         "args_contain": [
           ".env*"
         ],
@@ -357,6 +372,11 @@
   },
   "head": {
     "rules": [
+      {
+        "fn": "any_path_under_git",
+        "decision": "deny",
+        "reason": "Reading `.git/` is off-limits — inspect git state with `git` commands (status/log/show/diff/cat-file), not by reading internal files."
+      },
       {
         "args_contain": [
           ".env*"
@@ -370,6 +390,11 @@
   "tail": {
     "rules": [
       {
+        "fn": "any_path_under_git",
+        "decision": "deny",
+        "reason": "Reading `.git/` is off-limits — inspect git state with `git` commands (status/log/show/diff/cat-file), not by reading internal files."
+      },
+      {
         "args_contain": [
           ".env*"
         ],
@@ -382,6 +407,11 @@
   "less": {
     "rules": [
       {
+        "fn": "any_path_under_git",
+        "decision": "deny",
+        "reason": "Reading `.git/` is off-limits — inspect git state with `git` commands (status/log/show/diff/cat-file), not by reading internal files."
+      },
+      {
         "args_contain": [
           ".env*"
         ],
@@ -393,6 +423,11 @@
   },
   "more": {
     "rules": [
+      {
+        "fn": "any_path_under_git",
+        "decision": "deny",
+        "reason": "Reading `.git/` is off-limits — inspect git state with `git` commands (status/log/show/diff/cat-file), not by reading internal files."
+      },
       {
         "args_contain": [
           ".env*"
@@ -708,6 +743,11 @@
   "grep": {
     "rules": [
       {
+        "fn": "any_path_under_git",
+        "decision": "deny",
+        "reason": "Reading `.git/` is off-limits — inspect git state with `git` commands (status/log/show/diff/cat-file), not by reading internal files."
+      },
+      {
         "args_contain": [
           ".env*"
         ],
@@ -719,6 +759,11 @@
   },
   "rg": {
     "rules": [
+      {
+        "fn": "any_path_under_git",
+        "decision": "deny",
+        "reason": "Reading `.git/` is off-limits — inspect git state with `git` commands (status/log/show/diff/cat-file), not by reading internal files."
+      },
       {
         "args_contain": [
           ".env*"

@@ -14,6 +14,11 @@
       "name": "no-shirk-hook",
       "source": "./plugins/no-shirk-hook",
       "description": "Stop hook that blocks the agent from ending a turn with an ask-instead-of-do question."
+    },
+    {
+      "name": "fs-acl-hook",
+      "source": "./plugins/fs-acl-hook",
+      "description": "PreToolUse file-tool gate: a path-based ACL for Write/Edit/Read (the file-tool sibling of acl-hook)."
     }
   ]
 }
