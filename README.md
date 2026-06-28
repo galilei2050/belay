@@ -18,6 +18,8 @@ a climber when they fall. These plugins are the belay for the agent.
 | Name | Type | What it does |
 |------|------|--------------|
 | [acl-hook](plugins/acl-hook) | PreToolUse | Gates Bash commands against a project ACL |
+| [fs-acl-hook](plugins/fs-acl-hook) | PreToolUse | Gates Write/Edit/Read by path: `.git` off-limits, scratch allowed, no out-of-project writes |
+| [no-shirk-hook](plugins/no-shirk-hook) | Stop | Blocks ending a turn with an ask-instead-of-do question |
 
 More plugins will land here as the harness is decomposed.
 

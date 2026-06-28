@@ -207,7 +207,107 @@ def test_git_branch_force_delete_pushed_packed_ref_is_allowed(logger, fix_projec
 
 
 def test_git_branch_create_is_allowed(logger):
+    # No readable .git/HEAD in the tmp project → can't tell current branch → fail open.
     assert decide("git branch feat/x", logger)[0] == "allow"
+
+
+# ── branch only off an up-to-date main/master ────────────────────────────────
+
+
+def _set_ref(project, ref, sha):
+    p = project / ".git" / ref
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(sha + "\n")
+
+
+def test_branch_off_feature_is_denied(logger, fix_project_dir):
+    _set_head(fix_project_dir, "feature/x")
+    assert decide("git switch -c new", logger)[0] == "deny"
+    assert decide("git checkout -b new", logger)[0] == "deny"
+    assert decide("git branch new", logger)[0] == "deny"
+
+
+def test_branch_off_main_is_allowed(logger, fix_project_dir):
+    _set_head(fix_project_dir, "main")
+    assert decide("git switch -c new", logger)[0] == "allow"
+    assert decide("git checkout -b new", logger)[0] == "allow"
+
+
+def test_branch_explicit_base_main_is_allowed_even_from_feature(logger, fix_project_dir):
+    _set_head(fix_project_dir, "feature/x")
+    assert decide("git switch -c new main", logger)[0] == "allow"
+    assert decide("git checkout -b new origin/main", logger)[0] == "allow"
+
+
+def test_branch_explicit_non_trunk_base_is_denied(logger, fix_project_dir):
+    _set_head(fix_project_dir, "main")
+    assert decide("git switch -c new other-feature", logger)[0] == "deny"
+
+
+def test_branch_off_unreadable_head_fails_open(logger):
+    # No .git/HEAD → can't confirm a non-trunk base → don't block (matches git push).
+    assert decide("git switch -c new", logger)[0] == "allow"
+
+
+def test_branch_off_stale_main_is_denied(logger, fix_project_dir):
+    _set_head(fix_project_dir, "main")
+    _set_ref(fix_project_dir, "refs/heads/main", "aaaa")
+    _set_ref(fix_project_dir, "refs/remotes/origin/main", "bbbb")
+    decision, reason = decide("git switch -c new", logger)
+    assert decision == "deny"
+    assert "origin" in reason
+
+
+def test_branch_off_synced_main_is_allowed(logger, fix_project_dir):
+    _set_head(fix_project_dir, "main")
+    _set_ref(fix_project_dir, "refs/heads/main", "aaaa")
+    _set_ref(fix_project_dir, "refs/remotes/origin/main", "aaaa")
+    assert decide("git switch -c new", logger)[0] == "allow"
+
+
+def test_branch_off_main_no_remote_ref_is_allowed(logger, fix_project_dir):
+    # Local main present but never fetched (no origin ref) → sync unknown → don't block.
+    _set_head(fix_project_dir, "main")
+    _set_ref(fix_project_dir, "refs/heads/main", "aaaa")
+    assert decide("git switch -c new", logger)[0] == "allow"
+
+
+def test_branch_off_protected_helper(fix_project_dir):
+    _set_head(fix_project_dir, "feature/x")
+    assert acl_hook.git_branch_off_protected(["switch", "-c", "new"]) is True
+    assert acl_hook.git_branch_off_protected(["switch", "-c", "new", "main"]) is False
+    assert acl_hook.git_branch_off_protected(["branch", "-d", "old"]) is False
+    assert acl_hook.git_branch_off_protected(["status"]) is False
+
+
+# ── .git is off-limits to readers ────────────────────────────────────────────
+
+
+def test_cat_git_dir_is_denied(logger):
+    decision, reason = decide("cat .git/config", logger)
+    assert decision == "deny"
+    assert ".git" in reason
+
+
+def test_grep_git_dir_is_denied(logger):
+    assert decide("grep token .git/config", logger)[0] == "deny"
+
+
+def test_cat_normal_file_is_allowed(logger):
+    assert decide("cat README.md", logger)[0] == "allow"
+
+
+# ── gh ───────────────────────────────────────────────────────────────────────
+
+
+def test_gh_pr_merge_is_denied(logger):
+    decision, reason = decide("gh pr merge 123", logger)
+    assert decision == "deny"
+    assert "merge" in reason.lower()
+
+
+def test_gh_pr_create_is_allowed(logger):
+    assert decide("gh pr create --fill", logger)[0] == "allow"
 
 
 # ── shell escape hatches ──────────────────────────────────────────────────────
@@ -724,47 +824,47 @@ def test_acl_config_is_auto_installed_on_first_decision(logger, fix_project_dir)
     assert json.loads(target.read_text(encoding="utf-8"))["git"]["default"] == "deny"
 
 
-def test_project_acl_override_wins(fix_project_dir, logger, monkeypatch):
-    override_dir = fix_project_dir / ".claude"
-    override_dir.mkdir(exist_ok=True)
-    (override_dir / "acl.json").write_text(
-        json.dumps({"git": {"rules": [], "default": "allow"}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
-    decision, _ = decide("git push --force", logger)
-    assert decision == "allow"  # bundled default would have denied this
-
-
-# ── version-gated additive migration of stale project ACLs ───────────────────
-
-
-def test_migration_adds_missing_command_keys(fix_project_dir, monkeypatch):
-    acl_dir = fix_project_dir / ".claude"
-    acl_dir.mkdir(exist_ok=True)
-    # Stale config: predates everything except `git`. No sync stamp → looks legacy.
-    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "deny"}}), encoding="utf-8")
-    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
-    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
-    table = acl_hook.acl()
-    assert "git" in table  # untouched
-    assert "ls" in table  # a bundled key the stale file lacked, now present
-    written = json.loads((acl_dir / "acl.json").read_text(encoding="utf-8"))
-    assert "ls" in written  # persisted to disk
-    assert (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).read_text(encoding="utf-8") == "9.9.9"
-
-
-def test_migration_does_not_clobber_overrides(fix_project_dir, logger, monkeypatch):
+def test_project_acl_override_survives_within_version(fix_project_dir, logger, monkeypatch):
+    # An override stands as long as the stamp matches the current version (no reinstall).
     acl_dir = fix_project_dir / ".claude"
     acl_dir.mkdir(exist_ok=True)
     (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "allow"}}), encoding="utf-8")
+    (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).write_text("9.9.9", encoding="utf-8")
+    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
+    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
+    decision, _ = decide("git push --force", logger)
+    assert decision == "allow"  # same version → not reinstalled, override stands
+
+
+# ── version bump overwrites the project ACL from the bundled default ──────────
+
+
+def test_version_bump_reinstalls_bundled(fix_project_dir, monkeypatch):
+    acl_dir = fix_project_dir / ".claude"
+    acl_dir.mkdir(exist_ok=True)
+    # Stale config from an older version: only `git`, permissive, stamped old.
+    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "allow"}}), encoding="utf-8")
+    (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).write_text("0.0.1", encoding="utf-8")
+    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
+    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
+    table = acl_hook.acl()
+    assert "ls" in table  # a bundled key the stale file lacked, now present
+    assert table["git"]["default"] == "deny"  # permissive override replaced by the bundled default
+    assert (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).read_text(encoding="utf-8") == "9.9.9"
+
+
+def test_version_bump_overwrites_stale_override(fix_project_dir, logger, monkeypatch):
+    acl_dir = fix_project_dir / ".claude"
+    acl_dir.mkdir(exist_ok=True)
+    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "allow"}}), encoding="utf-8")
+    (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).write_text("0.0.1", encoding="utf-8")
     monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
     monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
     decision, _ = decide("git push --force", logger)
-    assert decision == "allow"  # the allow-all override survives migration
+    assert decision == "deny"  # the bump reinstalled the bundled default; the allow-all override is gone
 
 
-def test_migration_is_skipped_when_version_matches(fix_project_dir, monkeypatch):
+def test_no_reinstall_when_version_matches(fix_project_dir, monkeypatch):
     acl_dir = fix_project_dir / ".claude"
     acl_dir.mkdir(exist_ok=True)
     (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "deny"}}), encoding="utf-8")
@@ -772,4 +872,4 @@ def test_migration_is_skipped_when_version_matches(fix_project_dir, monkeypatch)
     monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
     monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
     table = acl_hook.acl()
-    assert "ls" not in table  # already-synced version → no merge, stale file left as-is
+    assert "ls" not in table  # already-synced version → stale file kept as-is, no reinstall

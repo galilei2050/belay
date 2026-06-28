@@ -63,12 +63,14 @@ HOME = str(Path.home())
 # when invoked outside a Claude Code session (tests, manual runs).
 PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
 
-# ── ACL config: bundled defaults auto-installed into the project on first run ──
+# ── ACL config: the bundled default IS the source of truth ───────────────────
 #
-# The full rule table lives in `acl_default.json` next to this file. On first
-# invocation in a project, that file is copied to `$CLAUDE_PROJECT_DIR/.claude/
-# acl.json` so the user can edit rules per-project without forking the plugin.
-# Subsequent invocations read the project copy.
+# The full rule table lives in `acl_default.json` next to this file. It's installed
+# to `$CLAUDE_PROJECT_DIR/.claude/acl.json` on first run and **overwritten from the
+# bundled default on every plugin version bump** (tracked via `.acl-synced-version`)
+# — so new/changed rules propagate to every project automatically, with no hand-
+# deleting of stale copies. Per-project edits live only until the next bump; durable
+# rule changes go in the bundled `acl_default.json` (with a version bump).
 
 _BUNDLED_ACL_PATH = Path(__file__).parent / "acl_default.json"
 _PLUGIN_JSON_PATH = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
@@ -86,75 +88,33 @@ def _plugin_version() -> str:
     return str(json.loads(_PLUGIN_JSON_PATH.read_text(encoding="utf-8"))["version"])
 
 
-def _rule_sig(rule: Rule) -> str:
-    """Opaque dedup key for a rule: matcher kind + value + decision."""
-    for kind in ("args", "args_contain", "args_glob", "fn"):
-        if kind in rule:
-            return f"{kind}\0{json.dumps(rule[kind], sort_keys=True)}\0{rule['decision']}"  # type: ignore[literal-required]
-    return f"\0\0{rule['decision']}"
+def _install_default(target: Path, stamp: Path, version: str, *, previous: str | None) -> None:
+    """(Re)install the bundled default into the project — on first run or any version bump.
 
-
-class MergeResult(NamedTuple):
-    """Outcome of merging bundled defaults into a project ACL."""
-
-    added: list[str]
-    drifted: list[str]
-
-
-def _merge_defaults(project: dict[str, Entry], bundled: dict[str, Entry]) -> MergeResult:
-    """Add command keys the project entirely lacks; report (don't touch) drifted entries.
-
-    Only wholly-missing command keys are added — a key the project already has is left alone,
-    because we can't tell a deliberate override (e.g. `git` set to allow-all) from a stale copy.
-    For existing keys whose bundled rule-set the project is missing, we return the names for an
-    informational log so drift is visible instead of silent; the user re-syncs those by hand.
-    Returns (added_keys, drifted_keys).
+    A bump overwrites the project copy wholesale: the bundled default is authoritative, so a new
+    rule on an existing command (which an additive merge couldn't safely apply) propagates without
+    the user hand-deleting acl.json. Per-project edits don't survive a bump — that's the trade for
+    automatic propagation; durable changes belong in the bundled default.
     """
-    added: list[str] = []
-    drifted: list[str] = []
-    for name, b_entry in bundled.items():
-        if name not in project:
-            project[name] = b_entry
-            added.append(name)
-            continue
-        seen = {_rule_sig(r) for r in project[name].get("rules", [])}
-        if any(_rule_sig(r) not in seen for r in b_entry.get("rules", [])):
-            drifted.append(name)
-    return MergeResult(added, drifted)
-
-
-def _sync_project_acl(target: Path, loaded: dict[str, Entry], version: str) -> None:
-    """On a plugin version bump, add new default command keys to the project ACL.
-
-    Additive only — never rewrites an existing command's rules, so project overrides win.
-    """
-    stamp = target.parent / _SYNC_STAMP_RELPATH.name
-    if stamp.exists() and stamp.read_text(encoding="utf-8").strip() == version:
-        return
-    bundled: dict[str, Entry] = json.loads(_BUNDLED_ACL_PATH.read_text(encoding="utf-8"))
-    added, drifted = _merge_defaults(loaded, bundled)
-    log = logging.getLogger("acl_hook")
-    if added:
-        target.write_text(json.dumps(loaded, indent=2) + "\n", encoding="utf-8")
-        log.info("acl_migrated version=%s added_commands=%s", version, added)
-    if drifted:
-        log.info("acl_drift version=%s commands_missing_default_rules=%s (re-sync by hand)", version, drifted)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_BUNDLED_ACL_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     stamp.write_text(version, encoding="utf-8")
+    if previous is not None:
+        logging.getLogger("acl_hook").info("acl_refreshed version=%s previous=%s", version, previous)
 
 
 def _load_acl() -> dict[str, Entry]:
-    """Read the project ACL, installing the bundled default and syncing new defaults on version bump."""
+    """Read the project ACL, (re)installing the bundled default on first run or a version bump."""
     global _ACL_CACHE  # noqa: PLW0603 — module-level cache for the parsed config
     if _ACL_CACHE is not None:
         return _ACL_CACHE
     target = project_acl_path()
     version = _plugin_version()
-    if not target.exists():
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(_BUNDLED_ACL_PATH.read_text(encoding="utf-8"), encoding="utf-8")
-        (target.parent / _SYNC_STAMP_RELPATH.name).write_text(version, encoding="utf-8")
+    stamp = target.parent / _SYNC_STAMP_RELPATH.name
+    synced = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else None
+    if not target.exists() or synced != version:
+        _install_default(target, stamp, version, previous=synced)
     loaded: dict[str, Entry] = json.loads(target.read_text(encoding="utf-8"))
-    _sync_project_acl(target, loaded, version)
     _ACL_CACHE = loaded
     return loaded
 
@@ -426,18 +386,22 @@ def git_config_read(args: list[str]) -> bool:
 _PROTECTED_BRANCHES = {"main", "master"}
 
 
-def _current_branch_protected() -> bool:
-    """True iff the repo's checked-out branch is main/master, read from `.git/HEAD` (no subprocess).
+def _current_branch_name() -> str | None:
+    """The checked-out branch name from `.git/HEAD`, or None on a detached HEAD / unreadable `.git`.
 
     `.git/HEAD` holds `ref: refs/heads/<branch>` on a normal checkout; a detached HEAD holds a raw
-    sha (no branch, not protected). If `.git` is a file (worktree/submodule) or unreadable we can't
-    tell, so we return False — the explicit-arg forms still catch a deliberate `git push origin main`.
+    sha (no branch). If `.git` is a file (worktree/submodule) or unreadable we can't tell, so None.
     """
     try:
         content = (Path(PROJECT_DIR) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
     except OSError:
-        return False
-    return content.startswith("ref:") and content.rsplit("/", 1)[-1] in _PROTECTED_BRANCHES
+        return None
+    return content.rsplit("/", 1)[-1] if content.startswith("ref:") else None
+
+
+def _current_branch_protected() -> bool:
+    """True iff the repo's checked-out branch is main/master (None / detached HEAD → False)."""
+    return _current_branch_name() in _PROTECTED_BRANCHES
 
 
 def git_push_to_protected_branch(args: list[str]) -> bool:
@@ -505,6 +469,167 @@ def git_branch_force_delete(args: list[str]) -> bool:
     return any(not _branch_on_remote(n) for n in names)
 
 
+def any_path_under_git(args: list[str]) -> bool:
+    """True iff any non-flag path arg resolves inside the repo's `.git/` dir (`.git` is off-limits).
+
+    Blocks `cat .git/config`, `grep -r x .git/`, etc. — the agent inspects git via `git` commands,
+    never by reading `.git/` files. `resolve()` collapses `..`, so a traversal in can't dodge it.
+    """
+    git_dir = (Path(PROJECT_DIR) / ".git").resolve()
+    project_root = Path(PROJECT_DIR).resolve()
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        candidate = Path(arg) if Path(arg).is_absolute() else project_root / arg
+        real = candidate.resolve()
+        if real == git_dir or git_dir in real.parents:
+            return True
+    return False
+
+
+# ── git branch creation: only off an up-to-date main/master ──────────────────
+
+_BRANCH_CREATE_FLAGS = {"checkout": {"-b", "-B"}, "switch": {"-c", "-C"}}
+# Flags that make `git branch …` manage existing branches (list/delete/move/copy/…) rather than
+# create one from a start-point — when any is present, it's not a creation we gate.
+_BRANCH_MGMT_FLAGS = {
+    "-d",
+    "-D",
+    "--delete",
+    "-m",
+    "-M",
+    "--move",
+    "-c",
+    "-C",
+    "--copy",
+    "--list",
+    "-l",
+    "-a",
+    "--all",
+    "-r",
+    "--remotes",
+    "-v",
+    "-vv",
+    "--show-current",
+    "--edit-description",
+    "--set-upstream-to",
+    "-u",
+    "--unset-upstream",
+    "--contains",
+    "--merged",
+    "--no-merged",
+    "--points-at",
+}
+
+
+class BranchBase(NamedTuple):
+    """A branch-creating git command's intent: whether it creates, and its start-point ref."""
+
+    creating: bool
+    start_point: str | None  # explicit base ref, or None to root on the current HEAD
+
+
+def _is_branch_creation_cmd(sub: str, rest: list[str]) -> bool:
+    """True iff `<sub> <rest>` creates a branch: `checkout -b/-B`, `switch -c/-C`, or `branch <name>`."""
+    if sub in _BRANCH_CREATE_FLAGS:
+        return bool(set(rest) & _BRANCH_CREATE_FLAGS[sub])
+    if sub == "branch":
+        return not (set(rest) & _BRANCH_MGMT_FLAGS)
+    return False
+
+
+def _branch_base(args: list[str]) -> BranchBase:
+    """The branch-creation intent of a git command.
+
+    `creating` is False when the command doesn't create a branch. On creation, `start_point` is the
+    explicit base ref if given (`git switch -c x main` → 'main'), else None (rooted on current HEAD).
+    Covers `checkout -b/-B`, `switch -c/-C`, and `branch <name> [<base>]`.
+    """
+    if not args or not _is_branch_creation_cmd(args[0], args[1:]):
+        return BranchBase(creating=False, start_point=None)
+    rest = args[1:]
+    positionals = [a for a in rest if not a.startswith("-")]
+    if not positionals:  # bare `git branch` (list), or `checkout -b` with no name
+        return BranchBase(creating=False, start_point=None)
+    base = positionals[1] if len(positionals) > 1 else None
+    return BranchBase(creating=True, start_point=base)
+
+
+def _short_ref(ref: str) -> str:
+    """Last segment of a ref name: 'origin/main' → 'main', 'refs/heads/x' → 'x'."""
+    return ref.rsplit("/", 1)[-1]
+
+
+def git_branch_off_protected(args: list[str]) -> bool:
+    """True (→ deny) iff a git command creates a branch rooted on something other than main/master.
+
+    An explicit start-point is judged by that ref (so `git switch -c x main` is allowed even from a
+    feature branch); with no start-point the branch roots on the current branch (read from HEAD).
+    """
+    creating, base = _branch_base(args)
+    if not creating:
+        return False
+    if base is None:
+        # Rooted on the current branch. Fail open when HEAD is unreadable (detached / worktree),
+        # matching git_push_to_protected_branch — an explicit non-trunk base is still caught below.
+        name = _current_branch_name()
+        return name is not None and name not in _PROTECTED_BRANCHES
+    return _short_ref(base) not in _PROTECTED_BRANCHES
+
+
+def _ref_sha(ref: str) -> str | None:
+    """SHA a ref points to, from `.git/<ref>` (loose) or `.git/packed-refs`; None if absent.
+
+    Pure file reads, no subprocess — the same line acl-hook holds in `_branch_on_remote`.
+    """
+    git = Path(PROJECT_DIR) / ".git"
+    try:
+        text = (git / ref).read_text(encoding="utf-8").strip()
+        if text:
+            return text
+    except OSError:
+        pass
+    try:
+        lines = (git / "packed-refs").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        if not line or line[0] in "#^":
+            continue
+        sha, _, name = line.partition(" ")
+        if name.strip() == ref:
+            return sha.strip()
+    return None
+
+
+def _protected_synced(branch: str) -> bool | None:
+    """Local `<branch>` vs cached `origin/<branch>`: True=equal, False=diverged, None=can't tell.
+
+    No fetch — compares the last-fetched remote ref. If either side is missing (never fetched, no
+    remote), we can't tell, so None, and the caller doesn't block.
+    """
+    local = _ref_sha(f"refs/heads/{branch}")
+    remote = _ref_sha(f"refs/remotes/origin/{branch}")
+    if local is None or remote is None:
+        return None
+    return local == remote
+
+
+def git_branch_off_stale_main(args: list[str]) -> bool:
+    """True (→ deny) iff branching off a protected base whose local ref provably differs from origin.
+
+    Fires only when the base IS main/master (a non-trunk base is denied separately) and we can prove
+    divergence; an unknown sync state (no cached remote ref) never blocks.
+    """
+    creating, base = _branch_base(args)
+    if not creating:
+        return False
+    branch = _short_ref(base) if base is not None else _current_branch_name()
+    if branch not in _PROTECTED_BRANCHES:
+        return False
+    return _protected_synced(branch) is False
+
+
 CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
@@ -514,6 +639,9 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "git_config_read": git_config_read,
     "git_push_to_protected_branch": git_push_to_protected_branch,
     "git_branch_force_delete": git_branch_force_delete,
+    "git_branch_off_protected": git_branch_off_protected,
+    "git_branch_off_stale_main": git_branch_off_stale_main,
+    "any_path_under_git": any_path_under_git,
 }
 
 

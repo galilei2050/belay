@@ -1,0 +1,8 @@
+{
+  "name": "fs-acl-hook",
+  "version": "0.1.0",
+  "description": "PreToolUse file-tool gate: a path-based ACL for Write/Edit/Read (the file-tool sibling of acl-hook).",
+  "author": {
+    "name": "galilei2050"
+  }
+}
