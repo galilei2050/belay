@@ -14,7 +14,7 @@ Per the Claude Code docs, `.claude/rules/*.md` is auto-loaded at launch — and 
 
 That's the whole rollout — every repo on this machine gets these rules, no per-repo setup. User-level rules load *before* a repo's own `.claude/rules/`, so any project can override. (Rules can't be shipped as a Claude Code *plugin* — plugin components are skills/agents/hooks/MCP/LSP/monitors only — so they live as a plain versioned dir beside belay's hook plugins.)
 
-To keep the token cost down, the **code-specific** rules carry `paths:` frontmatter and load only when Claude touches a source file; the three pet-peeve rules and the four behavioral rules load **unconditionally** (every session). Rules are context, not enforcement — see "Rules vs. hooks" below.
+To keep the token cost down, the **code-specific** rules carry `paths:` frontmatter and load only when Claude touches a source file; the rest — pet-peeves, behavioral rules, and the comment/commit-message pair — have no `paths:` and load **unconditionally** (every session). Rules are context, not enforcement — see "Rules vs. hooks" below.
 
 ## Code smells — what lands in the files
 
@@ -23,6 +23,7 @@ To keep the token cost down, the **code-specific** rules carry `paths:` frontmat
 | ⭐ [root-cause-not-symptom.md](root-cause-not-symptom.md) | Patching the symptom (special-case, catch-all, retry, test-weakening, wrong-layer) instead of fixing the cause |
 | ⭐ [no-defensive-defaults.md](no-defensive-defaults.md) | Guarding impossible states, swallowing exceptions, "just in case" optionals, silent fallbacks |
 | ⭐ [comments-why-not-what.md](comments-why-not-what.md) | Comments that restate code, narrate changes, or add ceremony — instead of explaining why |
+| [commit-messages-why-not-what.md](commit-messages-why-not-what.md) | Commit messages that re-say the diff ("update files", "fix bug"), narrate it line-by-line, or invent a rationale — instead of recording why-this-change |
 | [reuse-before-reinvent.md](reuse-before-reinvent.md) | Duplicating, reinventing, creating a parallel file, or hand-rolling what a mature library already does |
 | [no-speculative-generality.md](no-speculative-generality.md) | Adding parameters, abstractions, and flags for a future that hasn't arrived |
 | [concrete-types.md](concrete-types.md) | Using `Any`/untyped maps at boundaries or silencing the type checker |
