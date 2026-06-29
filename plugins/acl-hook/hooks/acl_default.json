@@ -69,13 +69,13 @@
       },
       {
         "fn": "git_branch_off_protected",
-        "decision": "deny",
-        "reason": "Create branches only off main/master. You're on a feature branch (or a non-trunk base). INSTEAD: `git switch main && git switch -c <name>`, or name the base explicitly: `git switch -c <name> main`. Rooting every branch at the trunk keeps PR diffs clean and avoids accidental stacking."
+        "decision": "allow",
+        "reason": "You're branching off something other than main/master, not the trunk. Double-check this is what the user asked for — if you meant to branch off the trunk, do `git switch main && git switch -c <name>`, or name the base explicitly: `git switch -c <name> main`. Rooting branches at the trunk keeps PR diffs clean and avoids accidental stacking."
       },
       {
         "fn": "git_branch_off_stale_main",
-        "decision": "deny",
-        "reason": "Local main/master differs from origin (last fetched) — you'd branch off a stale base. INSTEAD: `git switch main && git pull --ff-only`, then create your branch. If you haven't fetched, run `git fetch origin` first. (Compares the cached origin ref; only a provable divergence blocks.)"
+        "decision": "allow",
+        "reason": "Your local main/master differs from origin (last fetched) — you're branching off a stale base, so the new branch may miss recent commits. If you wanted a fresh base, you probably meant to pull first: `git switch main && git pull --ff-only`, then create the branch. (Compares the cached origin ref; fires only on a provable divergence.)"
       },
       {
         "args": [
@@ -88,15 +88,15 @@
         "args": [
           "cherry-pick"
         ],
-        "decision": "deny",
-        "reason": "Agent never cherry-picks — open a PR with the desired commits, or ask user"
+        "decision": "allow",
+        "reason": ""
       },
       {
         "args": [
           "merge"
         ],
-        "decision": "deny",
-        "reason": "Agent never merges — use PRs via `gh pr create`/merge UI"
+        "decision": "allow",
+        "reason": ""
       },
       {
         "args": [

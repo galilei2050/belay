@@ -220,11 +220,12 @@ def _set_ref(project, ref, sha):
     p.write_text(sha + "\n")
 
 
-def test_branch_off_feature_is_denied(logger, fix_project_dir):
+def test_branch_off_feature_is_allowed_with_reminder(logger, fix_project_dir):
     _set_head(fix_project_dir, "feature/x")
-    assert decide("git switch -c new", logger)[0] == "deny"
-    assert decide("git checkout -b new", logger)[0] == "deny"
-    assert decide("git branch new", logger)[0] == "deny"
+    for cmd in ("git switch -c new", "git checkout -b new", "git branch new"):
+        decision, reason = decide(cmd, logger)
+        assert decision == "allow"
+        assert "trunk" in reason
 
 
 def test_branch_off_main_is_allowed(logger, fix_project_dir):
@@ -239,9 +240,11 @@ def test_branch_explicit_base_main_is_allowed_even_from_feature(logger, fix_proj
     assert decide("git checkout -b new origin/main", logger)[0] == "allow"
 
 
-def test_branch_explicit_non_trunk_base_is_denied(logger, fix_project_dir):
+def test_branch_explicit_non_trunk_base_is_allowed_with_reminder(logger, fix_project_dir):
     _set_head(fix_project_dir, "main")
-    assert decide("git switch -c new other-feature", logger)[0] == "deny"
+    decision, reason = decide("git switch -c new other-feature", logger)
+    assert decision == "allow"
+    assert "trunk" in reason
 
 
 def test_branch_off_unreadable_head_fails_open(logger):
@@ -249,13 +252,14 @@ def test_branch_off_unreadable_head_fails_open(logger):
     assert decide("git switch -c new", logger)[0] == "allow"
 
 
-def test_branch_off_stale_main_is_denied(logger, fix_project_dir):
+def test_branch_off_stale_main_is_allowed_with_reminder(logger, fix_project_dir):
     _set_head(fix_project_dir, "main")
     _set_ref(fix_project_dir, "refs/heads/main", "aaaa")
     _set_ref(fix_project_dir, "refs/remotes/origin/main", "bbbb")
     decision, reason = decide("git switch -c new", logger)
-    assert decision == "deny"
+    assert decision == "allow"
     assert "origin" in reason
+    assert "pull" in reason
 
 
 def test_branch_off_synced_main_is_allowed(logger, fix_project_dir):
@@ -278,6 +282,22 @@ def test_branch_off_protected_helper(fix_project_dir):
     assert acl_hook.git_branch_off_protected(["switch", "-c", "new", "main"]) is False
     assert acl_hook.git_branch_off_protected(["branch", "-d", "old"]) is False
     assert acl_hook.git_branch_off_protected(["status"]) is False
+
+
+def test_branch_off_feature_reminder_delivered_as_additional_context(monkeypatch, capsys, fix_project_dir):
+    _set_head(fix_project_dir, "feature/x")
+    out = via_main(monkeypatch, capsys, "git switch -c new")["hookSpecificOutput"]
+    assert out["permissionDecision"] == "allow"
+    assert "trunk" in out["additionalContext"]
+    # The agent-facing nudge must NOT leak into the user-facing allow reason.
+    assert out["permissionDecisionReason"] == ""
+
+
+def test_clean_allow_has_no_additional_context(monkeypatch, capsys, fix_project_dir):
+    _set_head(fix_project_dir, "main")
+    out = via_main(monkeypatch, capsys, "git switch -c new")["hookSpecificOutput"]
+    assert out["permissionDecision"] == "allow"
+    assert "additionalContext" not in out
 
 
 # ── .git is off-limits to readers ────────────────────────────────────────────
