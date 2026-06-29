@@ -36,6 +36,11 @@ Classify every new command (and every new flag combo) into one of three buckets:
   cannot damage state or leak information regardless of arguments. The agent
   should never have to ask the human about these. Examples: `ls`, `cat` (of
   non-`.env*` paths), `git status`, `git log`, `gcloud … list`, `find -name`.
+  An allow rule may also carry a **reminder**: a non-empty `reason` on an
+  `allow` rule is delivered to the agent as `additionalContext` (a soft nudge,
+  no prompt) — see "allow + reminder" below. Use it for reversible-but-suspect
+  actions where a hard `deny` would be the contradicting-voice bug, but silence
+  would let an easy mistake through.
 
 - **`ask`** — needs human audit. The command is **legitimate** but its effect
   is outward-facing, hard to reverse, or context-dependent enough that a
@@ -47,14 +52,14 @@ Classify every new command (and every new flag combo) into one of three buckets:
 - **`deny`** — destructive, irreversible, or impossible-to-justify in any
   agent context. The reason is shown to the agent; it must redirect, not
   prompt the human. Examples: `git push --force`, `git reset --hard`,
-  `git rebase`, `git merge` (merge happens via PR review),
-  `git push` to main/master (`git_push_to_protected_branch` — branch + PR
-  instead), creating a branch off a non-trunk or stale base
-  (`git_branch_off_protected` / `git_branch_off_stale_main` — branch only off an
-  up-to-date main/master), reading `.git/` with cat/head/tail/less/more/grep/rg
+  `git rebase`, `git push` to main/master (`git_push_to_protected_branch` —
+  branch + PR instead), reading `.git/` with cat/head/tail/less/more/grep/rg
   (`any_path_under_git` — use `git` commands, `.git` is off-limits),
   `gh pr merge` (user-only), `rm` outside the scratch dir (see below),
   `sudo`, `eval`, `bash <file>` (but `bash -c '<literal>'` is recursed — below).
+  (`git merge` and `git cherry-pick` are **allow** — reversible local ops.
+  Creating a branch off a non-trunk or stale base is **allow + reminder**, not
+  deny — see below.)
 
 When in doubt between `ask` and `deny`, pick `ask`. When in doubt between
 `allow` and `ask`, pick `ask`. **Friction at the right level is the product;
@@ -79,6 +84,33 @@ understand the rule well enough to ship it. Write a real one before merging.
 
 A bad reason is "Not allowed." or "Blocked." A good reason names the
 antipattern, explains the failure mode in one clause, and prescribes the fix.
+
+## allow + reminder: nudge the agent without blocking
+
+A fourth shape sits between `allow` and `ask`: **allow the command, but deliver
+a reminder to the agent.** Set `decision: "allow"` with a non-empty `reason`;
+the hook routes that reason into the PreToolUse `additionalContext`, which the
+agent receives as a `<system-reminder>` before acting. No prompt fires, the user
+isn't interrupted, and the command runs — it's a soft nudge, not a gate.
+
+Mechanics (in `acl_hook.py`): `_emit` puts an allow `reason` into
+`additionalContext` (not `permissionDecisionReason`, which on `allow` is
+user-facing only and never reaches the agent — verified empirically). On `allow`
+`permissionDecisionReason` stays empty, so the nudge never leaks to the user.
+`_resolve_chained` carries the first allow-reminder through a command chain when
+nothing stricter fires.
+
+When to reach for it: a **reversible** action that's *probably* a mistake but
+legitimately what the user might want. A hard `deny` there is the
+contradicting-voice bug (see Waiting / polling) — it dead-ends a valid action;
+silence lets an easy error through. The reminder threads the needle. Current
+users: `git_branch_off_protected` and `git_branch_off_stale_main` — branching off
+a non-trunk or stale base proceeds, but the agent is reminded to confirm intent /
+pull first. Phrase the reason as a second-person nudge ("You're branching off
+…"), not a redirect — the action already happened.
+
+Don't overuse it: most commands are cleanly allow / ask / deny. A reminder on a
+genuinely safe command is just noise in the agent's context.
 
 ## Where the ACL config lives — the bundled default is the source of truth
 

@@ -561,9 +561,9 @@ def _short_ref(ref: str) -> str:
 
 
 def git_branch_off_protected(args: list[str]) -> bool:
-    """True (→ deny) iff a git command creates a branch rooted on something other than main/master.
+    """True (→ allow + reminder) iff a git command creates a branch rooted on something other than main/master.
 
-    An explicit start-point is judged by that ref (so `git switch -c x main` is allowed even from a
+    An explicit start-point is judged by that ref (so `git switch -c x main` is clean even from a
     feature branch); with no start-point the branch roots on the current branch (read from HEAD).
     """
     creating, base = _branch_base(args)
@@ -616,10 +616,10 @@ def _protected_synced(branch: str) -> bool | None:
 
 
 def git_branch_off_stale_main(args: list[str]) -> bool:
-    """True (→ deny) iff branching off a protected base whose local ref provably differs from origin.
+    """True (→ allow + reminder) iff branching off a protected base whose local ref provably differs from origin.
 
-    Fires only when the base IS main/master (a non-trunk base is denied separately) and we can prove
-    divergence; an unknown sync state (no cached remote ref) never blocks.
+    Fires only when the base IS main/master (a non-trunk base is reminded separately) and we can prove
+    divergence; an unknown sync state (no cached remote ref) never fires.
     """
     creating, base = _branch_base(args)
     if not creating:
@@ -934,18 +934,17 @@ def _classify(cmd_str: str) -> Decision:
 
 
 def _emit(decision: str, reason: str) -> None:
-    sys.stdout.write(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "permissionDecision": decision,
-                    "permissionDecisionReason": reason,
-                }
-            }
-        )
-        + "\n"
-    )
+    # On `allow`, `permissionDecisionReason` is user-facing only and never reaches the agent (verified
+    # empirically) — so a reminder on an `allow` rule is delivered via `additionalContext`, the one
+    # allow channel the agent actually sees. deny/ask keep using `permissionDecisionReason`.
+    hook_output: dict[str, object] = {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": decision,
+        "permissionDecisionReason": "" if decision == "allow" else reason,
+    }
+    if decision == "allow" and reason:
+        hook_output["additionalContext"] = reason
+    sys.stdout.write(json.dumps({"hookSpecificOutput": hook_output}) + "\n")
 
 
 def _emit_rewrite(tool_input: dict[str, object], new_command: str) -> None:
@@ -1037,12 +1036,18 @@ _GATES = (_size_gate, _heredoc_gate, _ast_gate)
 
 
 def _resolve_chained(command: str, logger: logging.Logger, agent_type: str) -> Verdict:
-    """Run ACL on each sub-command and keep the strictest decision (deny > ask > allow)."""
+    """Run ACL on each sub-command and keep the strictest decision (deny > ask > allow).
+
+    An allow-level reminder (an `allow` rule whose non-empty reason becomes agent `additionalContext`)
+    survives when nothing stricter fires: the first such reminder is carried on the final allow.
+    """
     final: Verdict = ("allow", "")
     for sub_cmd in split_chained_commands(command):
         decision, reason, _ = check_command(sub_cmd, logger, agent_type=agent_type)
         if DECISION_PRIORITY[decision] > DECISION_PRIORITY[final[0]]:
             final = (decision, reason)
+        elif decision == "allow" and final[0] == "allow" and reason and not final[1]:
+            final = ("allow", reason)
     return final
 
 
