@@ -243,6 +243,33 @@ def test_commit_offer_does_not_overmatch(text):
     assert verdict == "ok"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Offering to measure/probe FIRST instead of just running the measurement and reporting.
+        "Могу собрать probe-сценарий и проверить, поднимает ли это качество, прежде чем что-то менять.",
+        "Прежде чем менять системный промпт, имеет смысл прогнать probe. Соберу сценарий?",
+        "Это правка, которую надо мерить через make probe. Собрать probe-сценарий?",
+        "I can put together a probe scenario and measure whether this helps before changing anything.",
+        "Before touching the system prompt, let me measure it with a probe.",
+    ],
+)
+def test_measure_first_triggers(text):
+    assert match_shirk(text) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Собрал probe-сценарий, прогнал: качество выросло на 12%, правку применил.",  # all done
+        "Замерил через make probe — без изменений, откатил.",  # past tense, no offer
+    ],
+)
+def test_measure_first_does_not_overmatch(text):
+    verdict, _, _ = classify(text, user_text="")
+    assert verdict == "ok"
+
+
 def test_out_of_scope_triggers():
     assert match_shirk("Это вне рамок текущей задачи.") is not None
     assert match_shirk("That fix is out of scope here.") is not None

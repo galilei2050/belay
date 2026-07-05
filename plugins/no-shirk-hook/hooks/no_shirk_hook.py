@@ -62,6 +62,23 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
         r"\b(should\s+i|do\s+you\s+want\s+me\s+to)\s+(check|look|verify|inspect|investigate)\b",
         r"\bi\s+can\s+(check|look|take\s+a\s+look|verify|investigate)\b[^?]{0,40}\bif\s+you",
     ],
+    # Offering to measure / probe / benchmark FIRST and gating the real change behind a question —
+    # "…прежде чем что-то менять?", "…before changing anything", "могу собрать probe и проверить".
+    # Running the measurement IS the work (often the user's own methodology, e.g. `make probe`):
+    # build the probe, run it, report the numbers — don't ask whether to. Unlike offer_to_investigate
+    # this does NOT bypass the destructive guard, so "замерить, прежде чем деплоить в прод?" still
+    # gets the prod guard.
+    "measure_first": [
+        r"\bпрежде\s+чем\s+(что-то\s+|что-нибудь\s+)?(менять|трогать|править|вносить|внедрять|правк\w*)\b",
+        r"\bbefore\s+(i\s+)?(chang\w+|touch\w+|modif\w+|appl\w+|implement\w+)\b",
+        # «могу <verb> … и проверить/замерить» — measurement verb isn't adjacent to «могу», so
+        # offer_to_investigate's «могу проверить» misses it.
+        r"\bмогу\s+\w+[^?]{0,50}\b(провер\w+|замер\w+|измер\w+|прогна\w+|бенчмар\w+)",
+        r"\bi\s+can\s+\w+[^?]{0,60}\b(measure|benchmark|verify|probe)\b",
+        r"\blet\s+me\s+(measure|benchmark|probe)\b",
+        # bare infinitive measurement offer, e.g. "Собрать probe-сценарий?"
+        r"\b(собра\w+|прогна\w+|постро\w+)\s+\w*\s*(probe|пробу|замер\w*|бенчмарк\w*)\b[^?]{0,30}\?",
+    ],
     "ask_to_run": [
         r"\bзапустить\s*\??\s*$",
         r"\bпрогнать\s+(тесты|линт|typecheck)\s*\??\s*$",
