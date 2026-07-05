@@ -817,6 +817,14 @@ def test_make_is_allowed(logger):
     assert decide("make tests", logger)[0] == "allow"
 
 
+def test_claude_headless_print_is_allowed(logger):
+    assert decide('claude -p "implement the plan"', logger)[0] == "allow"
+
+
+def test_claude_skip_permissions_is_ask(logger):
+    assert decide('claude -p "go" --dangerously-skip-permissions', logger)[0] == "ask"
+
+
 def test_iconv_is_allowed(logger):
     assert decide("iconv -f UTF-16 -t UTF-8 file.csv", logger)[0] == "allow"
 
