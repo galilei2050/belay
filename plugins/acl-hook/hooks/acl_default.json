@@ -1073,6 +1073,27 @@
     "rules": [],
     "default": "allow"
   },
+  "claude": {
+    "rules": [
+      {
+        "args_contain": [
+          "--dangerously-skip-permissions"
+        ],
+        "decision": "ask",
+        "reason": "`--dangerously-skip-permissions` disables the nested Claude's own permission gate, so the headless agent runs bash unchecked. Confirm you want that, or drop the flag: a nested `claude -p` still runs under acl-hook (when enabled in the target project), which auto-approves safe commands and blocks dangerous ones. If the run stalls on prompts, enable acl-hook in that project instead of skipping permissions."
+      },
+      {
+        "args_contain": [
+          "-p",
+          "--print"
+        ],
+        "decision": "allow",
+        "reason": ""
+      }
+    ],
+    "default": "ask",
+    "reason": "Bare/interactive `claude` can't run under the agent — no TTY, it hangs; and subcommands like `mcp`/`config`/`update` change machine state. Run it headless: `claude -p \"<prompt>\"` (add `--permission-mode acceptEdits` for autonomous edits). For an interactive or config/update command, ask the user to run it themselves."
+  },
   "docker": {
     "rules": [
       {
