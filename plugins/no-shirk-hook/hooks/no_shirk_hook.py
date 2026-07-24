@@ -156,6 +156,21 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
         r"\bоткры(ть|ваю)\s+(pr|mr|пул[\s-]?реквест|пиар)\b[^?]{0,80}\?\s*$",
         r"\b(open|create|raise)(\s+a)?\s+(pr|mr|pull[\s-]?request|merge[\s-]?request)\b[^?]{0,80}\?\s*$",
     ],
+    "offload_decision": [
+        # Handing a reversible decision back instead of making it and doing the work —
+        # "your call", "your three calls (pin ruff, …)", "up to you", "решать тебе". A genuine
+        # business tradeoff is still excused by BUSINESS_AMBIGUITY_MARKERS; this catches the
+        # technical punt the agent should just resolve itself.
+        r"\byour\s+call\b",
+        r"\byour\s+(two|three|four|five|\d+)\s+calls\b",
+        r"\bup\s+to\s+you\b",
+        r"\byour\s+(decision|choice)\s+to\s+make\b",
+        r"\bна\s+тво[йёе]\s+усмотрени\w*",
+        r"\b(тебе|вам)\s+решать\b",
+        r"\bреша(ть|й)\s+(тебе|вам)\b",
+        r"\bтво[йяё]\s+(выбор|решени\w*)\b",
+        r"\bоставля[юе]\s+(это\s+)?(на\s+)?(тебя|вас|твоё|ваше)\b",
+    ],
     "out_of_scope": [
         r"\bвне\s+(рамок|скоупа)\b",
         r"\bout\s+of\s+scope\b",
@@ -163,6 +178,14 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
     "preexisting": [
         r"\b(ранее|уже)\s+существовавш\w+",
         r"\bpre[-\s]?exist(ing|ed|s)?\b",
+        # Same dodge, reworded: disclaiming authorship to avoid fixing a red signal. In a solo
+        # repo every file is the user's — check git blame, then just fix it, don't deflect.
+        r"\bunchanged\s+by\s+this\s+(work|change|branch|pr|task)\b",
+        r"\bnot\s+(introduced|caused)\s+by\s+(this|my)\b",
+        r"\bnot\s+(from|part\s+of)\s+(this|my)\s+(change|branch|work|pr|task)\b",
+        r"\bnon[-\s]?branch\b",
+        r"\bне\s+в\s+эт(ом|их)\s+(изменени\w+|правк\w+|ветк\w+)",
+        r"\bне\s+(из-за\s+)?мо(их|ей)\s+(правк\w+|изменени\w+)",
     ],
     "partial_done": [
         r"\bоснов\w+\s+функц\w+\s+реализован",
