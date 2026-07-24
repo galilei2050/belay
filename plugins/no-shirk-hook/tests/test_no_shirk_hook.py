@@ -287,6 +287,39 @@ def test_partial_done_triggers():
     assert match_shirk("This should get you started with the migration.") is not None
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        # Offloading a reversible technical decision back instead of just doing it (real prod miss).
+        "Next: your call on pinning ruff to clear the Lint CI failure.",
+        "The only open items are your three calls (pin ruff, confirm categories, the smoke bug).",
+        "The fix is in. Whether to pin ruff or bump the version is up to you.",
+        "Whether to pin ruff is your decision to make.",
+        "Пинить ruff или нет — решать тебе.",
+        "Оставляю это на тебя.",
+        "Дальше — на твоё усмотрение.",
+        "Пинить ruff — твой выбор.",
+    ],
+)
+def test_offload_decision_triggers(text):
+    assert match_shirk(text) is not None
+
+
+def test_offload_decision_business_tradeoff_is_guarded():
+    # "your call" on a genuine tradeoff is the human's to make → guarded, not blocked.
+    text = "The pricing tier is your call — which option do you prefer?"
+    verdict, _, _ = classify(text, user_text="")
+    assert verdict.startswith("guard:")
+
+
+def test_preexisting_reworded_dodge_triggers():
+    # The "pre-existing" dodge in synonyms: disclaiming authorship to skip a fix (real prod miss).
+    assert match_shirk("Both red checks are known issues, unchanged by this work.") is not None
+    assert match_shirk("The lint failures are not from this branch.") is not None
+    assert match_shirk("That flake is not introduced by this change.") is not None
+    assert match_shirk("Линт красный, но это не в этом изменении.") is not None
+
+
 # ── pattern negatives ────────────────────────────────────────────────────────
 
 
