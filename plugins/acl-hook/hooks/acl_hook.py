@@ -63,58 +63,23 @@ HOME = str(Path.home())
 # when invoked outside a Claude Code session (tests, manual runs).
 PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
 
-# ── ACL config: the bundled default IS the source of truth ───────────────────
+# ── ACL config: the bundled table, read in place ─────────────────────────────
 #
-# The full rule table lives in `acl_default.json` next to this file. It's installed
-# to `$CLAUDE_PROJECT_DIR/.claude/acl.json` on first run and **overwritten from the
-# bundled default on every plugin version bump** (tracked via `.acl-synced-version`)
-# — so new/changed rules propagate to every project automatically, with no hand-
-# deleting of stale copies. Per-project edits live only until the next bump; durable
-# rule changes go in the bundled `acl_default.json` (with a version bump).
+# The rule table lives in `acl.json` next to this file and is read straight from the
+# plugin — there is no per-project copy to install, sync, or hand-edit, so every
+# project always runs the rules that ship with the installed plugin version. Change
+# rules by editing `acl.json` and bumping the plugin `version`.
 
-_BUNDLED_ACL_PATH = Path(__file__).parent / "acl_default.json"
-_PLUGIN_JSON_PATH = Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json"
-_PROJECT_ACL_RELPATH = Path(".claude") / "acl.json"
-_SYNC_STAMP_RELPATH = Path(".claude") / ".acl-synced-version"
+_ACL_PATH = Path(__file__).parent / "acl.json"
 _ACL_CACHE: dict[str, Entry] | None = None
 
 
-def project_acl_path() -> Path:
-    """Where the per-project ACL config lives (auto-installed from bundled default)."""
-    return Path(PROJECT_DIR) / _PROJECT_ACL_RELPATH
-
-
-def _plugin_version() -> str:
-    return str(json.loads(_PLUGIN_JSON_PATH.read_text(encoding="utf-8"))["version"])
-
-
-def _install_default(target: Path, stamp: Path, version: str, *, previous: str | None) -> None:
-    """(Re)install the bundled default into the project — on first run or any version bump.
-
-    A bump overwrites the project copy wholesale: the bundled default is authoritative, so a new
-    rule on an existing command (which an additive merge couldn't safely apply) propagates without
-    the user hand-deleting acl.json. Per-project edits don't survive a bump — that's the trade for
-    automatic propagation; durable changes belong in the bundled default.
-    """
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(_BUNDLED_ACL_PATH.read_text(encoding="utf-8"), encoding="utf-8")
-    stamp.write_text(version, encoding="utf-8")
-    if previous is not None:
-        logging.getLogger("acl_hook").info("acl_refreshed version=%s previous=%s", version, previous)
-
-
 def _load_acl() -> dict[str, Entry]:
-    """Read the project ACL, (re)installing the bundled default on first run or a version bump."""
+    """Parse the bundled ACL table (cached — one hook run checks many sub-commands)."""
     global _ACL_CACHE  # noqa: PLW0603 — module-level cache for the parsed config
     if _ACL_CACHE is not None:
         return _ACL_CACHE
-    target = project_acl_path()
-    version = _plugin_version()
-    stamp = target.parent / _SYNC_STAMP_RELPATH.name
-    synced = stamp.read_text(encoding="utf-8").strip() if stamp.exists() else None
-    if not target.exists() or synced != version:
-        _install_default(target, stamp, version, previous=synced)
-    loaded: dict[str, Entry] = json.loads(target.read_text(encoding="utf-8"))
+    loaded: dict[str, Entry] = json.loads(_ACL_PATH.read_text(encoding="utf-8"))
     _ACL_CACHE = loaded
     return loaded
 
@@ -140,13 +105,19 @@ def _gz_rotator(source: str, dest: str) -> None:
     src.unlink()
 
 
+# Where to look when you wonder "why was that denied?" — one line per sub-command decision plus a
+# `final=` line per Bash call. Rotated at 5 MB, 5 gzipped generations (`acl-hook.log.1.gz`, …).
+LOG_PATH = Path(HOME) / ".claude" / "logs" / "acl-hook.log"
+
+
 def setup_logging() -> logging.Logger:
     """Initialise the rotating file logger used by every ACL decision."""
-    log_dir = Path(HOME) / ".claude" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger("acl_hook")
+    if logger.handlers:  # one process may decide several commands (tests); don't stack handlers
+        return logger
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logger.setLevel(logging.INFO)
-    handler = RotatingFileHandler(log_dir / "acl-hook.log", maxBytes=5_000_000, backupCount=5)
+    handler = RotatingFileHandler(LOG_PATH, maxBytes=5_000_000, backupCount=5)
     handler.namer = _gz_namer
     handler.rotator = _gz_rotator
     handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
@@ -1084,6 +1055,25 @@ def _bound_wait_loop(command: str) -> str | None:
     return None
 
 
+# ── Autonomous mode: `ask` becomes `deny` ────────────────────────────────────
+#
+# Set ACL_HOOK_AUTONOMOUS=1 when Claude Code runs with nobody at the keyboard (`claude -p`, cron,
+# CI). There an `ask` can't be answered — it either hangs or is auto-refused with no explanation —
+# so we turn it into a deny that tells the agent why and what to do instead.
+
+_AUTONOMOUS_ENV = "ACL_HOOK_AUTONOMOUS"
+_AUTONOMOUS_ON = {"1", "true", "yes"}
+_AUTONOMOUS_REASON = (
+    f"Autonomous mode ({_AUTONOMOUS_ENV}=1): no human is at the keyboard to approve this, so a "
+    "command that would normally prompt is denied. Find a route that doesn't need approval, or "
+    "finish the rest of the task and report this command for the user to run themselves."
+)
+
+
+def _autonomous() -> bool:
+    return os.environ.get(_AUTONOMOUS_ENV, "").strip().lower() in _AUTONOMOUS_ON
+
+
 def main() -> None:
     """PreToolUse entry point: read stdin payload, emit allow/ask/deny (or a bounded rewrite)."""
     data = json.loads(sys.stdin.read())
@@ -1101,6 +1091,11 @@ def main() -> None:
             logger.info('decision=rewrite command="%s" matched=wait_loop_unbounded agent=%s', command[:120], agent_type)
             _emit_rewrite(tool_input, wrapped)
             return
+    if decision == "ask" and _autonomous():
+        decision = "deny"
+        reason = f"{reason}\n\n{_AUTONOMOUS_REASON}" if reason else _AUTONOMOUS_REASON
+        logger.info('decision=deny command="%s" matched=autonomous_ask_denied agent=%s', command[:200], agent_type)
+    logger.info('final=%s command="%s" agent=%s', decision, command[:200], agent_type)
     _emit(decision, reason)
 
 
