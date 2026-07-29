@@ -110,6 +110,11 @@ def _gz_rotator(source: str, dest: str) -> None:
 LOG_PATH = Path(HOME) / ".claude" / "logs" / "acl-hook.log"
 
 
+def for_log(command: str) -> str:
+    """One-line, untruncated rendering of a command — the log must show exactly what was judged."""
+    return command.replace("\n", "\\n")
+
+
 def setup_logging() -> logging.Logger:
     """Initialise the rotating file logger used by every ACL decision."""
     logger = logging.getLogger("acl_hook")
@@ -595,7 +600,11 @@ def git_branch_off_stale_main(args: list[str]) -> bool:
     creating, base = _branch_base(args)
     if not creating:
         return False
-    branch = _short_ref(base) if base is not None else _current_branch_name()
+    if base is not None and "/" in base:
+        # An explicit remote-tracking base (`git switch -c x origin/main`) IS the freshest ref we
+        # know of — comparing the local branch against it says nothing about this command.
+        return False
+    branch = base if base is not None else _current_branch_name()
     if branch not in _PROTECTED_BRANCHES:
         return False
     return _protected_synced(branch) is False
@@ -864,11 +873,11 @@ def check_command(cmd_str: str, logger: logging.Logger, *, agent_type: str) -> D
     if script is not None:
         # `bash -c '<literal>'`: re-run the full pipeline on the script, as if it were typed directly.
         verdict, reason = _decide(script, logger, agent_type)
-        logger.info('decision=%s command="%s" matched=shell_c_recurse agent=%s', verdict, cmd_str[:200], agent_type)
+        logger.info('decision=%s command="%s" matched=shell_c_recurse agent=%s', verdict, for_log(cmd_str), agent_type)
         return verdict, reason, "shell_c_recurse"
     decision = _classify(cmd_str)
     verdict, _, detail = decision
-    logger.info('decision=%s command="%s" matched=%s agent=%s', verdict, cmd_str[:200], detail, agent_type)
+    logger.info('decision=%s command="%s" matched=%s agent=%s', verdict, for_log(cmd_str), detail, agent_type)
     return decision
 
 
@@ -936,7 +945,7 @@ def _emit_rewrite(tool_input: dict[str, object], new_command: str) -> None:
 
 
 def _log_deny(logger: logging.Logger, command: str, agent_type: str, tag: str) -> None:
-    logger.info('decision=deny command="%s" matched=%s agent=%s', command[:120], tag, agent_type)
+    logger.info('decision=deny command="%s" matched=%s agent=%s', for_log(command), tag, agent_type)
 
 
 _TOO_LARGE_REASON = (
@@ -1074,29 +1083,48 @@ def _autonomous() -> bool:
     return os.environ.get(_AUTONOMOUS_ENV, "").strip().lower() in _AUTONOMOUS_ON
 
 
-def main() -> None:
-    """PreToolUse entry point: read stdin payload, emit allow/ask/deny (or a bounded rewrite)."""
-    data = json.loads(sys.stdin.read())
-    tool_input = data.get("tool_input", {}) if data.get("tool_name") == "Bash" else {}
-    command = tool_input.get("command", "")
-    if not command:
-        return
+def _judge(command: str, tool_input: dict[str, object], agent_type: str, logger: logging.Logger) -> None:
+    """Decide `command` and emit the verdict (or a bounded rewrite), logging one `final=` line."""
     ensure_scratch_dir()
-    agent_type = data.get("agent_type") if data.get("agent_id") is not None else "main"
-    logger = setup_logging()
     decision, reason = _decide(command, logger, agent_type)
     if decision == "allow":
         wrapped = _bound_wait_loop(command)
         if wrapped is not None:
-            logger.info('decision=rewrite command="%s" matched=wait_loop_unbounded agent=%s', command[:120], agent_type)
+            logger.info('final=rewrite command="%s" matched=wait_loop_unbounded agent=%s', for_log(command), agent_type)
             _emit_rewrite(tool_input, wrapped)
             return
     if decision == "ask" and _autonomous():
         decision = "deny"
         reason = f"{reason}\n\n{_AUTONOMOUS_REASON}" if reason else _AUTONOMOUS_REASON
-        logger.info('decision=deny command="%s" matched=autonomous_ask_denied agent=%s', command[:200], agent_type)
-    logger.info('final=%s command="%s" agent=%s', decision, command[:200], agent_type)
+        logger.info('decision=deny command="%s" matched=autonomous_ask_denied agent=%s', for_log(command), agent_type)
+    logger.info('final=%s command="%s" agent=%s', decision, for_log(command), agent_type)
     _emit(decision, reason)
+
+
+def main() -> None:
+    """PreToolUse entry point: read stdin payload, emit allow/ask/deny (or a bounded rewrite).
+
+    Every invocation leaves a trail: a `received` line before any work, then exactly one `final=`
+    line (or `final=error` + traceback if the hook itself dies). A command missing from the log
+    means the hook never ran at all — check that the plugin is enabled.
+    """
+    logger = setup_logging()
+    data = json.loads(sys.stdin.read())
+    tool_name = data.get("tool_name")
+    tool_input = data.get("tool_input", {}) if tool_name == "Bash" else {}
+    command = tool_input.get("command", "")
+    agent_type = data.get("agent_type") if data.get("agent_id") is not None else "main"
+    if not command:
+        logger.info("final=skip tool=%s agent=%s", tool_name, agent_type)
+        return
+    logger.info('received command="%s" agent=%s', for_log(command), agent_type)
+    try:
+        _judge(command, tool_input, agent_type, logger)
+    except Exception:
+        # A crash makes Claude Code fall back to prompting with no explanation — the one case where
+        # the user sees a question and the log would otherwise be silent. Record it, then re-raise.
+        logger.exception('final=error command="%s" agent=%s', for_log(command), agent_type)
+        raise
 
 
 if __name__ == "__main__":

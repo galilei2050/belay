@@ -59,13 +59,13 @@
           "clean",
           "-f"
         ],
-        "decision": "ask",
-        "reason": "Confirm git clean"
+        "decision": "deny",
+        "reason": "`git clean -f` deletes untracked files with no undo — same class as `rm` outside the scratch dir. Preview instead: `git clean -n`. Your own throwaway files belong in `.scratch/`, where `rm` is allowed. If real untracked files must go, leave the deletion to the user so it stays visible."
       },
       {
         "fn": "git_branch_force_delete",
-        "decision": "ask",
-        "reason": "Confirm force-delete of an UNPUSHED branch — `-D` (and `--delete --force`) drops it even with unmerged commits, and it's not on a remote, so the work isn't recoverable. Force-deleting a pushed branch, or a safe `git branch -d <name>`, is allowed with no prompt. If you meant to keep the work, push the branch first, then delete."
+        "decision": "allow",
+        "reason": "You're force-deleting a branch that was never pushed, so its commits live only in this clone. They stay in the reflog for now — `git reflog` finds the tip and `git branch <name> <sha>` restores it — but nothing else does. If the work matters, push the branch before deleting."
       },
       {
         "fn": "git_branch_off_protected",
@@ -102,8 +102,8 @@
         "args": [
           "revert"
         ],
-        "decision": "ask",
-        "reason": "Confirm revert — legitimate way to undo a bad commit"
+        "decision": "allow",
+        "reason": ""
       },
       {
         "args": [
@@ -121,8 +121,8 @@
         "args": [
           "config"
         ],
-        "decision": "ask",
-        "reason": "Confirm git config write. Reads (`git config user.name`, `--get`, `--list`) are allowed; this sets or removes a value — confirm, or ask the user to run it."
+        "decision": "allow",
+        "reason": "You're writing git config, not reading it. It's reversible (`git config --unset <key>`), but check the scope you meant: no flag writes this repo's `.git/config`, `--global` changes every repo on the machine."
       },
       {
         "args": [
@@ -346,8 +346,8 @@
         "args": [
           "init"
         ],
-        "decision": "ask",
-        "reason": "Confirm git init"
+        "decision": "allow",
+        "reason": ""
       }
     ],
     "default": "deny",
@@ -1079,8 +1079,8 @@
         "args_contain": [
           "--dangerously-skip-permissions"
         ],
-        "decision": "ask",
-        "reason": "`--dangerously-skip-permissions` disables the nested Claude's own permission gate, so the headless agent runs bash unchecked. Confirm you want that, or drop the flag: a nested `claude -p` still runs under acl-hook (when enabled in the target project), which auto-approves safe commands and blocks dangerous ones. If the run stalls on prompts, enable acl-hook in that project instead of skipping permissions."
+        "decision": "deny",
+        "reason": "`--dangerously-skip-permissions` disables the nested Claude's own permission gate, so that agent runs bash completely unchecked — an agent must not hand another agent a blank cheque. Drop the flag: a nested `claude -p` still runs under acl-hook (when enabled in the target project), which auto-approves safe commands and blocks dangerous ones. If the nested run stalls on prompts, set `ACL_HOOK_AUTONOMOUS=1` for it (every `ask` becomes a deny with a reason) or enable acl-hook in that project."
       },
       {
         "args_contain": [
@@ -1091,8 +1091,8 @@
         "reason": ""
       }
     ],
-    "default": "ask",
-    "reason": "Bare/interactive `claude` can't run under the agent — no TTY, it hangs; and subcommands like `mcp`/`config`/`update` change machine state. Run it headless: `claude -p \"<prompt>\"` (add `--permission-mode acceptEdits` for autonomous edits). For an interactive or config/update command, ask the user to run it themselves."
+    "default": "deny",
+    "reason": "Bare/interactive `claude` can't run under the agent at all — no TTY, so it just hangs; and subcommands like `mcp`/`config`/`update` change machine state. Run it headless instead: `claude -p \"<prompt>\"` (add `--permission-mode acceptEdits` for autonomous edits). For an interactive or config/update command, ask the user to run it in their own terminal."
   },
   "docker": {
     "rules": [
@@ -1240,29 +1240,29 @@
         "args": [
           "rm"
         ],
-        "decision": "ask",
-        "reason": "Confirm docker rm"
+        "decision": "allow",
+        "reason": ""
       },
       {
         "args": [
           "rmi"
         ],
-        "decision": "ask",
-        "reason": "Confirm docker rmi"
+        "decision": "allow",
+        "reason": ""
       },
       {
         "args": [
           "prune"
         ],
-        "decision": "ask",
-        "reason": "Confirm docker prune"
+        "decision": "deny",
+        "reason": "`prune` deletes machine-wide docker state (stopped containers, dangling images, and with `--volumes` their data) — it reaches far outside this project and can't be undone. Remove the specific object instead: `docker rm <container>` / `docker rmi <image>`. If the machine genuinely needs a cleanup, ask the user to run the prune themselves."
       },
       {
         "args": [
           "compose"
         ],
-        "decision": "ask",
-        "reason": "Confirm docker compose"
+        "decision": "allow",
+        "reason": ""
       },
       {
         "args": [
@@ -1748,16 +1748,16 @@
           "config",
           "set"
         ],
-        "decision": "ask",
-        "reason": "Confirm gcloud config write"
+        "decision": "allow",
+        "reason": "You're changing the active gcloud config (project / region / account), which silently retargets every later gcloud command in this shell. Reversible — `gcloud config unset <key>` — but make sure you meant this project."
       },
       {
         "args": [
           "config",
           "unset"
         ],
-        "decision": "ask",
-        "reason": "Confirm gcloud config write"
+        "decision": "allow",
+        "reason": ""
       },
       {
         "args": [
