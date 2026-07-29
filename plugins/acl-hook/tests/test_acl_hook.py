@@ -316,6 +316,25 @@ def test_clean_allow_has_no_additional_context(monkeypatch, capsys, fix_project_
     assert "additionalContext" not in out
 
 
+# ── every line of a multi-line command is checked ────────────────────────────
+
+
+def test_newline_separated_commands_are_checked_individually(logger):
+    # A newline chains like `;` — before this, everything after it was swallowed as arguments of
+    # the first command, so a dangerous second line rode in on an allowed first one.
+    assert acl_hook._decide("ls\ngit push --force", logger, "test")[0] == "deny"
+    assert acl_hook._decide("echo hi\nsudo rm -rf /home", logger, "test")[0] == "deny"
+    assert acl_hook._decide("cd /tmp\nrm -rf /etc", logger, "test")[0] == "deny"
+
+
+def test_newline_inside_quotes_does_not_split(logger):
+    assert acl_hook._decide("git commit -m 'line one\nline two'", logger, "test")[0] == "allow"
+
+
+def test_split_chained_commands_splits_on_newline():
+    assert acl_hook.split_chained_commands("ls -la\ngit status") == ["ls -la", "git status"]
+
+
 # ── .git is off-limits to readers ────────────────────────────────────────────
 
 
@@ -793,6 +812,18 @@ def test_unknown_command_is_denied(logger):
 def test_gcloud_deploy_needs_confirmation(logger):
     decision, _ = decide("gcloud run services deploy my-service --image gcr.io/proj/img", logger)
     assert decision == "ask"
+
+
+def test_gcloud_storage_download_is_allowed(logger):
+    # Bucket → local disk is a read; it shouldn't stall on a prompt.
+    assert decide("gcloud storage cp gs://bucket/traces/x.json.gz .scratch/traces/", logger)[0] == "allow"
+    assert decide("gcloud storage rsync gs://bucket/dir .scratch/dir", logger)[0] == "allow"
+
+
+def test_gcloud_storage_upload_is_asked(logger):
+    # Local → bucket writes remote state, so it stays an ask.
+    assert decide("gcloud storage cp report.json gs://bucket/reports/", logger)[0] == "ask"
+    assert decide("gcloud storage cp gs://a/x gs://b/x", logger)[0] == "ask"
 
 
 def test_gcloud_list_is_allowed(logger):

@@ -150,7 +150,11 @@ class Span(NamedTuple):
 
 
 def _separator_spans(command: str) -> Iterator[Span]:
-    """Yield every top-level `&&` / `;` / `|` outside quotes as a Span."""
+    r"""Yield every top-level `&&` / `;` / `|` / newline outside quotes as a Span.
+
+    A newline separates commands exactly like `;` does. Without it, `ls\ngit push --force` parsed as
+    one `ls` invocation with the rest as arguments — every line after the first went unchecked.
+    """
     in_single = in_double = False
     i = 0
     while i < len(command):
@@ -160,7 +164,7 @@ def _separator_spans(command: str) -> Iterator[Span]:
         elif c == '"' and not in_single:
             in_double = not in_double
         elif not (in_single or in_double):
-            if c in {"|", ";"}:
+            if c in {"|", ";", "\n"}:
                 yield Span(i, i + 1)
             elif c == "&" and command[i + 1 : i + 2] == "&":
                 yield Span(i, i + 2)
@@ -169,7 +173,7 @@ def _separator_spans(command: str) -> Iterator[Span]:
 
 
 def split_chained_commands(command: str) -> list[str]:
-    """Split a Bash command on top-level `&&`, `;`, `|` respecting quotes."""
+    """Split a Bash command on top-level `&&`, `;`, `|`, newline — respecting quotes."""
     pieces: list[str] = []
     cursor = 0
     for start, end in _separator_spans(command):
@@ -610,7 +614,25 @@ def git_branch_off_stale_main(args: list[str]) -> bool:
     return _protected_synced(branch) is False
 
 
+_GCS_COPY_SUBCOMMANDS = (["storage", "cp"], ["storage", "rsync"])
+_GCS_COPY_MIN_POSITIONALS = 2  # source + destination
+
+
+def gcloud_storage_download(args: list[str]) -> bool:
+    """True iff `gcloud storage cp/rsync` copies FROM a bucket TO this machine — a read, not a write.
+
+    The destination is the last positional. A `gs://` destination is an upload or a bucket-to-bucket
+    copy: that mutates remote state and stays an `ask`. Anything else lands on local disk, where the
+    fs rules already apply, so it's as safe as `gcloud storage cat`.
+    """
+    if args[:2] not in _GCS_COPY_SUBCOMMANDS:
+        return False
+    positionals = [a for a in args[2:] if not a.startswith("-")]
+    return len(positionals) >= _GCS_COPY_MIN_POSITIONALS and not positionals[-1].startswith("gs://")
+
+
 CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
+    "gcloud_storage_download": gcloud_storage_download,
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
     "rm_recursive": rm_recursive,

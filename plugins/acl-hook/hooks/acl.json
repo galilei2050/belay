@@ -1792,6 +1792,19 @@
         "reason": ""
       },
       {
+        "fn": "gcloud_storage_download",
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "storage",
+          "du"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
         "args": [
           "pubsub",
           "subscriptions",
