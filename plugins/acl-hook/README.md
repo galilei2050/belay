@@ -38,15 +38,9 @@ Requirements: Python ≥ 3.10 available as `python3`, plus `pip install bashlex`
 substitutions are all decomposed into the individual commands they expand to,
 so dangerous parts can't hide inside a pipeline).
 
-After install, run once per project:
-
-```
-/acl-hook:init
-```
-
-This drops a starter `rules.yaml` into `.claude/acl-hook/rules.yaml` of the
-current project, pre-populated with the default ruleset. Edit it to taste —
-the hook reloads on every invocation, so changes apply immediately.
+There is no per-project setup step. The rule table ships inside the plugin and
+is read from there on every invocation, so every project runs the rules of the
+installed plugin version.
 
 ## How decisions are made
 
@@ -57,74 +51,53 @@ For each Bash call the hook receives, it:
 2. For each sub-command, looks up rules for that program (`git`, `rm`, `curl`,
    …). Rules match on argument patterns.
 3. Returns the first matching action: `allow`, `ask`, `deny`. If nothing
-   matches, falls back to the program's `default` (usually `ask`).
-4. On `deny`, writes a one-line reason to stderr so you and the agent both see
-   why.
+   matches, falls back to the program's `default`.
+4. On `deny` / `ask`, the reason is handed to the agent (and, for `ask`, shown
+   to you in the prompt), so both sides see why.
 
-## Default ruleset
+## The ruleset
 
-Ships with sane defaults aimed at "experienced developer who wants to stop
-clicking approve":
+Aimed at "experienced developer who wants to stop clicking approve":
 
-| Category | Default | Examples |
-|---|---|---|
-| Read-only inspection | `allow` | `ls`, `cat`, `head`, `tail`, `wc`, `file`, `stat`, `du`, `df`, `which`, `whereis`, `type`, `env`, `pwd` |
-| Read-only git | `allow` | `git status`, `git diff`, `git log`, `git show`, `git branch` (no flags), `git remote -v` |
-| Search | `allow` | `grep`, `rg`, `find` (without `-delete`/`-exec rm`) |
-| Package manager queries | `allow` | `npm ls`, `pip list`, `pip show`, `cargo tree` |
-| Process inspection | `allow` | `ps`, `top -n`, `lsof`, `netstat` |
-| Mutating git | `ask` | `git commit`, `git checkout`, `git merge`, `git pull` |
-| History rewrites | `deny` | `git rebase`, `git push --force`, `git reset --hard`, `git filter-branch`, `git reflog expire`, branch deletion of `main`/`master` |
-| File deletion | `ask` inside project, `deny` outside | `rm`, `rmdir`; `rm -rf /` and similar always denied |
-| Permission changes | `deny` for world-writable | `chmod 777`, `chmod -R 777` |
-| Network mutation | `ask` | `curl -X POST/PUT/DELETE/PATCH`, `wget --post`, `nc` listeners |
-| Network read | `allow` | `curl` GET, `wget` GET to plaintext URLs |
-| Shell-into-pipe | `deny` | `curl … \| sh`, `wget -O- … \| bash`, `eval "$(…)"` |
-| Inline code execution | `deny` | `python -c …`, `node -e …`, `ruby -e …`, heredoc'd shell |
-| Package install | `ask` | `npm install`, `pip install`, `apt install`, `brew install`, `cargo install` |
+| Bucket | Examples |
+|---|---|
+| `allow` — read-only inspection | `ls`, `cat` (not `.env*`), `grep`, `rg`, `find`, `ps`, `git status/diff/log/branch`, `npm ls`, `pip show` |
+| `allow` — reversible local work | `git add <paths>`, `git commit`, `git merge`, `git cherry-pick`, `git pull`, `git push <feature-branch>`, `docker build`, `make`, `rm` inside `.scratch/` |
+| `ask` — legitimate but outward-facing or hard to reverse | `npm install`, `pip install`, `curl -X POST` to a remote host, `systemctl restart`, `git config <key> <value>`, force-deleting an unpushed branch |
+| `deny` — destructive or agent-inappropriate | `git push --force`, `git push` to `main`/`master`, `git reset`, `git rebase`, `git add -A`, `gh pr merge`, `sudo`, `eval`, `bash file.sh`, `cat .env`, reading `.git/`, `rm` outside `.scratch/`, heredocs |
 
-The defaults are deliberately conservative on the deny side and liberal on
-the allow side for read-only operations. Customize via `rules.yaml`.
+The authority is `hooks/acl.json` — read it when you want the exact answer for
+a command; the table above is a summary, not a spec.
 
 ## Configuring rules
 
-`.claude/acl-hook/rules.yaml` (project) overrides `~/.claude/acl-hook/rules.yaml`
-(user) overrides the plugin's bundled defaults. You only need to specify the
-diffs — unspecified categories inherit.
+You don't. The rule table lives in the plugin (`hooks/acl.json`) and is read
+from there — there's no per-project config file to install, edit, or keep in
+sync, which means a project can never silently run a stale ruleset. Change the
+rules by editing that file and bumping the plugin version (see
+`CLAUDE.md` in this directory).
 
-Example: a project that wants to allow `make test*` targets without asking:
-
-```yaml
-make:
-  rules:
-    - match: { args_glob: ["test*"] }
-      action: allow
-```
-
-Example: a project that uses a private container registry and wants `docker
-push` to that host allowed:
-
-```yaml
-docker:
-  rules:
-    - match: { args: [push] , args_glob: ["registry.mycorp.internal/*"] }
-      action: allow
-```
-
-Matcher keys available on each rule:
+Matcher kinds available on each rule:
 
 - `args: [a, b, c]` — these tokens appear in order (subsequence match)
 - `args_contain: [a, b]` — any of these tokens appears
-- `args_glob: ["pattern*"]` — any token matches the shell glob
-- `predicate: name` — a Python predicate from `predicates.py` returns true
-  (escape hatch for the rare rule that can't be expressed as patterns)
+- `args_glob: "pattern*"` — the full argument string matches the glob
+- `fn: name` — a Python predicate in `acl_hook.py` returns true (escape hatch
+  for the rare rule that can't be expressed as patterns)
 
-JSON Schema is shipped alongside as `rules.schema.json`. Drop this at the top
-of your `rules.yaml` for IDE autocomplete and inline validation:
+## Autonomous mode
 
-```yaml
-# yaml-language-server: $schema=../../path/to/rules.schema.json
+When Claude Code runs with nobody at the keyboard (`claude -p`, cron, CI), an
+`ask` is useless — there is no one to answer it. Set:
+
 ```
+ACL_HOOK_AUTONOMOUS=1
+```
+
+in the environment and every `ask` becomes a `deny`, with the rule's own reason
+plus a note telling the agent to route around it or report the command for you
+to run yourself. `allow` and `deny` are unaffected. Accepted values: `1`,
+`true`, `yes` (anything else, including unset, keeps normal behavior).
 
 ## What this plugin is NOT
 
@@ -144,20 +117,43 @@ To keep the scope honest:
 If you want any of the above, compose acl-hook with another plugin. That's
 the whole point of belay being a marketplace and not a monolith.
 
-## Logs
+## Logs — `~/.claude/logs/acl-hook.log`
 
-Each decision is logged as a single JSON line to
-`~/.claude/logs/acl-hook.log`. Useful when you want to know "why did it deny
-that?" or "what did it auto-approve over the last hour?". Trim the file
-yourself; the hook doesn't rotate.
+Every decision is logged there, one line each, for all projects on the machine.
+Rotated at 5 MB with 5 gzipped generations (`acl-hook.log.1.gz`, …).
 
-## Exit behavior
+```
+[2026-07-28 19:38:59] decision=deny command="git push --force" matched=rule agent=main
+[2026-07-28 19:38:59] final=deny command="git push --force" agent=main
+```
 
-- Exit 0 with empty stderr → allow silently.
-- Exit 0 with stderr → allow, surface the message as a notice.
-- Exit 2 → deny. Stderr is shown to the agent as the reason.
-- Any other exit code → hook itself crashed; Claude Code falls back to
-  asking the user. The crash is logged.
+- `decision=` — one line per sub-command (`a && b` produces two), with
+  `matched=` naming what fired: a `rule`, a `default:<x>`, or a gate
+  (`agent_heredoc`, `command_too_long`, `autonomous_ask_denied`, …).
+- `final=` — one line per Bash call: what the agent actually got, after the
+  strictest-wins merge across sub-commands.
+- `decision=rewrite` — an unbounded poll loop was silently wrapped in
+  `timeout`.
+
+Answering "why was that denied?":
+
+```
+grep 'final=deny' ~/.claude/logs/acl-hook.log | tail -20
+grep 'git push' ~/.claude/logs/acl-hook.log
+```
+
+If the log has no recent lines at all, the hook isn't running — check that
+`acl-hook@belay` is `true` under `enabledPlugins` in `~/.claude/settings.json`
+(and restart Claude Code after changing it).
+
+## Output contract
+
+The hook writes a single JSON object on stdout: a `PreToolUse`
+`hookSpecificOutput` carrying `permissionDecision` (`allow` / `ask` / `deny`)
+and `permissionDecisionReason`. An `allow` rule with a reason delivers it as
+`additionalContext` (a nudge to the agent, no prompt); an unbounded poll loop
+comes back as `allow` plus an `updatedInput` that wraps the command in
+`timeout`.
 
 ## License
 

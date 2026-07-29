@@ -13,10 +13,10 @@ If you find yourself adding logic that needs to read git history, parse a plan
 file, hit the network, or call out to a test runner — stop. Wrong plugin.
 
 **The one allowed side effect: bootstrapping project state the rules depend on.**
-The hook installs `.claude/acl.json` on first run, and `ensure_scratch_dir()`
-creates `.scratch/` + adds it to `.gitignore` (so the `rm`-in-scratch rule has a
-place to point). These are setup for the decision, not other concerns. Don't add
-side effects beyond preparing what the allow/ask/deny decision itself needs.
+`ensure_scratch_dir()` creates `.scratch/` + adds it to `.gitignore` (so the
+`rm`-in-scratch rule has a place to point). That's setup for the decision, not
+another concern. Don't add side effects beyond preparing what the allow/ask/deny
+decision itself needs — in particular, the hook writes no config into the project.
 
 **Reading trivial git state is OK; running git is not.** Several predicates
 read ref files directly: `git_push_to_protected_branch` reads `.git/HEAD` (current
@@ -112,26 +112,43 @@ pull first. Phrase the reason as a second-person nudge ("You're branching off
 Don't overuse it: most commands are cleanly allow / ask / deny. A reminder on a
 genuinely safe command is just noise in the agent's context.
 
-## Where the ACL config lives — the bundled default is the source of truth
+## Where the ACL config lives — one file, inside the plugin
 
-The canonical rule table is the **bundled `plugins/acl-hook/hooks/acl_default.json`**.
-On first run in a project the hook installs it to **`.claude/acl.json`**, and that
-project copy is read on every subsequent invocation.
+The rule table is **`plugins/acl-hook/hooks/acl.json`**, read straight from the
+plugin dir on every invocation. There is no per-project copy, no install step, no
+sync stamp: every project runs the rules of the installed plugin version, always.
 
-**To change rules, edit the bundled `acl_default.json` and bump the plugin
-`version`.** Don't hand-edit a project's `.claude/acl.json` for anything durable —
-see below.
+**To change rules, edit `hooks/acl.json` and bump the plugin `version`.** There is
+nowhere else to edit — a `.claude/acl.json` in a project is dead weight (an
+artifact of the old install-and-sync scheme, safe to delete).
 
-**Version bump = automatic refresh (overwrite).** The next hook run after a
-`version` change **overwrites** `.claude/acl.json` from the bundled default
-(tracked via `.claude/.acl-synced-version`; logged as `acl_refreshed`). This is the
-deliberate, automated equivalent of "delete the stale file and reinstall" — so a
-new or changed rule on an *existing* command (which an additive merge couldn't
-safely place) propagates to every project with zero manual cleanup. The trade:
-**per-project edits to `.claude/acl.json` do not survive a bump.** They hold only
-within a version; durable changes belong in the bundled default. (Within a single
-version the project copy is untouched, so a temporary local tweak still works until
-the next bump.)
+Per-project rule overrides are deliberately **not** supported. They existed, were
+never used, and only created a way to run silently stale rules. If a rule needs to
+differ per project, that's a signal the rule is project-specific and doesn't belong
+in this plugin at all (see "Common mistakes").
+
+## Logging: every decision, one file, `~/.claude/logs/acl-hook.log`
+
+`LOG_PATH` in `acl_hook.py`. Two line shapes per Bash call: `decision=…
+matched=<what fired>` for each sub-command, and one `final=…` for what the agent
+actually got. That's the debugging entry point — when a rule "doesn't work",
+grep the log before reading code. Rotated at 5 MB × 5 gzipped generations.
+
+Keep it that way: any new gate or conversion logs a line with a `matched=` tag
+naming itself (see `autonomous_ask_denied`), so the log alone explains the
+verdict. A silent path is a path nobody can debug.
+
+## Autonomous mode: `ACL_HOOK_AUTONOMOUS=1` turns every `ask` into `deny`
+
+With nobody at the keyboard (`claude -p`, cron, CI) an `ask` is useless — it can't
+be answered. Setting `ACL_HOOK_AUTONOMOUS=1` in the environment Claude Code runs in
+converts each `ask` into a `deny` at emit time in `main()`, appending a short note to
+the rule's own reason so the agent knows *why* and what to do instead (route around
+it, or finish the rest and report the command for the user).
+
+Keep the conversion where it is — one place, after `_decide` — so the rule table
+stays a single source of truth and every rule's own actionable reason is preserved.
+Don't add per-rule "autonomous" variants.
 
 ## Waiting / polling: never DENIED, silently BOUNDED
 
@@ -251,7 +268,7 @@ Walk through this:
 4. **Write a test.** One positive (rule fires) and one negative (rule does
    NOT fire when it shouldn't) — at minimum. Tests live in
    `tests/test_acl_hook.py`. Use the `decide(cmd, logger)` helper.
-5. **Run** `pytest plugins/` and `ruff check plugins/`.
+5. **Run** `make ci` (or `uv run pytest plugins/` + `uv run ruff check plugins/`).
 
 ## Common mistakes (we've already made these)
 
@@ -272,9 +289,9 @@ Walk through this:
 ## Testing
 
 ```
-.venv/bin/pytest plugins/acl-hook/tests/ -q
-.venv/bin/ruff check plugins/
-.venv/bin/mypy --config-file pyproject.toml plugins/acl-hook/hooks/acl_hook.py
+uv run pytest plugins/acl-hook/tests/ -q
+uv run ruff check plugins/
+uv run mypy plugins/acl-hook/hooks/acl_hook.py
 ```
 
 Conftest pins `PROJECT_DIR` to a tmp dir with `app/`, `tests/`, `infrastructure/`,

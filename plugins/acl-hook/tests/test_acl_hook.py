@@ -841,63 +841,54 @@ def test_systemctl_restart_needs_confirmation(logger):
     assert decide("systemctl restart nginx", logger)[0] == "ask"
 
 
-# ── ACL config auto-install + project override ───────────────────────────────
+# ── ACL config: the bundled table is read in place ───────────────────────────
 
 
-def test_acl_config_is_auto_installed_on_first_decision(logger, fix_project_dir):
-    target = fix_project_dir / ".claude" / "acl.json"
-    assert not target.exists()
+def test_acl_reads_the_bundled_table(logger):
+    table = acl_hook.acl()
+    assert table["git"]["default"] == "deny"
+    assert decide("git push --force", logger)[0] == "deny"
+
+
+def test_no_project_acl_copy_is_written(logger, fix_project_dir):
+    # A project copy the user could edit (and then run stale) is exactly what we removed.
     decide("git status", logger)
-    assert target.exists()
-    assert json.loads(target.read_text(encoding="utf-8"))["git"]["default"] == "deny"
+    assert not (fix_project_dir / ".claude" / "acl.json").exists()
 
 
-def test_project_acl_override_survives_within_version(fix_project_dir, logger, monkeypatch):
-    # An override stands as long as the stamp matches the current version (no reinstall).
+def test_a_project_acl_json_is_ignored(logger, fix_project_dir):
     acl_dir = fix_project_dir / ".claude"
     acl_dir.mkdir(exist_ok=True)
     (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "allow"}}), encoding="utf-8")
-    (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).write_text("9.9.9", encoding="utf-8")
-    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
-    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
-    decision, _ = decide("git push --force", logger)
-    assert decision == "allow"  # same version → not reinstalled, override stands
+    assert decide("git push --force", logger)[0] == "deny"  # bundled rules win; the stray file is dead weight
 
 
-# ── version bump overwrites the project ACL from the bundled default ──────────
+# ── autonomous mode: ACL_HOOK_AUTONOMOUS turns ask into deny ─────────────────
 
 
-def test_version_bump_reinstalls_bundled(fix_project_dir, monkeypatch):
-    acl_dir = fix_project_dir / ".claude"
-    acl_dir.mkdir(exist_ok=True)
-    # Stale config from an older version: only `git`, permissive, stamped old.
-    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "allow"}}), encoding="utf-8")
-    (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).write_text("0.0.1", encoding="utf-8")
-    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
-    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
-    table = acl_hook.acl()
-    assert "ls" in table  # a bundled key the stale file lacked, now present
-    assert table["git"]["default"] == "deny"  # permissive override replaced by the bundled default
-    assert (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).read_text(encoding="utf-8") == "9.9.9"
+def test_ask_becomes_deny_in_autonomous_mode(monkeypatch, capsys):
+    monkeypatch.setenv("ACL_HOOK_AUTONOMOUS", "1")
+    out = via_main(monkeypatch, capsys, "git config user.name galilei")["hookSpecificOutput"]
+    assert out["permissionDecision"] == "deny"
+    assert "ACL_HOOK_AUTONOMOUS" in out["permissionDecisionReason"]
 
 
-def test_version_bump_overwrites_stale_override(fix_project_dir, logger, monkeypatch):
-    acl_dir = fix_project_dir / ".claude"
-    acl_dir.mkdir(exist_ok=True)
-    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "allow"}}), encoding="utf-8")
-    (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).write_text("0.0.1", encoding="utf-8")
-    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
-    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
-    decision, _ = decide("git push --force", logger)
-    assert decision == "deny"  # the bump reinstalled the bundled default; the allow-all override is gone
+def test_ask_keeps_asking_without_the_env_var(monkeypatch, capsys):
+    monkeypatch.delenv("ACL_HOOK_AUTONOMOUS", raising=False)
+    out = via_main(monkeypatch, capsys, "git config user.name galilei")["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
 
 
-def test_no_reinstall_when_version_matches(fix_project_dir, monkeypatch):
-    acl_dir = fix_project_dir / ".claude"
-    acl_dir.mkdir(exist_ok=True)
-    (acl_dir / "acl.json").write_text(json.dumps({"git": {"rules": [], "default": "deny"}}), encoding="utf-8")
-    (acl_dir / acl_hook._SYNC_STAMP_RELPATH.name).write_text("9.9.9", encoding="utf-8")
-    monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
-    monkeypatch.setattr(acl_hook, "_plugin_version", lambda: "9.9.9")
-    table = acl_hook.acl()
-    assert "ls" not in table  # already-synced version → stale file kept as-is, no reinstall
+def test_autonomous_mode_leaves_allow_and_deny_alone(monkeypatch, capsys):
+    monkeypatch.setenv("ACL_HOOK_AUTONOMOUS", "true")
+    allowed = via_main(monkeypatch, capsys, "git status")["hookSpecificOutput"]
+    assert allowed["permissionDecision"] == "allow"
+    denied = via_main(monkeypatch, capsys, "git push --force")["hookSpecificOutput"]
+    assert denied["permissionDecision"] == "deny"
+    assert "ACL_HOOK_AUTONOMOUS" not in denied["permissionDecisionReason"]  # keeps its own actionable reason
+
+
+def test_autonomous_mode_off_for_other_values(monkeypatch, capsys):
+    monkeypatch.setenv("ACL_HOOK_AUTONOMOUS", "0")
+    out = via_main(monkeypatch, capsys, "git config user.name galilei")["hookSpecificOutput"]
+    assert out["permissionDecision"] == "ask"
