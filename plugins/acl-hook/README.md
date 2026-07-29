@@ -20,8 +20,8 @@ exact moment something dangerous slips through. acl-hook flips this:
   `git push --force` on protected branches, `curl … | sh`, here-doc'd shell
   pipelines, `chmod 777`, etc. You see the denial; the agent has to ask you
   or rephrase.
-- **Genuinely ambiguous stuff still asks you.** `curl -X POST` to an unknown
-  host, `npm install some-package`, `rm` inside the project. The prompt is now
+- **Only outward-facing stuff still asks you.** `curl -X POST` to an unknown
+  host, `npm install some-package`, `gh pr comment`, a deploy. The prompt is now
   worth reading because it's the only one you get.
 
 The net effect: fewer prompts, and every prompt matters.
@@ -62,9 +62,14 @@ Aimed at "experienced developer who wants to stop clicking approve":
 | Bucket | Examples |
 |---|---|
 | `allow` — read-only inspection | `ls`, `cat` (not `.env*`), `grep`, `rg`, `find`, `ps`, `git status/diff/log/branch`, `npm ls`, `pip show` |
-| `allow` — reversible local work | `git add <paths>`, `git commit`, `git merge`, `git cherry-pick`, `git pull`, `git push <feature-branch>`, `docker build`, `make`, `rm` inside `.scratch/` |
-| `ask` — legitimate but outward-facing or hard to reverse | `npm install`, `pip install`, `curl -X POST` to a remote host, `systemctl restart`, `git config <key> <value>`, force-deleting an unpushed branch |
-| `deny` — destructive or agent-inappropriate | `git push --force`, `git push` to `main`/`master`, `git reset`, `git rebase`, `git add -A`, `gh pr merge`, `sudo`, `eval`, `bash file.sh`, `cat .env`, reading `.git/`, `rm` outside `.scratch/`, heredocs |
+| `allow` — reversible local work | `git add <paths>`, `git commit`, `git merge`, `git revert`, `git config <k> <v>`, `git pull`, `git push <feature-branch>`, `git branch -D`, `docker build/rm/compose`, `make`, `rm` inside `.scratch/` |
+| `ask` — legitimate, but the effect leaves your working copy | `npm install`, `pip install`, `curl -X POST` to a remote host, `systemctl restart`, `gh pr comment`, `gh issue create`, `gcloud … deploy`, `docker push` |
+| `deny` — destructive, or can't work under an agent | `git push --force`, `git push` to `main`/`master`, `git reset`, `git rebase`, `git add -A`, `git clean -f`, `gh pr merge`, `docker prune`, `sudo`, `eval`, `bash file.sh`, `cat .env`, reading `.git/`, `rm` outside `.scratch/`, heredocs, bare interactive `claude` |
+
+Every `ask` stalls the agent and costs you a prompt, so the bar for one is high:
+the command has to reach outside this working copy. Anything local and
+reversible is allowed outright — sometimes with a reminder delivered to the
+agent instead of a prompt to you.
 
 The authority is `hooks/acl.json` — read it when you want the exact answer for
 a command; the table above is a summary, not a spec.
@@ -123,17 +128,26 @@ Every decision is logged there, one line each, for all projects on the machine.
 Rotated at 5 MB with 5 gzipped generations (`acl-hook.log.1.gz`, …).
 
 ```
+[2026-07-28 19:38:59] received command="git status && git push --force" agent=main
+[2026-07-28 19:38:59] decision=allow command="git status" matched=rule agent=main
 [2026-07-28 19:38:59] decision=deny command="git push --force" matched=rule agent=main
-[2026-07-28 19:38:59] final=deny command="git push --force" agent=main
+[2026-07-28 19:38:59] final=deny command="git status && git push --force" agent=main
 ```
 
+Every command produces a `received` line before any work and exactly one
+`final=` line after:
+
+- `received` — the full command as the hook got it (newlines escaped, never
+  truncated). Written first, so even a command that crashes the hook leaves a
+  trace.
 - `decision=` — one line per sub-command (`a && b` produces two), with
   `matched=` naming what fired: a `rule`, a `default:<x>`, or a gate
   (`agent_heredoc`, `command_too_long`, `autonomous_ask_denied`, …).
-- `final=` — one line per Bash call: what the agent actually got, after the
-  strictest-wins merge across sub-commands.
-- `decision=rewrite` — an unbounded poll loop was silently wrapped in
-  `timeout`.
+- `final=` — the verdict the agent actually got, after the strictest-wins merge
+  across sub-commands. Variants: `final=rewrite` (an unbounded poll loop was
+  silently wrapped in `timeout`), `final=skip` (not a Bash call), `final=error`
+  (the hook itself crashed — the traceback follows, and Claude Code falls back
+  to prompting).
 
 Answering "why was that denied?":
 

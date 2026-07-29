@@ -42,12 +42,13 @@ Classify every new command (and every new flag combo) into one of three buckets:
   actions where a hard `deny` would be the contradicting-voice bug, but silence
   would let an easy mistake through.
 
-- **`ask`** — needs human audit. The command is **legitimate** but its effect
-  is outward-facing, hard to reverse, or context-dependent enough that a
-  human's sign-off is the right gate. Examples: `gh pr comment` (outward
-  message), `gh issue create`, `npm install` (changes dependency tree),
-  `systemctl restart` (affects running services), `curl -X POST` to remote,
-  `gcloud … deploy`.
+- **`ask`** — needs human audit, and is worth stalling the agent for. The
+  command is **legitimate** but its effect leaves this working copy: an outward
+  message, a machine-wide or remote mutation, code pulled off the network.
+  Examples: `gh pr comment`, `gh issue create`, `npm install` (changes the
+  dependency tree from the network), `systemctl restart` (affects running
+  services), `curl -X POST` to remote, `gcloud … deploy`. If the effect stays
+  inside the repo and can be undone, it's an `allow` — see below.
 
 - **`deny`** — destructive, irreversible, or impossible-to-justify in any
   agent context. The reason is shown to the agent; it must redirect, not
@@ -61,9 +62,22 @@ Classify every new command (and every new flag combo) into one of three buckets:
   Creating a branch off a non-trunk or stale base is **allow + reminder**, not
   deny — see below.)
 
-When in doubt between `ask` and `deny`, pick `ask`. When in doubt between
-`allow` and `ask`, pick `ask`. **Friction at the right level is the product;
-don't optimise it away by collapsing borderline cases into `allow`.**
+**Every `ask` is a stall.** It stops the agent mid-task and makes a human read a
+prompt, so `ask` has to earn its place: the effect must reach *outside this
+working copy* (a comment on someone's PR, a deploy, a package pulled from the
+network, a service restart on the machine) or be otherwise unrecoverable once
+done. Local and reversible ⇒ `allow`, with a reminder if it's suspect. Never
+works, or can't be justified for an agent ⇒ `deny`, with the way out spelled
+out. "I'm not sure" is not a reason to prompt — decide, and put the doubt in
+the reason text.
+
+Applied examples: `git config <k> <v>`, `git revert`, `git init`, `git branch -D`
+of an unpushed branch, `docker rm/rmi/compose` → **allow** (all reversible, all
+local). `git clean -f`, `docker prune`, bare interactive `claude`,
+`--dangerously-skip-permissions` → **deny** (unrecoverable, machine-wide, or
+simply can't work under an agent). `gh pr comment`, `npm install`,
+`curl -X POST <remote>`, `gcloud … deploy`, `systemctl restart` → **ask** (each
+one reaches outside the repo).
 
 ## Every deny / ask message must be actionable
 

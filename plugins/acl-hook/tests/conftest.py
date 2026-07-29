@@ -38,6 +38,21 @@ def fix_project_dir(tmp_path, monkeypatch):
     return project
 
 
+@pytest.fixture(autouse=True)
+def hook_log(tmp_path, monkeypatch):
+    """Point the hook's log at a tmp file so tests can assert on it — and stay out of the real one.
+
+    Also clears the `acl_hook` logger's handlers (monkeypatch restores them), so `setup_logging()`
+    attaches a fresh handler pointing at this test's file instead of reusing a previous test's.
+    """
+    import acl_hook
+
+    log_path = tmp_path / "acl-hook.log"
+    monkeypatch.setattr(acl_hook, "LOG_PATH", log_path)
+    monkeypatch.setattr(logging.getLogger("acl_hook"), "handlers", [])
+    return log_path
+
+
 @pytest.fixture
 def logger():
     log = logging.getLogger("test_acl_hook")

@@ -11,6 +11,7 @@ import json
 
 import acl_hook
 import bashlex
+import pytest
 from acl_hook import (
     check_command,
     has_function_def,
@@ -118,16 +119,19 @@ def test_git_config_get_and_list_are_allowed(logger):
     assert decide("git config --list", logger)[0] == "allow"
 
 
-def test_git_config_write_value_is_ask(logger):
-    assert decide("git config user.name galilei", logger)[0] == "ask"
+def test_git_config_write_is_allowed_with_a_scope_reminder(logger):
+    # Reversible via --unset, so it doesn't stall on a prompt; the reminder covers the --global trap.
+    decision, reason = decide("git config user.name galilei", logger)
+    assert decision == "allow"
+    assert "--global" in reason
 
 
-def test_git_config_write_with_scope_is_ask(logger):
-    assert decide("git config --global user.name foo", logger)[0] == "ask"
+def test_git_config_write_with_scope_is_allowed(logger):
+    assert decide("git config --global user.name foo", logger)[0] == "allow"
 
 
-def test_git_config_unset_is_ask(logger):
-    assert decide("git config --unset user.name", logger)[0] == "ask"
+def test_git_config_unset_is_allowed(logger):
+    assert decide("git config --unset user.name", logger)[0] == "allow"
 
 
 def _set_head(project, ref):
@@ -177,14 +181,16 @@ def test_git_branch_safe_delete_is_allowed(logger):
     assert decide("git branch --delete feat/x", logger)[0] == "allow"
 
 
-def test_git_branch_force_delete_unpushed_is_ask(logger):
-    # No remote-tracking ref in the tmp project → unpushed → force-delete could lose work → ask.
-    assert decide("git branch -D feat/x", logger)[0] == "ask"
+def test_git_branch_force_delete_unpushed_is_allowed_with_a_reflog_reminder(logger):
+    # No remote-tracking ref → unpushed → recoverable only from the reflog, so nudge, don't prompt.
+    decision, reason = decide("git branch -D feat/x", logger)
+    assert decision == "allow"
+    assert "reflog" in reason
 
 
-def test_git_branch_long_force_delete_unpushed_is_ask(logger):
-    assert decide("git branch --delete --force feat/x", logger)[0] == "ask"
-    assert decide("git branch -d -f feat/x", logger)[0] == "ask"
+def test_git_branch_long_force_delete_unpushed_is_allowed(logger):
+    assert decide("git branch --delete --force feat/x", logger)[0] == "allow"
+    assert decide("git branch -d -f feat/x", logger)[0] == "allow"
 
 
 def _add_remote_ref(project, name, remote="origin"):
@@ -262,6 +268,16 @@ def test_branch_off_stale_main_is_allowed_with_reminder(logger, fix_project_dir)
     assert "pull" in reason
 
 
+def test_branch_off_explicit_origin_main_is_not_called_stale(logger, fix_project_dir):
+    # Local main is behind, but the command names origin/main — the freshest ref we have. No nudge.
+    _set_head(fix_project_dir, "main")
+    _set_ref(fix_project_dir, "refs/heads/main", "aaaa")
+    _set_ref(fix_project_dir, "refs/remotes/origin/main", "bbbb")
+    decision, reason = decide("git switch -c new origin/main", logger)
+    assert decision == "allow"
+    assert reason == ""
+
+
 def test_branch_off_synced_main_is_allowed(logger, fix_project_dir):
     _set_head(fix_project_dir, "main")
     _set_ref(fix_project_dir, "refs/heads/main", "aaaa")
@@ -298,6 +314,25 @@ def test_clean_allow_has_no_additional_context(monkeypatch, capsys, fix_project_
     out = via_main(monkeypatch, capsys, "git switch -c new")["hookSpecificOutput"]
     assert out["permissionDecision"] == "allow"
     assert "additionalContext" not in out
+
+
+# ── every line of a multi-line command is checked ────────────────────────────
+
+
+def test_newline_separated_commands_are_checked_individually(logger):
+    # A newline chains like `;` — before this, everything after it was swallowed as arguments of
+    # the first command, so a dangerous second line rode in on an allowed first one.
+    assert acl_hook._decide("ls\ngit push --force", logger, "test")[0] == "deny"
+    assert acl_hook._decide("echo hi\nsudo rm -rf /home", logger, "test")[0] == "deny"
+    assert acl_hook._decide("cd /tmp\nrm -rf /etc", logger, "test")[0] == "deny"
+
+
+def test_newline_inside_quotes_does_not_split(logger):
+    assert acl_hook._decide("git commit -m 'line one\nline two'", logger, "test")[0] == "allow"
+
+
+def test_split_chained_commands_splits_on_newline():
+    assert acl_hook.split_chained_commands("ls -la\ngit status") == ["ls -la", "git status"]
 
 
 # ── .git is off-limits to readers ────────────────────────────────────────────
@@ -779,6 +814,18 @@ def test_gcloud_deploy_needs_confirmation(logger):
     assert decision == "ask"
 
 
+def test_gcloud_storage_download_is_allowed(logger):
+    # Bucket → local disk is a read; it shouldn't stall on a prompt.
+    assert decide("gcloud storage cp gs://bucket/traces/x.json.gz .scratch/traces/", logger)[0] == "allow"
+    assert decide("gcloud storage rsync gs://bucket/dir .scratch/dir", logger)[0] == "allow"
+
+
+def test_gcloud_storage_upload_is_asked(logger):
+    # Local → bucket writes remote state, so it stays an ask.
+    assert decide("gcloud storage cp report.json gs://bucket/reports/", logger)[0] == "ask"
+    assert decide("gcloud storage cp gs://a/x gs://b/x", logger)[0] == "ask"
+
+
 def test_gcloud_list_is_allowed(logger):
     assert decide("gcloud builds list --limit=10", logger)[0] == "allow"
 
@@ -821,8 +868,18 @@ def test_claude_headless_print_is_allowed(logger):
     assert decide('claude -p "implement the plan"', logger)[0] == "allow"
 
 
-def test_claude_skip_permissions_is_ask(logger):
-    assert decide('claude -p "go" --dangerously-skip-permissions', logger)[0] == "ask"
+def test_claude_skip_permissions_is_denied(logger):
+    # An agent must not hand a nested agent an unchecked shell; the reason points at the way out.
+    decision, reason = decide('claude -p "go" --dangerously-skip-permissions', logger)
+    assert decision == "deny"
+    assert "ACL_HOOK_AUTONOMOUS" in reason
+
+
+def test_bare_interactive_claude_is_denied(logger):
+    # No TTY under the agent — it hangs rather than works, so a prompt would only stall the user.
+    decision, reason = decide("claude", logger)
+    assert decision == "deny"
+    assert "claude -p" in reason
 
 
 def test_iconv_is_allowed(logger):
@@ -868,14 +925,15 @@ def test_a_project_acl_json_is_ignored(logger, fix_project_dir):
 
 def test_ask_becomes_deny_in_autonomous_mode(monkeypatch, capsys):
     monkeypatch.setenv("ACL_HOOK_AUTONOMOUS", "1")
-    out = via_main(monkeypatch, capsys, "git config user.name galilei")["hookSpecificOutput"]
+    out = via_main(monkeypatch, capsys, "npm install left-pad")["hookSpecificOutput"]
     assert out["permissionDecision"] == "deny"
     assert "ACL_HOOK_AUTONOMOUS" in out["permissionDecisionReason"]
+    assert "Confirm npm install" in out["permissionDecisionReason"]  # the rule's own reason survives
 
 
 def test_ask_keeps_asking_without_the_env_var(monkeypatch, capsys):
     monkeypatch.delenv("ACL_HOOK_AUTONOMOUS", raising=False)
-    out = via_main(monkeypatch, capsys, "git config user.name galilei")["hookSpecificOutput"]
+    out = via_main(monkeypatch, capsys, "npm install left-pad")["hookSpecificOutput"]
     assert out["permissionDecision"] == "ask"
 
 
@@ -890,5 +948,47 @@ def test_autonomous_mode_leaves_allow_and_deny_alone(monkeypatch, capsys):
 
 def test_autonomous_mode_off_for_other_values(monkeypatch, capsys):
     monkeypatch.setenv("ACL_HOOK_AUTONOMOUS", "0")
-    out = via_main(monkeypatch, capsys, "git config user.name galilei")["hookSpecificOutput"]
+    out = via_main(monkeypatch, capsys, "npm install left-pad")["hookSpecificOutput"]
     assert out["permissionDecision"] == "ask"
+
+
+# ── logging: every command lands in the log, verdict or crash ────────────────
+
+
+def test_every_command_is_logged_with_its_verdict(monkeypatch, capsys, hook_log):
+    via_main(monkeypatch, capsys, "git status && git push --force")
+    logged = hook_log.read_text(encoding="utf-8")
+    assert 'received command="git status && git push --force"' in logged
+    assert 'final=deny command="git status && git push --force"' in logged
+    assert logged.count("final=") == 1  # exactly one verdict line per Bash call
+
+
+def test_multiline_command_is_logged_on_one_line(monkeypatch, capsys, hook_log):
+    via_main(monkeypatch, capsys, "git status\ngit diff")
+    received = [ln for ln in hook_log.read_text(encoding="utf-8").splitlines() if "received" in ln]
+    assert len(received) == 1
+    assert "git status\\ngit diff" in received[0]
+
+
+def test_a_crashing_hook_logs_the_command_and_reraises(monkeypatch, capsys, hook_log):
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("bashlex exploded")
+
+    monkeypatch.setattr(acl_hook, "_decide", boom)
+    with pytest.raises(RuntimeError):
+        via_main(monkeypatch, capsys, "git status")
+    logged = hook_log.read_text(encoding="utf-8")
+    assert 'final=error command="git status"' in logged
+    assert "bashlex exploded" in logged  # traceback, so the crash is debuggable from the log alone
+
+
+def test_rewritten_wait_loop_is_logged_as_final(monkeypatch, capsys, hook_log):
+    via_main(monkeypatch, capsys, "until curl -sf localhost:8000; do sleep 2; done")
+    assert "final=rewrite" in hook_log.read_text(encoding="utf-8")
+
+
+def test_a_non_bash_payload_is_logged_as_skipped(monkeypatch, capsys, hook_log):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"tool_name": "Read", "tool_input": {"file_path": "x"}})))
+    acl_hook.main()
+    assert capsys.readouterr().out == ""
+    assert "final=skip tool=Read" in hook_log.read_text(encoding="utf-8")
