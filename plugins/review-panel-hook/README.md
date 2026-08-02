@@ -3,25 +3,48 @@
 A panel of five read-only reviewer subagents, dispatched automatically after every
 `git commit`.
 
-## What it does
+## When the nudge fires
 
-`PreToolUse` on `Bash`. When the command creates a commit, the hook emits
-`hookSpecificOutput.additionalContext` naming the panel and the scope. Claude Code drops
-that into the model's next request — which happens *after* the commit landed — so the
-reviewers read `git show HEAD`.
+The hook runs on `PreToolUse` — *before* the Bash command executes — but the text it emits
+reaches the model *after*. That split is the whole design:
 
-It emits **no `permissionDecision`**. The commit is never blocked, never auto-approved,
-and the normal permission flow (and [acl-hook](../acl-hook)) still has the last word.
-Advisory, by design: the panel's job is to catch what the author missed, not to be a gate.
+```
+1. agent  →  Bash: git commit -m "add feature"
+2. HOOK   ·  PreToolUse fires, before git runs. Reads tool_input.command + cwd:
+             · is this a command that creates a commit?      (no → silent)
+             · is anything staged to review?                 (no → silent)
+             · has this exact content been reviewed already? (yes → silent)
+             → emits additionalContext, NO permissionDecision
+3.        ·  normal permission flow runs (acl-hook still decides) → git commit executes
+4.        ·  the commit lands; HEAD now points at it
+5. agent  ←  tool result + the injected nudge, together, on the next model request
+6. agent  →  dispatches all 5 reviewers in ONE message → they run in parallel over
+             `git show HEAD`
+7. agent  ·  merges the five reports, drops unsupported findings, fixes what survives
+8. agent  →  commits the fixes → step 2 again, now over the new content
+```
 
-The hook is idempotent per content. It fingerprints the diff it is about to review and
-stays silent if that exact content was already handed to the panel — so a commit rejected
-by `pre-commit` and retried does not re-dispatch five subagents. Once the agent fixes
-something, the content changes and the panel runs again. State lives in
-`~/.claude/review-panel-hook/reviewed.json`.
+The nudge lands **at the top of the turn right after the commit**, not before it — the
+roster is already in the agent's context when it reads the commit's own result, so it
+cannot commit-and-move-on. Reviewing `HEAD` rather than the index is a consequence, not a
+preference: `additionalContext` is delivered on the next model request, by which point the
+index is empty and the commit exists.
 
-Nothing fires when there is no commit (`--dry-run`, `git status`), nothing is staged, or
-the directory is not a git repo.
+Step 8 terminates on its own — when the reviewers return `NO FINDINGS` there is nothing to
+fix, the agent makes no further commit, and the hook never fires again.
+
+**Three ways to stay silent** (step 2), so the panel is not a tax on every Bash call: the
+command is not a commit (`--dry-run`, `git status`, not a git repo); nothing is staged; or
+the content was already handed to the panel. That last one is a fingerprint of the diff
+under review, kept in `~/.claude/review-panel-hook/reviewed.json`, so a commit rejected by
+`pre-commit` and retried does not re-dispatch five subagents — but once the agent fixes
+something, the content changes and the panel runs again. `git commit -a` is read from
+`git diff HEAD`, since `-a` stages at commit time and the index is still empty when the
+hook fires.
+
+It emits **no `permissionDecision`**. The commit is never blocked, never auto-approved, and
+the normal permission flow (and [acl-hook](../acl-hook)) still has the last word. Advisory,
+by design: the panel's job is to catch what the author missed, not to be a gate.
 
 ## The panel
 
