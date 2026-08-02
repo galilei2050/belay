@@ -13,6 +13,9 @@ For every `Write` / `Edit` / `Read` (first match wins):
 | Path | Decision | Why |
 |------|----------|-----|
 | anything inside `.git/` | **deny** (read *and* write) | git's internal state — inspect it with `git` commands, not file reads |
+| `~/.claude/.credentials.json`, `~/.claude/**/.env` | **deny** (read *and* write) | credentials; nothing the agent is asked to do needs their contents |
+| write to `~/.claude/{settings,settings.local,acl}.json` | **ask** | these decide the agent's own permissions — a silent write widens its own leash. Reading them stays routine |
+| anything else under `~/.claude` | **allow** (read *and* write) | the agent's own home: memory, logs, plans, job scratch |
 | write under `.scratch/` | **allow** (no prompt) | the sanctioned scratch zone (acl-hook creates & gitignores it) |
 | write outside the project | **deny** | no `/tmp` scatter, no `Edit(../other-repo/…)` — put throwaways in `.scratch/`, or cd into that repo |
 | read outside the project | **ask** | confirm a one-off cross-repo read (e.g. a sibling library), or connect the dir |

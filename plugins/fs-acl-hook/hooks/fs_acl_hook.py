@@ -8,6 +8,9 @@ and never pokes `.git/` directly.
 
 Decisions (first match wins):
   - any path inside `.git/`            → deny  (read AND write; use `git` commands)
+  - credentials under `~/.claude`      → deny  (credential and env files, read AND write)
+  - write to a guard file under `~/.claude` → ask (settings/ACL — the agent's own leash)
+  - anything else under `~/.claude`    → allow (memory, logs, plans — the agent's own home)
   - write under `.scratch/`            → allow (suppress prompt; the scratch zone)
   - write outside the project          → deny  (→ `.scratch/`, or cd into that repo)
   - read outside the project           → ask   (confirm a one-off cross-repo read)
@@ -29,6 +32,18 @@ PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resol
 # Must match acl-hook's SCRATCH_SUBDIR — the one dir where writes (and `rm`) are free.
 SCRATCH_SUBDIR = ".scratch"
 
+# The agent's own home: memory, logs, plans, job scratch. Writable, because that is where
+# the harness asks the agent to keep things — a blanket out-of-project deny made the memory
+# directory unreachable.
+CLAUDE_HOME = (Path.home() / ".claude").resolve()
+
+# Two carve-outs inside it, matched by basename anywhere under CLAUDE_HOME.
+# Credentials: never read, never written — nothing the agent does needs their contents.
+CREDENTIAL_NAMES = frozenset({".credentials.json", ".env"})
+# Guards: the files that decide what the agent may do. Reading them is routine (the
+# update-config skill does), but a silent write would let the agent widen its own leash.
+GUARD_NAMES = frozenset({"settings.json", "settings.local.json", "acl.json"})
+
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 READ_TOOLS = {"Read"}
 
@@ -48,6 +63,16 @@ _OUT_OF_PROJECT_READ_REASON = (
     "Reading `{path}` is outside the current project (`{project}`). If you mean to work in that "
     "repo, cd into it / open it as its own session. Otherwise confirm this one-off cross-repo "
     "read, or ask the user to connect the directory (permissions.additionalDirectories)."
+)
+_CLAUDE_CREDENTIALS_REASON = (
+    "`{path}` holds credentials — off-limits to both read and write. Nothing you are asked to do "
+    "needs their contents; if a tool needs auth, run its own login command and let it manage the "
+    "file. To store something of your own under `~/.claude`, use the memory directory instead."
+)
+_CLAUDE_GUARD_REASON = (
+    "`{path}` is what decides your own permissions — editing it silently would widen your leash. "
+    "Reading it is fine; a write needs the user to see it. Confirm this change, and say in one "
+    "line which key you're changing and why."
 )
 
 Decision = tuple[str, str]
@@ -72,12 +97,23 @@ def _classify_read(project: Path, real: Path, file_path: str) -> Decision | None
     return None  # in-project read → normal flow
 
 
+def _classify_claude_home(tool_name: str, real: Path, file_path: str) -> Decision:
+    """Decide for a path inside `~/.claude`: deny credentials, ask on guards, allow the rest."""
+    if real.name in CREDENTIAL_NAMES:
+        return ("deny", _CLAUDE_CREDENTIALS_REASON.format(path=file_path))
+    if tool_name in WRITE_TOOLS and real.name in GUARD_NAMES:
+        return ("ask", _CLAUDE_GUARD_REASON.format(path=file_path))
+    return ("allow", "")
+
+
 def classify(tool_name: str, file_path: str) -> Decision | None:
     """Decide (decision, reason) for a file-tool call, or None to defer to the normal flow."""
     project = Path(PROJECT_DIR).resolve()
     real = Path(file_path).resolve()  # collapses `..`, so a traversal can't dodge the boundary
     if _under((project / ".git").resolve(), real):
         return ("deny", _GIT_REASON)  # off-limits to both read and write
+    if _under(CLAUDE_HOME, real):
+        return _classify_claude_home(tool_name, real, file_path)
     if tool_name in WRITE_TOOLS:
         return _classify_write(project, real, file_path)
     return _classify_read(project, real, file_path)

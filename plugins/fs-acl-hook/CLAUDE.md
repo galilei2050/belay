@@ -24,8 +24,29 @@ Same three buckets as acl-hook, by path:
   `None`, emit nothing) so the user's acceptEdits / review choice still applies.
 - **`ask`** — a legitimate but boundary-crossing op the human should sign off: reading
   another repo. Never `ask` on the agent's own scratch.
-- **`deny`** — off-limits regardless of context: `.git/` (read or write), and writes
-  outside the project. The reason must redirect (`.scratch/`, or cd into the repo).
+- **`deny`** — off-limits regardless of context: `.git/` (read or write), writes
+  outside the project, and secrets under `~/.claude`. The reason must redirect
+  (`.scratch/`, the memory dir, or cd into the repo).
+
+## `~/.claude` is the one out-of-project exception
+
+The blanket out-of-project write deny was wrong in exactly one place: the harness itself asks
+the agent to keep memory under `~/.claude/projects/<slug>/memory/`, and that made the memory
+directory unreachable. So `~/.claude` is carved out — but not wholesale, because it also holds
+the files that decide what the agent may do:
+
+- **secrets** (`.credentials.json`, `.env`, matched by basename anywhere below) — `deny`, both
+  directions. There is no task that needs to read a credential file.
+- **guards** (`settings.json`, `settings.local.json`, `acl.json`) — `ask` on write, `allow` on
+  read. Reading is routine (the `update-config` skill starts there); writing is the agent
+  editing its own leash, and the user has to see it. Don't downgrade this to `allow` — a hook
+  the agent can silently disable is not a hook.
+- **everything else** (memory, logs, plans, jobs, projects) — `allow`, both directions.
+
+The check is `~/.claude` specifically, resolved from `Path.home()`. A project's own
+`<project>/.claude` is ordinary in-project config and must keep falling through to the normal
+flow — there is a test pinning that, because the two are one character apart in a path and
+trivially confused.
 
 `defer` (emit nothing) is the fourth, default outcome — anything in-project that isn't
 scratch or `.git`. Don't turn defers into `allow`; that would override the harness.

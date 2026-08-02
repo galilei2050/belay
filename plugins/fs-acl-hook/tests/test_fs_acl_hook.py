@@ -6,8 +6,10 @@ per-rule assertions, and `main()` through a synthesised stdin for the full emit 
 
 import io
 import json
+from pathlib import Path
 
 import fs_acl_hook
+import pytest
 from fs_acl_hook import Decision, classify
 
 
@@ -84,6 +86,63 @@ def test_read_outside_project_asks(fix_project_dir):
     decision, reason = decided("Read", str(fix_project_dir / ".." / "baski" / "core.py"))
     assert decision == "ask"
     assert "cross-repo" in reason
+
+
+# ── ~/.claude is the agent's own home ────────────────────────────────────────
+#
+# Driven through main() rather than classify(), so each case asserts the decision Claude Code
+# actually receives.
+
+CLAUDE_HOME = Path.home() / ".claude"
+
+
+def decision_for(monkeypatch, capsys, tool_name, path):
+    out = via_main(monkeypatch, capsys, tool_name, str(path))
+    assert out is not None, f"{tool_name} {path} deferred instead of deciding"
+    return out["hookSpecificOutput"]["permissionDecision"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        CLAUDE_HOME / "projects" / "-home-galilei-Projects-belay" / "memory" / "MEMORY.md",
+        CLAUDE_HOME / "projects" / "-x" / "memory" / "feedback_thing.md",
+        CLAUDE_HOME / "logs" / "acl-hook.log",
+        CLAUDE_HOME / "plans" / "draft.md",
+    ],
+)
+def test_writing_the_agents_own_home_is_allowed(monkeypatch, capsys, path):
+    assert decision_for(monkeypatch, capsys, "Write", path) == "allow"
+
+
+def test_reading_the_agents_own_home_does_not_prompt(monkeypatch, capsys):
+    path = CLAUDE_HOME / "projects" / "-x" / "memory" / "MEMORY.md"
+    assert decision_for(monkeypatch, capsys, "Read", path) == "allow"
+
+
+@pytest.mark.parametrize("name", [".credentials.json", ".env"])
+@pytest.mark.parametrize("tool_name", ["Read", "Write"])
+def test_secrets_under_claude_home_are_off_limits_both_ways(monkeypatch, capsys, tool_name, name):
+    decision = decision_for(monkeypatch, capsys, tool_name, CLAUDE_HOME / name)
+    assert decision == "deny"
+
+
+@pytest.mark.parametrize("name", ["settings.json", "settings.local.json", "acl.json"])
+def test_writing_the_files_that_grant_permission_needs_the_user(monkeypatch, capsys, name):
+    """The agent must not widen its own leash without the user seeing it."""
+    assert decision_for(monkeypatch, capsys, "Write", CLAUDE_HOME / name) == "ask"
+
+
+@pytest.mark.parametrize("name", ["settings.json", "acl.json"])
+def test_reading_those_same_files_is_routine(monkeypatch, capsys, name):
+    """The update-config skill reads settings before changing anything."""
+    assert decision_for(monkeypatch, capsys, "Read", CLAUDE_HOME / name) == "allow"
+
+
+def test_a_project_dot_claude_is_not_the_agents_home(monkeypatch, capsys, fix_project_dir):
+    """`<project>/.claude` is ordinary project config — it must not inherit the home carve-out."""
+    out = via_main(monkeypatch, capsys, "Read", str(fix_project_dir / ".claude" / "settings.json"))
+    assert out is None
 
 
 # ── full emit path via main() ────────────────────────────────────────────────
