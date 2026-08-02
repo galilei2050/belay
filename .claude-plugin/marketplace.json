@@ -23,7 +23,7 @@
     {
       "name": "review-panel-hook",
       "source": "./plugins/review-panel-hook",
-      "description": "PreToolUse hook on `git commit` that dispatches a panel of five read-only reviewer subagents over the diff just committed."
+      "description": "PreToolUse hook on `git commit` that dispatches a panel of eight read-only reviewer subagents over the diff just committed."
     }
   ]
 }

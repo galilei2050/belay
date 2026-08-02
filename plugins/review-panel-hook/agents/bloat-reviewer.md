@@ -62,6 +62,12 @@ their head**.
   (you flag it for being long; they flag it for being mixed).
 - Guards, defaults, catch-alls, loose types → `explicitness-reviewer`.
 - Comments → `comments-reviewer`.
+- Whether the shorter version would still be *correct* → `correctness-reviewer` (never
+  propose a smaller version you have not traced).
+- A stub or `TODO` that means the work is unfinished → `integration-reviewer` owns
+  completeness; you own dead weight. If it is a placeholder for missing work, leave it
+  to them.
+- Test verbosity → `test-integrity-reviewer`, and tests are allowed to be repetitive.
 
 Tests are allowed to be repetitive and explicit; do not compress them. Do not flag code
 the diff merely moved.

@@ -25,11 +25,14 @@ from pathlib import Path
 STATE_PATH = Path.home() / ".claude" / "review-panel-hook" / "reviewed.json"
 GIT = shutil.which("git")
 
-# The panel. Order is the order the agent is told to dispatch them in; they run in
-# parallel, so it only sets the reading order of the report.
+# The panel. They run in parallel, so this order only sets the reading order of the merged
+# report — semantic findings first, because a wrong answer outranks a long function.
 REVIEWERS = (
-    "duplication-reviewer",
+    "correctness-reviewer",
+    "integration-reviewer",
+    "test-integrity-reviewer",
     "explicitness-reviewer",
+    "duplication-reviewer",
     "bloat-reviewer",
     "solid-reviewer",
     "comments-reviewer",

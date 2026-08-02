@@ -6,6 +6,7 @@ a real throwaway git repo, and `main()` through a synthesised stdin for the emit
 
 import io
 import json
+from pathlib import Path
 
 import pytest
 import review_panel_hook
@@ -18,6 +19,31 @@ def via_main(monkeypatch, capsys, command, cwd):
     review_panel_hook.main()
     out = capsys.readouterr().out
     return json.loads(out) if out.strip() else None
+
+
+AGENTS_DIR = Path(__file__).parent.parent / "agents"
+
+
+# ── the roster matches the shipped prompts ───────────────────────────────────
+
+
+def test_every_reviewer_has_a_prompt():
+    """A name in REVIEWERS with no agents/<name>.md would dispatch a subagent that does not exist."""
+    assert {path.stem for path in AGENTS_DIR.glob("*.md")} == set(REVIEWERS)
+
+
+@pytest.mark.parametrize("name", REVIEWERS)
+def test_prompt_declares_its_own_name_and_stays_read_only(name):
+    """Claude Code resolves the agent by its frontmatter `name`, not by the filename."""
+    frontmatter = (AGENTS_DIR / f"{name}.md").read_text().split("---")[1]
+    assert f"name: {name}\n" in frontmatter
+    assert "disallowedTools: Write, Edit, NotebookEdit" in frontmatter
+
+
+@pytest.mark.parametrize("name", REVIEWERS)
+def test_prompt_demands_the_clean_verdict(name):
+    """The merge step depends on a clean reviewer saying exactly this and nothing else."""
+    assert "`NO FINDINGS`" in (AGENTS_DIR / f"{name}.md").read_text()
 
 
 # ── which Bash commands are commits ──────────────────────────────────────────

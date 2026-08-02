@@ -21,7 +21,7 @@ both matter:
    override acl-hook and the user's own settings for every commit. A reviewer panel has no
    business handing out that authority.
 2. `deny` would make the commit itself the gate. That was considered and rejected: it puts
-   five subagents between the agent and every `git commit`, including trivial ones, and it
+   eight subagents between the agent and every `git commit`, including trivial ones, and it
    inverts belay's own rule that reversible local work is never a reason to stop.
 
 Don't "upgrade" this to a blocking gate. If a blocking review gate is wanted, it is a
@@ -29,7 +29,7 @@ different plugin with a verification artifact (see `docs/PHILOSOPHY.md`), not a 
 
 ## Why the digest exists
 
-Without it, a commit rejected by `pre-commit` and retried re-dispatches five subagents over
+Without it, a commit rejected by `pre-commit` and retried re-dispatches eight subagents over
 byte-identical content. The digest is over the code under review, not the command, so:
 
 - retry of the same content → silent
@@ -42,9 +42,26 @@ you ever need history, that is a log under `~/.claude/logs/`, not this file.
 
 ## Changing the panel
 
-**The ceiling is five seats.** Every added reviewer costs a subagent run on every commit,
-and overlapping roles produce the same finding five times, which trains the agent to skim
-the report. Adding a seat means arguing another one out.
+**The ceiling is eight seats — four semantic, four structural.** Every added reviewer costs
+a subagent run on every commit, and overlapping roles produce the same finding eight times,
+which trains the agent to skim the report. Adding a ninth means arguing one of the eight out.
+
+The ceiling was five, and it was raised deliberately in 0.2.0. The original five were all
+structural — duplication, defensiveness, bloat, SOLID, comments — and a second research pass
+showed that the panel therefore had no seat for the classes that actually cost the most:
+logic/correctness is **52.6% of all findings** in real AI PRs, **80.2%** of agent-authored
+test patches carry a weak or absent oracle, and multi-file success collapses from 55–58% to
+11–25%. Those three became `correctness-reviewer`, `test-integrity-reviewer`, and
+`integration-reviewer`. Keep that balance: **if a new seat is structural, it almost certainly
+duplicates an existing one.**
+
+Four classes were considered for a seat and rejected — do not re-litigate them without new
+evidence. Security (`/security-review` already ships), performance (static warnings show 46%
+precision; it needs profiling), readability/naming (elevated, but these are the findings that
+appear *more* in accepted PRs, so they do not drive rejection), and requirements traceability
+plus agent-trajectory safety (the largest failure classes of all, but neither is visible in a
+commit diff — they need the original task and the session trajectory, which this hook does
+not have).
 
 To add or change a role:
 
@@ -61,13 +78,28 @@ To add or change a role:
    edits is no longer a reviewer, and the main agent loses the merge-and-decide step.
 5. Add the name to `REVIEWERS` in the hook, add the README row, bump the plugin version.
 
-The two lanes that are easiest to blur, so state them explicitly in any new prompt:
-**`bloat-reviewer` judges size, `solid-reviewer` judges placement.** A 200-line function is
-bloat; a function doing two jobs that belong in different modules is SOLID.
+The lanes that are easiest to blur. State the boundary explicitly in any new prompt:
+
+- **`bloat-reviewer` judges size, `solid-reviewer` judges placement.** A 200-line function is
+  bloat; a function doing two jobs that belong in different modules is SOLID.
+- **`correctness-reviewer` judges the answer, `explicitness-reviewer` judges the failure
+  mode.** A wrong number is correctness; a swallowed exception or an unhandled failure path
+  is explicitness. Correctness may only take a guard when it can name the input that produces
+  a wrong result.
+- **`correctness-reviewer` judges whether it is wrong, `test-integrity-reviewer` judges
+  whether a test would notice.** Both can fire on one function; that is not duplication.
+- **`solid-reviewer` judges where a thing should live, `integration-reviewer` judges what
+  breaks because it moved.**
+
+`explicitness-reviewer` deliberately owns **both** directions — over-armoured and
+under-armoured. Don't split it: the evidence says agents do both in the same file (GitClear
+counts +47% error-masking constructs, CodeRabbit finds 1.97× *missing* handling), and a
+reviewer hunting one direction implicitly endorses the other. Its highest-value finding is
+"handling present, but in the wrong place."
 
 ## What every reviewer prompt must end with
 
-`NO FINDINGS` on a clean diff, verbatim and alone. The main agent merges five reports; a
+`NO FINDINGS` on a clean diff, verbatim and alone. The main agent merges eight reports; a
 reviewer that pads a clean result with observations makes the merge unreadable and teaches
 the agent to ignore the panel.
 

@@ -63,6 +63,9 @@ only when you can name the invariant that is currently homeless.
 - Guards, defaults, and loose types considered in isolation → `explicitness-reviewer`.
   (You take the same guard only when the issue is *which layer* it sits in.)
 - Comments → `comments-reviewer`.
+- Whether the misplaced code computes the right answer → `correctness-reviewer`.
+- Whether the callers of a moved symbol still work → `integration-reviewer`. You judge
+  where the responsibility *should* live; they judge what breaks if it moved.
 
 Small scripts and one-off tooling do not need layered architecture. Judge against the
 repository's own structure, not a textbook.

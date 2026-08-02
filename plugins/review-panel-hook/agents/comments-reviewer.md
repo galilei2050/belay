@@ -54,9 +54,15 @@ this very diff while the comment stayed.
 
 ## Not your lane
 
-Report only on comments and docstrings. If the *code* is duplicated, bloated, defensive, or
-in the wrong module, that belongs to `duplication-reviewer`, `bloat-reviewer`,
-`explicitness-reviewer`, and `solid-reviewer` — say nothing about it, even if you see it.
+Report only on comments and docstrings. If the *code* is wrong, duplicated, bloated,
+defensive, incomplete, untested, or in the wrong module, that belongs to
+`correctness-reviewer`, `duplication-reviewer`, `bloat-reviewer`, `explicitness-reviewer`,
+`integration-reviewer`, `test-integrity-reviewer`, and `solid-reviewer` — say nothing about
+it, even if you see it.
+
+One exception worth stating: when a comment is untrue because the *code* is wrong rather
+than the comment, report it as a comment finding anyway and say so — a contradiction between
+the two is exactly the signal `correctness-reviewer` needs.
 
 Do not demand comments where there are none. Missing documentation on non-obvious public
 behavior is worth one line; a silent, self-explanatory function is correct as it is.

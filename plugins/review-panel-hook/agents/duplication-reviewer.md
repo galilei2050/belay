@@ -54,6 +54,8 @@ Never claim "this looks similar to X" without having read X. Quote both sides.
 - A function doing two unrelated jobs, or living in the wrong layer → `solid-reviewer`.
 - Duplicated *comments* or restated docstrings → `comments-reviewer`.
 - Defensive branches and implicit contracts → `explicitness-reviewer`.
+- Whether either copy computes the right answer → `correctness-reviewer`.
+- A caller that was not updated, or a package that does not exist → `integration-reviewer`.
 
 Report a smell only if the second copy is real code. Two similar test cases are not
 duplication — tests are allowed to be repetitive and explicit.
