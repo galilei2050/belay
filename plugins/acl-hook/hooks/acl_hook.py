@@ -18,7 +18,6 @@ import json
 import logging
 import os
 import shlex
-import shutil
 import subprocess
 import sys
 from fnmatch import fnmatch
@@ -65,10 +64,8 @@ HOME = str(Path.home())
 # when invoked outside a Claude Code session (tests, manual runs).
 PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
 
-# The directory the current Bash call runs in, filled in main() from the payload's `cwd`. In a linked
-# worktree the session works in `.claude/worktrees/<name>` while CLAUDE_PROJECT_DIR still points at
-# the main checkout — and HEAD is per-worktree, so branch reads must follow the invocation, not the
-# project root. Shared refs (refs/heads, refs/remotes) live in the main `.git` either way.
+# The Bash call's own cwd, filled in main() from the payload — HEAD is per-worktree, PROJECT_DIR is
+# not (see `_head_file`). Shared refs (refs/heads, refs/remotes) live in the main `.git` either way.
 _INVOCATION: dict[str, str] = {"cwd": PROJECT_DIR}
 
 # ── ACL config: the bundled table, read in place ─────────────────────────────
@@ -374,20 +371,40 @@ def git_config_read(args: list[str]) -> bool:
 _PROTECTED_BRANCHES = {"main", "master"}
 
 
-def _head_file() -> Path:
-    """Path to the HEAD of the checkout this command runs in.
+def _git_dir() -> Path | None:
+    """The git dir of the checkout this command runs in, or None when it isn't in one.
 
-    `.git` is a directory in a normal checkout and a file holding `gitdir: <path>` in a linked
-    worktree, whose HEAD lives in that pointed-at dir. The invocation's cwd wins over the project
-    root so a worktree's own branch is read; anything else (a subdirectory, a non-repo cwd) falls
-    back to the project root.
+    Walks up from the invocation's cwd to the nearest `.git` — a directory in a normal checkout, a
+    file holding `gitdir: <path>` in a linked worktree or submodule. Following the invocation rather
+    than PROJECT_DIR is what makes per-checkout state (HEAD) correct inside a worktree, where
+    CLAUDE_PROJECT_DIR still names the main checkout: borrowing that checkout's HEAD would answer
+    confidently about a different branch, so no `.git` found answers nothing.
     """
-    git = Path(_INVOCATION["cwd"]) / ".git"
-    if not git.exists():
-        git = Path(PROJECT_DIR) / ".git"
+    cwd = Path(_INVOCATION["cwd"])
+    git = next((p / ".git" for p in (cwd, *cwd.parents) if (p / ".git").exists()), None)
+    if git is None:
+        return None
     if git.is_file():
-        git = Path(git.read_text(encoding="utf-8").strip().removeprefix("gitdir:").strip())
-    return git / "HEAD"
+        # `gitdir:` is relative for submodules and for worktrees created with --relative-paths, and
+        # it is relative to the dir holding the `.git` file — `/` keeps an absolute path unchanged.
+        git = git.parent / git.read_text(encoding="utf-8").strip().removeprefix("gitdir:").strip()
+    return git
+
+
+def _common_git_dir() -> Path | None:
+    """The git dir holding shared state — refs and `packed-refs`, which worktrees don't get a copy of.
+
+    A linked worktree's own gitdir carries a `commondir` file pointing back at the main one (`../..`);
+    without it the dir is its own common dir.
+    """
+    git = _git_dir()
+    if git is None:
+        return None
+    try:
+        common = (git / "commondir").read_text(encoding="utf-8").strip()
+    except OSError:
+        return git
+    return (git / common).resolve()
 
 
 def _current_branch_name() -> str | None:
@@ -398,7 +415,8 @@ def _current_branch_name() -> str | None:
     whole, slashes included (`feature/x`), so it can be handed to git/gh as-is.
     """
     try:
-        content = _head_file().read_text(encoding="utf-8").strip()
+        git = _git_dir()
+        content = (git / "HEAD").read_text(encoding="utf-8").strip() if git is not None else ""
     except OSError:
         return None
     if not content.startswith("ref:"):
@@ -436,10 +454,12 @@ def git_push_to_protected_branch(args: list[str]) -> bool:
 def _branch_on_remote(name: str) -> bool:
     """True iff branch `name` has a remote-tracking ref (it's been pushed) — loose or packed.
 
-    Reads `.git/refs/remotes/<remote>/<name>` and `.git/packed-refs` (files, no subprocess). If the
+    Reads `<git-dir>/refs/remotes/<remote>/<name>` and `packed-refs` (files, no subprocess). If the
     branch is on a remote, its commits are recoverable, so even a force-delete loses nothing.
     """
-    git = Path(PROJECT_DIR) / ".git"
+    git = _common_git_dir()
+    if git is None:
+        return False
     remotes_dir = git / "refs" / "remotes"
     if remotes_dir.is_dir():
         for remote in remotes_dir.iterdir():
@@ -585,11 +605,13 @@ def git_branch_off_protected(args: list[str]) -> bool:
 
 
 def _ref_sha(ref: str) -> str | None:
-    """SHA a ref points to, from `.git/<ref>` (loose) or `.git/packed-refs`; None if absent.
+    """SHA a ref points to, from `<git-dir>/<ref>` (loose) or `packed-refs`; None if absent.
 
     Pure file reads, no subprocess — the same line acl-hook holds in `_branch_on_remote`.
     """
-    git = Path(PROJECT_DIR) / ".git"
+    git = _common_git_dir()
+    if git is None:
+        return None
     try:
         text = (git / ref).read_text(encoding="utf-8").strip()
         if text:
@@ -652,12 +674,11 @@ def _branch_has_merged_pr(branch: str) -> bool:
     The one question no ref file can answer: a squash-merged branch is not an ancestor of trunk and
     GitHub keeps its remote ref, so nothing on disk says "this already landed". Hence the plugin's
     single subprocess + network call (see CLAUDE.md). Anything short of a clear "merged" answers
-    False — no `gh`, repo not on GitHub, unauthenticated, offline, or slow must never block a commit.
+    False — no `gh`, repo not on GitHub, unauthenticated, offline, or slow must never block a commit
+    — and logs why, because a guard that has quietly stopped firing looks exactly like a clean repo.
     """
-    gh = shutil.which("gh")
-    if gh is None:
-        return False
-    cmd = [gh, "pr", "list", "--head", branch, "--state", "merged", "--limit", "1", "--json", "number"]
+    logger = logging.getLogger("acl_hook")
+    cmd = ["gh", "pr", "list", "--head", branch, "--state", "merged", "--limit", "1", "--json", "headRefOid"]
     try:
         proc = subprocess.run(  # noqa: S603 — fixed argv, `branch` is a ref name read from HEAD
             cmd,
@@ -667,22 +688,36 @@ def _branch_has_merged_pr(branch: str) -> bool:
             timeout=_GH_TIMEOUT_SECONDS,
             check=False,
         )
-        return proc.returncode == 0 and bool(json.loads(proc.stdout))
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+    except (OSError, subprocess.SubprocessError) as exc:
+        # No `gh` on PATH raises FileNotFoundError; a hung gh raises TimeoutExpired.
+        logger.info("merged_pr_lookup=skip branch=%s cause=%s", branch, type(exc).__name__)
         return False
+    if proc.returncode != 0:
+        logger.info(
+            "merged_pr_lookup=skip branch=%s cause=gh_rc%d err=%s", branch, proc.returncode, proc.stderr.strip()[:200]
+        )
+        return False
+    try:
+        merged = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        logger.info("merged_pr_lookup=skip branch=%s cause=bad_json", branch)
+        return False
+    # A branch name outlives its PR — worktree names get recycled, so a fresh branch can carry the
+    # name of a merged one. The branch is finished only while its tip is still the merged commit.
+    return bool(merged) and merged[0]["headRefOid"] == _ref_sha(f"refs/heads/{branch}")
 
 
 def git_write_on_merged_branch(args: list[str]) -> bool:
-    """True iff `git commit` (or a bare `git push`) runs on a branch whose PR is already merged.
+    """True iff `git commit` runs on a branch whose PR is already merged.
 
-    Such a branch is done: the merged PR never picks up new commits, so work committed there lands
-    nowhere and quietly rots. A push with an explicit refspec is judged by that destination, not by
-    HEAD; main/master and a detached/unreadable HEAD are skipped (no PR of their own to be merged).
+    Such a branch is finished: the merged PR never picks up new commits, so work committed there
+    lands nowhere and quietly rots. Only `commit` is gated — with no new commit possible on the
+    branch, a push can carry only what was committed before the merge, and gating pushes too would
+    spend a GitHub round-trip on every ordinary feature push. main/master and an unreadable HEAD are
+    skipped (no PR of their own to be merged).
     """
-    if not args or args[0] not in {"commit", "push"}:
+    if not args or args[0] != "commit":
         return False
-    if args[0] == "push" and [a for a in args[1:] if not a.startswith("-")][1:]:
-        return False  # an explicit refspec (positionals after the remote) names its own destination
     branch = _current_branch_name()
     if branch is None or branch in _PROTECTED_BRANCHES:
         return False

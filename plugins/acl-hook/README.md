@@ -33,7 +33,9 @@ The net effect: fewer prompts, and every prompt matters.
 /plugin install acl-hook@belay
 ```
 
-Requirements: Python ≥ 3.10 available as `python3`, plus `pip install bashlex`
+Requirements: Python ≥ 3.10 available as `python3`, an authenticated GitHub CLI
+(`gh`) for the merged-branch check — without it that one rule silently no-ops,
+everything else works — plus `pip install bashlex`
 (used to parse compound commands properly — `a && b | c`, here-docs, command
 substitutions are all decomposed into the individual commands they expand to,
 so dangerous parts can't hide inside a pipeline).

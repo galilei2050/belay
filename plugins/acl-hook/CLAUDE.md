@@ -28,21 +28,25 @@ up-to-date main/master — see below). These are cheap file reads, not subproces
 history. The line stays: no `git log`/`git rev-parse` subprocesses, no parsing history.
 If a decision needs more than reading a few ref files, reconsider.
 
-HEAD is read through `_head_file()`, which follows the **invocation's cwd** (filled in
-`main()` from the payload's `cwd`, kept in `_INVOCATION`), not `PROJECT_DIR`: in a linked
-worktree the session runs in `.claude/worktrees/<name>` while `CLAUDE_PROJECT_DIR` still
-points at the main checkout, and HEAD is per-worktree (`.git` there is a *file* holding
-`gitdir: <path>`). Shared refs (`refs/heads`, `refs/remotes`) live in the main `.git`, so
-the ref readers keep using `PROJECT_DIR`.
+HEAD is read through `_head_file()`, which walks up from the **invocation's cwd** (filled in
+`main()` from the payload's `cwd`, kept in `_INVOCATION`) to the nearest `.git`, and answers
+None when there is none. In a linked worktree the session runs in `.claude/worktrees/<name>`
+while `CLAUDE_PROJECT_DIR` still points at the main checkout, and HEAD is per-worktree (`.git`
+there is a *file* holding a possibly relative `gitdir: <path>`) — so borrowing `PROJECT_DIR`'s
+HEAD would answer confidently about the wrong branch. Shared refs (`refs/heads`, `refs/remotes`)
+do live in the main `.git`, so the ref readers keep using `PROJECT_DIR`.
 
 **The one network call: `_branch_has_merged_pr` (`gh pr list --head <branch> --state merged`).**
 It exists because no local file can answer "did this branch's PR already land": a squash
 merge leaves the branch off trunk's ancestry, and GitHub keeps the remote ref after merging.
-It runs only on `git commit` / bare `git push`, only off main/master, with a 10s timeout, and
-**fails open** on every unclear answer (no `gh`, non-GitHub repo, unauthenticated, offline) —
-an unanswerable question must never block a commit. Don't grow a second one: if a new rule
-wants the network, the bar is the same — a decision that is impossible locally *and* worth a
-round-trip on every matching command.
+It runs only on `git commit`, only off main/master, with a 10s timeout, and denies only while
+the branch tip still equals the merged `headRefOid` — branch names get recycled, and a fresh
+branch reusing a merged one's name must stay committable. It **fails open** on every unclear
+answer (no `gh`, non-GitHub repo, unauthenticated, offline) — an unanswerable question must
+never block a commit — and logs `merged_pr_lookup=skip … cause=…` when it does, because a
+guard that has quietly stopped firing looks exactly like a clean repo. Don't grow a second
+one: if a new rule wants the network, the bar is the same — a decision that is impossible
+locally *and* worth a round-trip on every matching command.
 
 ## The decision rule
 
@@ -280,7 +284,9 @@ bootstrap: the hook sets up the project state its rules depend on.
 - The escape hatch: `"fn": "name"` where `name` is a Python callable in
   `CUSTOM_FNS` (registered in `acl_hook.py`). Use only when no pattern matcher
   captures the intent (`curl_mutating_remote`, `all_paths_inside_project`).
-  New `fn` predicates require editing `acl_hook.py` — keep them tiny and pure.
+  New `fn` predicates require editing `acl_hook.py` — keep them tiny and pure
+  (the one impure predicate is `git_write_on_merged_branch`; read the network-call
+  paragraph at the top before adding a second).
 
 ## How to add a new rule
 
