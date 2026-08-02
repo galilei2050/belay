@@ -1,6 +1,6 @@
 {
   "name": "review-panel-hook",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "PreToolUse hook on `git commit` that tells the agent to run a panel of eight read-only reviewer subagents over the diff it just committed.",
   "author": {
     "name": "galilei2050"

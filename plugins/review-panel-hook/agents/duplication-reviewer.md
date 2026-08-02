@@ -53,7 +53,9 @@ Never claim "this looks similar to X" without having read X. Quote both sides.
 - A function that is merely *long* or over-abstracted → `bloat-reviewer`.
 - A function doing two unrelated jobs, or living in the wrong layer → `solid-reviewer`.
 - Duplicated *comments* or restated docstrings → `comments-reviewer`.
-- Defensive branches and implicit contracts → `explicitness-reviewer`.
+- Defensive branches and implicit contracts → `explicitness-reviewer`. That includes a bare
+  domain literal with no enum behind it, repeated or not: you own the duplicated *block*,
+  they own the undeclared *value*.
 - Whether either copy computes the right answer → `correctness-reviewer`.
 - A caller that was not updated, or a package that does not exist → `integration-reviewer`.
 

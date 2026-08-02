@@ -94,6 +94,10 @@ The lanes that are easiest to blur. State the boundary explicitly in any new pro
   standards must not leak into test files.
 - **`solid-reviewer` judges where a thing should live, `integration-reviewer` judges what
   breaks because it moved.**
+- **A bare domain literal belongs to `explicitness-reviewer`, not `duplication-reviewer`.**
+  The defect is the undeclared value set, not the repetition — so it is a finding on the
+  first occurrence, which a DRY reviewer would wait for a third to report. Duplication keeps
+  the duplicated *block*.
 
 `explicitness-reviewer` deliberately owns **both** directions — over-armoured and
 under-armoured. Don't split it: the evidence says agents do both in the same file (GitClear
