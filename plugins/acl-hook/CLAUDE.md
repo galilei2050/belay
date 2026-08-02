@@ -25,8 +25,24 @@ branch, for a bare `git push`), `git_branch_force_delete` reads
 force-delete doesn't prompt), and `git_branch_off_protected` / `git_branch_off_stale_main`
 read `.git/HEAD` + `refs/heads/*` + `refs/remotes/origin/*` (branch only off an
 up-to-date main/master — see below). These are cheap file reads, not subprocesses and not
-history. The line stays: no `git log`/`git rev-parse` subprocesses, no network, no
-parsing history. If a decision needs more than reading a few ref files, reconsider.
+history. The line stays: no `git log`/`git rev-parse` subprocesses, no parsing history.
+If a decision needs more than reading a few ref files, reconsider.
+
+HEAD is read through `_head_file()`, which follows the **invocation's cwd** (filled in
+`main()` from the payload's `cwd`, kept in `_INVOCATION`), not `PROJECT_DIR`: in a linked
+worktree the session runs in `.claude/worktrees/<name>` while `CLAUDE_PROJECT_DIR` still
+points at the main checkout, and HEAD is per-worktree (`.git` there is a *file* holding
+`gitdir: <path>`). Shared refs (`refs/heads`, `refs/remotes`) live in the main `.git`, so
+the ref readers keep using `PROJECT_DIR`.
+
+**The one network call: `_branch_has_merged_pr` (`gh pr list --head <branch> --state merged`).**
+It exists because no local file can answer "did this branch's PR already land": a squash
+merge leaves the branch off trunk's ancestry, and GitHub keeps the remote ref after merging.
+It runs only on `git commit` / bare `git push`, only off main/master, with a 10s timeout, and
+**fails open** on every unclear answer (no `gh`, non-GitHub repo, unauthenticated, offline) —
+an unanswerable question must never block a commit. Don't grow a second one: if a new rule
+wants the network, the bar is the same — a decision that is impossible locally *and* worth a
+round-trip on every matching command.
 
 ## The decision rule
 
@@ -56,7 +72,9 @@ Classify every new command (and every new flag combo) into one of three buckets:
   `git rebase`, `git push` to main/master (`git_push_to_protected_branch` —
   branch + PR instead), reading `.git/` with cat/head/tail/less/more/grep/rg
   (`any_path_under_git` — use `git` commands, `.git` is off-limits),
-  `gh pr merge` (user-only), `rm` outside the scratch dir (see below),
+  `gh pr merge` (user-only), `git commit` / bare `git push` on a branch whose PR is
+  already merged (`git_write_on_merged_branch` — that branch is finished; branch off
+  updated trunk instead), `rm` outside the scratch dir (see below),
   `sudo`, `eval`, `bash <file>` (but `bash -c '<literal>'` is recursed — below).
   (`git merge` and `git cherry-pick` are **allow** — reversible local ops.
   Creating a branch off a non-trunk or stale base is **allow + reminder**, not

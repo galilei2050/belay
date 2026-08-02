@@ -18,6 +18,8 @@ import json
 import logging
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 from fnmatch import fnmatch
 from logging.handlers import RotatingFileHandler
@@ -62,6 +64,12 @@ HOME = str(Path.home())
 # Project root passed by Claude Code as CLAUDE_PROJECT_DIR. Fall back to cwd
 # when invoked outside a Claude Code session (tests, manual runs).
 PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
+
+# The directory the current Bash call runs in, filled in main() from the payload's `cwd`. In a linked
+# worktree the session works in `.claude/worktrees/<name>` while CLAUDE_PROJECT_DIR still points at
+# the main checkout — and HEAD is per-worktree, so branch reads must follow the invocation, not the
+# project root. Shared refs (refs/heads, refs/remotes) live in the main `.git` either way.
+_INVOCATION: dict[str, str] = {"cwd": PROJECT_DIR}
 
 # ── ACL config: the bundled table, read in place ─────────────────────────────
 #
@@ -366,17 +374,36 @@ def git_config_read(args: list[str]) -> bool:
 _PROTECTED_BRANCHES = {"main", "master"}
 
 
-def _current_branch_name() -> str | None:
-    """The checked-out branch name from `.git/HEAD`, or None on a detached HEAD / unreadable `.git`.
+def _head_file() -> Path:
+    """Path to the HEAD of the checkout this command runs in.
 
-    `.git/HEAD` holds `ref: refs/heads/<branch>` on a normal checkout; a detached HEAD holds a raw
-    sha (no branch). If `.git` is a file (worktree/submodule) or unreadable we can't tell, so None.
+    `.git` is a directory in a normal checkout and a file holding `gitdir: <path>` in a linked
+    worktree, whose HEAD lives in that pointed-at dir. The invocation's cwd wins over the project
+    root so a worktree's own branch is read; anything else (a subdirectory, a non-repo cwd) falls
+    back to the project root.
+    """
+    git = Path(_INVOCATION["cwd"]) / ".git"
+    if not git.exists():
+        git = Path(PROJECT_DIR) / ".git"
+    if git.is_file():
+        git = Path(git.read_text(encoding="utf-8").strip().removeprefix("gitdir:").strip())
+    return git / "HEAD"
+
+
+def _current_branch_name() -> str | None:
+    """The checked-out branch name from HEAD, or None on a detached HEAD / unreadable git dir.
+
+    HEAD holds `ref: refs/heads/<branch>` on a normal checkout; a detached HEAD holds a raw sha
+    (no branch), and an unreadable git dir means we can't tell — both give None. The name is taken
+    whole, slashes included (`feature/x`), so it can be handed to git/gh as-is.
     """
     try:
-        content = (Path(PROJECT_DIR) / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+        content = _head_file().read_text(encoding="utf-8").strip()
     except OSError:
         return None
-    return content.rsplit("/", 1)[-1] if content.startswith("ref:") else None
+    if not content.startswith("ref:"):
+        return None
+    return content.partition("refs/heads/")[2] or None
 
 
 def _current_branch_protected() -> bool:
@@ -614,6 +641,54 @@ def git_branch_off_stale_main(args: list[str]) -> bool:
     return _protected_synced(branch) is False
 
 
+# ── a branch whose PR already merged is finished: no more commits on it ──────
+
+_GH_TIMEOUT_SECONDS = 10
+
+
+def _branch_has_merged_pr(branch: str) -> bool:
+    """True iff GitHub reports a merged PR whose head is `branch`.
+
+    The one question no ref file can answer: a squash-merged branch is not an ancestor of trunk and
+    GitHub keeps its remote ref, so nothing on disk says "this already landed". Hence the plugin's
+    single subprocess + network call (see CLAUDE.md). Anything short of a clear "merged" answers
+    False — no `gh`, repo not on GitHub, unauthenticated, offline, or slow must never block a commit.
+    """
+    gh = shutil.which("gh")
+    if gh is None:
+        return False
+    cmd = [gh, "pr", "list", "--head", branch, "--state", "merged", "--limit", "1", "--json", "number"]
+    try:
+        proc = subprocess.run(  # noqa: S603 — fixed argv, `branch` is a ref name read from HEAD
+            cmd,
+            cwd=_INVOCATION["cwd"],
+            capture_output=True,
+            text=True,
+            timeout=_GH_TIMEOUT_SECONDS,
+            check=False,
+        )
+        return proc.returncode == 0 and bool(json.loads(proc.stdout))
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return False
+
+
+def git_write_on_merged_branch(args: list[str]) -> bool:
+    """True iff `git commit` (or a bare `git push`) runs on a branch whose PR is already merged.
+
+    Such a branch is done: the merged PR never picks up new commits, so work committed there lands
+    nowhere and quietly rots. A push with an explicit refspec is judged by that destination, not by
+    HEAD; main/master and a detached/unreadable HEAD are skipped (no PR of their own to be merged).
+    """
+    if not args or args[0] not in {"commit", "push"}:
+        return False
+    if args[0] == "push" and [a for a in args[1:] if not a.startswith("-")][1:]:
+        return False  # an explicit refspec (positionals after the remote) names its own destination
+    branch = _current_branch_name()
+    if branch is None or branch in _PROTECTED_BRANCHES:
+        return False
+    return _branch_has_merged_pr(branch)
+
+
 _GCS_COPY_SUBCOMMANDS = (["storage", "cp"], ["storage", "rsync"])
 _GCS_COPY_MIN_POSITIONALS = 2  # source + destination
 
@@ -643,6 +718,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "git_branch_force_delete": git_branch_force_delete,
     "git_branch_off_protected": git_branch_off_protected,
     "git_branch_off_stale_main": git_branch_off_stale_main,
+    "git_write_on_merged_branch": git_write_on_merged_branch,
     "any_path_under_git": any_path_under_git,
 }
 
@@ -1132,6 +1208,7 @@ def main() -> None:
     """
     logger = setup_logging()
     data = json.loads(sys.stdin.read())
+    _INVOCATION["cwd"] = str(data.get("cwd") or PROJECT_DIR)
     tool_name = data.get("tool_name")
     tool_input = data.get("tool_input", {}) if tool_name == "Bash" else {}
     command = tool_input.get("command", "")

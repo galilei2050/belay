@@ -8,6 +8,7 @@ size/heredoc gates.
 
 import io
 import json
+import subprocess
 
 import acl_hook
 import bashlex
@@ -173,6 +174,104 @@ def test_git_push_bare_on_feature_is_allowed(logger, fix_project_dir):
 def test_git_push_bare_no_git_dir_is_allowed(logger):
     # No readable .git/HEAD (tmp project has none) → can't tell → don't block.
     assert decide("git push", logger)[0] == "allow"
+
+
+def _never_queried(_branch):
+    raise AssertionError("GitHub must not be queried for this command")
+
+
+def test_commit_on_a_merged_pr_branch_is_denied(logger, fix_project_dir, monkeypatch):
+    _set_head(fix_project_dir, "feat/x")
+    monkeypatch.setattr(acl_hook, "_branch_has_merged_pr", lambda branch: branch == "feat/x")
+    decision, reason = decide("git commit -m fix", logger)
+    assert decision == "deny"
+    assert "already merged" in reason
+    assert "cherry-pick" in reason
+
+
+def test_commit_on_a_branch_without_a_merged_pr_is_allowed(logger, fix_project_dir, monkeypatch):
+    _set_head(fix_project_dir, "feat/x")
+    monkeypatch.setattr(acl_hook, "_branch_has_merged_pr", lambda _branch: False)
+    assert decide("git commit -m fix", logger)[0] == "allow"
+
+
+def test_commit_on_main_does_not_query_github(logger, fix_project_dir, monkeypatch):
+    # main has no PR of its own — spending a network call on every commit there would be waste.
+    _set_head(fix_project_dir, "main")
+    monkeypatch.setattr(acl_hook, "_branch_has_merged_pr", _never_queried)
+    assert decide("git commit -m fix", logger)[0] == "allow"
+
+
+def test_bare_push_on_a_merged_pr_branch_is_denied(logger, fix_project_dir, monkeypatch):
+    _set_head(fix_project_dir, "feat/x")
+    monkeypatch.setattr(acl_hook, "_branch_has_merged_pr", lambda _branch: True)
+    assert decide("git push", logger)[0] == "deny"
+    assert decide("git push origin", logger)[0] == "deny"
+
+
+def test_push_with_an_explicit_refspec_does_not_query_github(logger, fix_project_dir, monkeypatch):
+    # The refspec names its own destination, so HEAD (and its PR) says nothing about this push.
+    _set_head(fix_project_dir, "feat/x")
+    monkeypatch.setattr(acl_hook, "_branch_has_merged_pr", _never_queried)
+    assert decide("git push -u origin feat/y", logger)[0] == "allow"
+
+
+def test_merged_pr_lookup_reads_gh_output(monkeypatch):
+    monkeypatch.setattr(acl_hook.shutil, "which", lambda _name: "/usr/bin/gh")
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout='[{"number":21}]', stderr="")
+
+    monkeypatch.setattr(acl_hook.subprocess, "run", fake_run)
+    assert acl_hook._branch_has_merged_pr("feat/x") is True
+    assert calls[0][:5] == ["/usr/bin/gh", "pr", "list", "--head", "feat/x"]
+
+
+def test_merged_pr_lookup_is_false_on_an_empty_result(monkeypatch):
+    monkeypatch.setattr(acl_hook.shutil, "which", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        acl_hook.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr=""),
+    )
+    assert acl_hook._branch_has_merged_pr("feat/x") is False
+
+
+def test_merged_pr_lookup_fails_open_when_gh_errors(monkeypatch):
+    # Not a GitHub repo / unauthenticated / offline: never block a commit on an unanswerable question.
+    monkeypatch.setattr(acl_hook.shutil, "which", lambda _name: "/usr/bin/gh")
+    monkeypatch.setattr(
+        acl_hook.subprocess,
+        "run",
+        lambda cmd, **_kwargs: subprocess.CompletedProcess(cmd, 1, stdout="", stderr="no auth"),
+    )
+    assert acl_hook._branch_has_merged_pr("feat/x") is False
+
+
+def test_merged_pr_lookup_fails_open_without_gh(monkeypatch):
+    monkeypatch.setattr(acl_hook.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(acl_hook.subprocess, "run", _never_queried)
+    assert acl_hook._branch_has_merged_pr("feat/x") is False
+
+
+def test_branch_name_keeps_its_slashes(fix_project_dir):
+    _set_head(fix_project_dir, "feat/x")
+    assert acl_hook._current_branch_name() == "feat/x"
+
+
+def test_branch_name_comes_from_the_worktree_the_command_runs_in(fix_project_dir, tmp_path, monkeypatch):
+    # A linked worktree's `.git` is a file pointing at its own gitdir, where its own HEAD lives.
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    gitdir = tmp_path / "worktree-gitdir"
+    gitdir.mkdir()
+    (gitdir / "HEAD").write_text("ref: refs/heads/feat/in-worktree\n")
+    (worktree / ".git").write_text(f"gitdir: {gitdir}\n")
+    _set_head(fix_project_dir, "main")
+    monkeypatch.setitem(acl_hook._INVOCATION, "cwd", str(worktree))
+    assert acl_hook._current_branch_name() == "feat/in-worktree"
 
 
 def test_git_branch_safe_delete_is_allowed(logger):
