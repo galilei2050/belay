@@ -21,7 +21,7 @@ reaches the model *after*. That split is the whole design:
 6. agent  →  dispatches all 8 reviewers in ONE message → they run in parallel over
              `git show HEAD`
 7. agent  ·  merges the eight reports, drops unsupported findings, fixes what survives
-8. agent  →  commits the fixes → step 2 again, now over the new content
+8. agent  →  commits the fixes — findings the panel already made, so no second round
 ```
 
 The nudge lands **at the top of the turn right after the commit**, not before it — the
@@ -30,8 +30,12 @@ cannot commit-and-move-on. Reviewing `HEAD` rather than the index is a consequen
 preference: `additionalContext` is delivered on the next model request, by which point the
 index is empty and the commit exists.
 
-Step 8 terminates on its own — when the reviewers return `NO FINDINGS` there is nothing to
-fix, the agent makes no further commit, and the hook never fires again.
+**A round is owed to changes the panel has not seen, and nothing else.** The fix commit is
+new content, so the hook does fire over it — the nudge itself is what tells the agent to
+skip it, because only the agent knows whether what it just committed is the panel's own
+findings applied or genuine new work. Eight subagents is real money, and a panel handed its
+own corrections finds fresh wording to object to indefinitely. A clean panel ends it a step
+earlier: `NO FINDINGS` means nothing to fix, no further commit, and no further nudge.
 
 **Three ways to stay silent** (step 2), so the panel is not a tax on every Bash call: the
 command is not a commit (`--dry-run`, `git status`, not a git repo); nothing is staged; or

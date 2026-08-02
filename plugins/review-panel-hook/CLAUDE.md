@@ -40,6 +40,21 @@ byte-identical content. The digest is over the code under review, not the comman
 Keep the state file dumb (repo path → digest). It is a de-duplicator, not a review log; if
 you ever need history, that is a log under `~/.claude/logs/`, not this file.
 
+## A round is owed to unseen changes, and that rule lives in the prompt
+
+The panel is for work the panel has not read. The digest already stops a byte-identical
+retry, but it cannot stop the commit that *applies the findings* — that is new content by
+every mechanical measure, and telling it apart from genuine new work needs to know what the
+commit was for. Only the agent knows that, so the rule is in `_PROMPT` and the hook keeps
+guessing nothing (see Scope).
+
+Two hook-side "fixes" that look tempting and are not. Going quiet after every dispatch
+silences the next commit whenever the panel came back clean, and a skipped review is
+invisible. A size threshold on the diff is worse: it drops the small commits — a flipped
+condition, a changed constant — that this panel exists to catch. The cost being defended
+against is real (a round is eight subagents, and a panel handed its own corrections will
+keep finding wording to object to), but neither of those buys it honestly.
+
 ## Changing the panel
 
 **The ceiling is eight seats — four semantic, four structural.** Every added reviewer costs

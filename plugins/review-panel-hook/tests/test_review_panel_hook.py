@@ -106,6 +106,13 @@ def test_the_panel_is_pointed_at_the_commit_that_just_landed(run_hook, repo):
     assert "git show HEAD" in context
 
 
+def test_the_agent_is_told_to_spend_a_round_only_on_unseen_changes(run_hook, repo):
+    """A fix commit is new content, so only this instruction stops a second round of eight."""
+    context = run_hook("git commit -m x", repo)["hookSpecificOutput"]["additionalContext"]
+    assert "changes the panel has not seen" in context
+    assert "dispatch nobody" in context
+
+
 def test_the_commit_is_neither_blocked_nor_auto_approved(run_hook, repo):
     """Advisory only: deciding here would bypass the permission flow and acl-hook."""
     emitted = run_hook("git commit -m x", repo)["hookSpecificOutput"]

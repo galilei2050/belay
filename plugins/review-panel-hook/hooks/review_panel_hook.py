@@ -59,7 +59,14 @@ Then:
 - Merge their findings. Drop anything a reviewer could not point at a concrete line.
 - Fix what survives, and commit the fixes. Do not amend unless the commit is unpushed
   and the fix is trivial.
-- If nothing survives, say so in one line and move on. Do not re-run the panel.
+- If nothing survives, say so in one line and move on.
+
+**Dispatch only over changes the panel has not seen.** A round costs {count} subagents of
+the user's money, so spend it on substantial new work — new code, a behavior change, a file
+the panel has not read. A commit that only applies the findings from the round you just ran
+is not that: say so in one line and dispatch nobody. A panel handed its own corrections
+finds fresh wording to object to indefinitely, and a finding you already rejected does not
+get a second opinion.
 
 The panel is advisory — none of this blocks the commit that already happened."""
 
