@@ -40,6 +40,21 @@ byte-identical content. The digest is over the code under review, not the comman
 Keep the state file dumb (repo path → digest). It is a de-duplicator, not a review log; if
 you ever need history, that is a log under `~/.claude/logs/`, not this file.
 
+## A round is owed to unseen changes, and that rule lives in the prompt
+
+The panel is for work the panel has not read. The digest already stops a byte-identical
+retry, but it cannot stop the commit that *applies the findings* — that is new content by
+every mechanical measure, and telling it apart from genuine new work needs to know what the
+commit was for. Only the agent knows that, so the rule is in `_PROMPT` and the hook keeps
+guessing nothing (see Scope).
+
+Two hook-side "fixes" that look tempting and are not. Going quiet after every dispatch
+silences the next commit whenever the panel came back clean, and a skipped review is
+invisible. A size threshold on the diff is worse: it drops the small commits — a flipped
+condition, a changed constant — that this panel exists to catch. The cost being defended
+against is real (a round is eight subagents, and a panel handed its own corrections will
+keep finding wording to object to), but neither of those buys it honestly.
+
 ## Changing the panel
 
 **The ceiling is eight seats — four semantic, four structural.** Every added reviewer costs
@@ -94,6 +109,10 @@ The lanes that are easiest to blur. State the boundary explicitly in any new pro
   standards must not leak into test files.
 - **`solid-reviewer` judges where a thing should live, `integration-reviewer` judges what
   breaks because it moved.**
+- **A bare domain literal belongs to `explicitness-reviewer`, not `duplication-reviewer`.**
+  The defect is the undeclared value set, not the repetition — so it is a finding on the
+  first occurrence, where a DRY reviewer only ever sees a repeated *block* and never the
+  value on its own. Duplication keeps the block.
 
 `explicitness-reviewer` deliberately owns **both** directions — over-armoured and
 under-armoured. Don't split it: the evidence says agents do both in the same file (GitClear

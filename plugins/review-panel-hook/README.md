@@ -21,7 +21,7 @@ reaches the model *after*. That split is the whole design:
 6. agent  →  dispatches all 8 reviewers in ONE message → they run in parallel over
              `git show HEAD`
 7. agent  ·  merges the eight reports, drops unsupported findings, fixes what survives
-8. agent  →  commits the fixes → step 2 again, now over the new content
+8. agent  →  commits the fixes — findings the panel already made, so no second round
 ```
 
 The nudge lands **at the top of the turn right after the commit**, not before it — the
@@ -30,8 +30,12 @@ cannot commit-and-move-on. Reviewing `HEAD` rather than the index is a consequen
 preference: `additionalContext` is delivered on the next model request, by which point the
 index is empty and the commit exists.
 
-Step 8 terminates on its own — when the reviewers return `NO FINDINGS` there is nothing to
-fix, the agent makes no further commit, and the hook never fires again.
+**A round is owed to changes the panel has not seen, and nothing else.** The fix commit is
+new content, so the hook does fire over it — the nudge itself is what tells the agent to
+skip it, because only the agent knows whether what it just committed is the panel's own
+findings applied or genuine new work. Eight subagents is real money, and a panel handed its
+own corrections finds fresh wording to object to indefinitely. A clean panel ends it a step
+earlier: `NO FINDINGS` means nothing to fix, no further commit, and no further nudge.
 
 **Three ways to stay silent** (step 2), so the panel is not a tax on every Bash call: the
 command is not a commit (`--dry-run`, `git status`, not a git repo); nothing is staged; or
@@ -50,7 +54,7 @@ by design: the panel's job is to catch what the author missed, not to be a gate.
 
 One role = one class of smell, with an explicit *not your lane* section in each prompt so
 findings do not arrive eight times. All eight are read-only
-(`disallowedTools: Write, Edit`) and self-contained — the plugin works in a repo with no
+(`disallowedTools: Write, Edit, NotebookEdit`) and self-contained — the plugin works in a repo with no
 `rules/` directory.
 
 The first four are **semantic** — is the change right, whole, and provable? The last four are
@@ -62,7 +66,7 @@ reading order of the merged report: a wrong answer outranks a long function.
 | [`correctness-reviewer`](agents/correctness-reviewer.md) | Algorithm and business-logic errors, inverted conditions, off-by-one and boundary mistakes, unhandled edge cases, wrong ordering, concurrency and resource-lifecycle errors | Logic & correctness is **52.6% of all findings** in AI PRs and runs **1.75×** the human rate; algorithm/business-logic **2.25×**, concurrency control **2.29×**, null dereference **2.27×** (CodeRabbit, 320 AI vs 150 human PRs). Functional bugs appear in **78%** of 72 surveyed studies |
 | [`integration-reviewer`](agents/integration-reviewer.md) | Callers never updated, schemas/configs/migrations out of sync, stubs and TODOs, non-existent packages, deprecated API forms, out-of-scope edits | SWE-bench success collapses from **55–58% single-file to 11–25% multi-file**; *Incomplete Solution & Side Effects* is **29–42%** of failures (SWE-Compass); top revert causes are unintended side effects/overengineering **22.33%** and functional incorrectness 22.13%. **19.7%** of 2.23M recommended package references do not exist; **24.9–37.4%** of plausible API completions are deprecated |
 | [`test-integrity-reviewer`](agents/test-integrity-reviewer.md) | **Tests written too low** — a unit test per internal function instead of one through the real boundary, mocking the layer directly beneath, assertions a pure refactor would break — plus absent or weak oracles, assertions weakened to go green, skipped cases, mocks unlike production, behavior changed with tests untouched, validation deleted | On level: the repo owner's explicit standing rule — test through the outermost boundary a real consumer uses; a unit test per internal API breaks on refactors and stays silent when the contract does. On oracles: **80.2% of 86,156 agent-authored test patches had a weak oracle or none** (33,596 PRs); only 11.3% carried one strong-oracle type. SpecBench measured **43–48pp** visible-vs-hidden test gaps, up to 100pp. The one lane where CI is structurally blind — a weakened assertion makes the build *greener* |
-| [`explicitness-reviewer`](agents/explicitness-reviewer.md) | **Both directions**: guards against impossible states, catch-alls, sentinel defaults, `Any`/`type: ignore`, backends guessing at shape — *and* real failure paths left unhandled, fatal treated as recoverable, invariants not restored, missing edge validation | `any` added **9.0×** as often as in human PRs (p≈2.3×10⁻⁷); type-bypass constructs 2.1–2.5× (d=1.45); **+47%** error-masking constructs (GitClear) — but error-handling findings **1.97×** and null-dereference **2.27×** (CodeRabbit), predominantly handling that is *missing*. Both are true; see below |
+| [`explicitness-reviewer`](agents/explicitness-reviewer.md) | **Both directions**: guards against impossible states, catch-alls, sentinel defaults, `Any`/`type: ignore`, bare domain literals with no enum behind them, backends guessing at shape — *and* real failure paths left unhandled, fatal treated as recoverable, invariants not restored, missing edge validation | `any` added **9.0×** as often as in human PRs (p≈2.3×10⁻⁷); type-bypass constructs 2.1–2.5× (d=1.45); **+47%** error-masking constructs (GitClear) — but error-handling findings **1.97×** and null-dereference **2.27×** (CodeRabbit), predominantly handling that is *missing*. Both are true; see below. Hardcoded constants trace to *indiscriminate handling of string literals* — the model does not separate a value that names a domain concept from a throwaway string (SonarQube, 5 models) |
 | [`duplication-reviewer`](agents/duplication-reviewer.md) | Reinvented utilities, copy-paste, parallel files, hand-rolled standards, the same guard in three places | Agentic PRs carry **1.87×** the semantic redundancy of human PRs (0.2867 vs 0.1532, p<0.001); copy/pasted lines industry-wide rose 8.3% → 15.7% while refactored lines fell 25% → <10% (GitClear, 623M changed lines) |
 | [`bloat-reviewer`](agents/bloat-reviewer.md) | Long methods, deep nesting, speculative generality, dead code, padding | Long Method counts **5–6×** the human baseline in a controlled 90-problem audit; matched real-world files show 1.33× LOC, 1.47× statements/function, 1.35× nesting — while cyclomatic complexity is flat at 1.06× |
 | [`solid-reviewer`](agents/solid-reviewer.md) | Mixed responsibility, wrong-layer fixes, growing if/elif chains, inverted dependencies, leaky abstractions | Across generated systems, total LOC correlates with architectural smell count at **ρ=0.94**, p<0.001; agentic refactoring is >91% trivial annotation changes, so nobody proposes the move |
