@@ -111,7 +111,28 @@ uv run ruff check plugins/review-panel-hook/
 uv run mypy plugins/review-panel-hook/hooks/review_panel_hook.py
 ```
 
-The `repo` fixture builds a real throwaway git repo, so the digest and end-to-end paths run
-against actual `git`, not a mock — the hook's whole job is reading git state, and a mocked
-git would test nothing. `state_file` redirects the dedupe file into `tmp_path`; never let a
-test touch the real `~/.claude`.
+**Test at the highest level, never the internals.** Every test drives the hook through the
+boundary Claude Code uses — the real script, a JSON payload on stdin, JSON on stdout — via
+the `run_hook` fixture. Nothing imports `review_panel_hook` or calls its functions.
+
+That is deliberate, not incidental. `is_reviewable_commit()`, `review_scope_digest()`, and
+the state helpers are implementation; asserting on them directly would freeze the internals
+and still tell you nothing about what the agent receives. Going through the script also
+covers what a unit test cannot: that the file is executable, imports cleanly, resolves `git`,
+exits 0, and writes parseable JSON. When you add behavior, add a test that says **what the
+agent would see**, and let the internals stay refactorable.
+
+Two supporting fixtures make that possible:
+
+- `repo` builds a real throwaway git repo — the hook's whole job is reading git state, and a
+  mocked git would test nothing.
+- `run_hook` points `HOME` at `tmp_path`, so the dedupe state the hook writes never touches
+  the real `~/.claude` and each test starts with the panel having seen nothing.
+
+The only tests that read files directly are the prompt-contract ones, and they assert on the
+*shipped artifacts* (frontmatter name, read-only tools, the `NO FINDINGS` clause) rather than
+on any function.
+
+Before trusting a new test, break the thing it covers and watch it fail. The roster test was
+verified that way: adding a name to `REVIEWERS` with no matching `agents/<name>.md` makes it
+red, which is exactly the bug it exists to catch.

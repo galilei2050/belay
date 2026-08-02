@@ -83,7 +83,7 @@ def review_scope_digest(cwd: str, command: str) -> str | None:
     """Digest of the code about to be committed, or None if there is nothing to review.
 
     The digest is what makes the hook idempotent: a commit rejected by pre-commit and
-    retried carries the same content, and re-dispatching five subagents over it is pure
+    retried carries the same content, and re-dispatching the whole panel over it is pure
     waste. Once the agent fixes something the content changes and the panel runs again.
     """
     diff = _git(cwd, "diff", "HEAD" if _STAGE_ALL_RE.search(command) else "--cached")

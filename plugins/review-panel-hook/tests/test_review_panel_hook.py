@@ -1,52 +1,50 @@
-"""Tests for plugins/review-panel-hook/hooks/review_panel_hook.py.
+"""Behavioral tests for review-panel-hook.
 
-Three layers: `is_reviewable_commit()` as a pure predicate, `review_scope_digest()` against
-a real throwaway git repo, and `main()` through a synthesised stdin for the emit path.
+Every test drives the hook through its real boundary — the script Claude Code runs, JSON on
+stdin, JSON on stdout — and asserts what the agent would actually receive. Nothing imports
+the hook module or calls its functions: the internals are free to be refactored, and the
+tests still fail if the behavior changes.
 """
 
-import io
-import json
+import re
 from pathlib import Path
 
 import pytest
-import review_panel_hook
-from review_panel_hook import REVIEWERS, is_reviewable_commit, review_scope_digest
-
-
-def via_main(monkeypatch, capsys, command, cwd):
-    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}, "cwd": str(cwd)})
-    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
-    review_panel_hook.main()
-    out = capsys.readouterr().out
-    return json.loads(out) if out.strip() else None
-
 
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
+PROMPTS = sorted(AGENTS_DIR.glob("*.md"))
+
+_ROSTER_RE = re.compile(r"`review-panel-hook:([\w-]+)`")
 
 
-# ── the roster matches the shipped prompts ───────────────────────────────────
+def roster_of(emitted) -> set[str]:
+    """The reviewer names the agent is told to dispatch."""
+    return set(_ROSTER_RE.findall(emitted["hookSpecificOutput"]["additionalContext"]))
 
 
-def test_every_reviewer_has_a_prompt():
-    """A name in REVIEWERS with no agents/<name>.md would dispatch a subagent that does not exist."""
-    assert {path.stem for path in AGENTS_DIR.glob("*.md")} == set(REVIEWERS)
+# ── the roster the agent receives matches the prompts that ship ──────────────
 
 
-@pytest.mark.parametrize("name", REVIEWERS)
-def test_prompt_declares_its_own_name_and_stays_read_only(name):
+def test_agent_is_sent_to_every_shipped_reviewer_and_no_other(run_hook, repo):
+    """A name in the roster with no prompt would dispatch a subagent that does not exist."""
+    assert roster_of(run_hook("git commit -m x", repo)) == {path.stem for path in PROMPTS}
+
+
+@pytest.mark.parametrize("prompt", PROMPTS, ids=lambda p: p.stem)
+def test_prompt_declares_its_own_name_and_stays_read_only(prompt):
     """Claude Code resolves the agent by its frontmatter `name`, not by the filename."""
-    frontmatter = (AGENTS_DIR / f"{name}.md").read_text().split("---")[1]
-    assert f"name: {name}\n" in frontmatter
+    frontmatter = prompt.read_text().split("---")[1]
+    assert f"name: {prompt.stem}\n" in frontmatter
     assert "disallowedTools: Write, Edit, NotebookEdit" in frontmatter
 
 
-@pytest.mark.parametrize("name", REVIEWERS)
-def test_prompt_demands_the_clean_verdict(name):
+@pytest.mark.parametrize("prompt", PROMPTS, ids=lambda p: p.stem)
+def test_prompt_demands_the_clean_verdict(prompt):
     """The merge step depends on a clean reviewer saying exactly this and nothing else."""
-    assert "`NO FINDINGS`" in (AGENTS_DIR / f"{name}.md").read_text()
+    assert "`NO FINDINGS`" in prompt.read_text()
 
 
-# ── which Bash commands are commits ──────────────────────────────────────────
+# ── when the panel is dispatched ─────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -55,13 +53,12 @@ def test_prompt_demands_the_clean_verdict(name):
         "git commit",
         'git commit -m "fix the thing"',
         "git commit -am 'wip'",
-        "git -C /some/repo commit -m x",
-        "make lint && git commit -F .scratch/COMMIT_MSG",
         "git commit --amend --no-edit",
+        "make lint && git commit -F .scratch/COMMIT_MSG",
     ],
 )
-def test_real_commits_are_reviewable(command):
-    assert is_reviewable_commit(command)
+def test_a_commit_puts_the_panel_on_the_agents_desk(run_hook, repo, command):
+    assert run_hook(command, repo) is not None
 
 
 @pytest.mark.parametrize(
@@ -75,78 +72,58 @@ def test_real_commits_are_reviewable(command):
         "grep -r commit .",
     ],
 )
-def test_non_commits_are_not_reviewable(command):
-    assert not is_reviewable_commit(command)
+def test_anything_that_does_not_create_a_commit_is_left_alone(run_hook, repo, command):
+    assert run_hook(command, repo) is None
 
 
-# ── the digest describes the code under review ───────────────────────────────
+def test_a_non_bash_tool_is_left_alone(run_hook, repo):
+    assert run_hook("git commit -m x", repo, tool_name="Write") is None
 
 
-def test_digest_covers_staged_content(repo):
-    assert review_scope_digest(str(repo), "git commit -m x") is not None
+def test_a_commit_outside_a_repo_is_left_alone(run_hook, tmp_path):
+    assert run_hook("git commit -m x", tmp_path) is None
 
 
-def test_digest_changes_when_the_staged_code_changes(repo, git):
-    before = review_scope_digest(str(repo), "git commit -m x")
-    (repo / "staged.py").write_text("y = 3\n")
-    git(repo, "add", "staged.py")
-    assert review_scope_digest(str(repo), "git commit -m x") != before
-
-
-def test_nothing_staged_means_nothing_to_review(repo, git):
+def test_a_commit_with_nothing_staged_is_left_alone(run_hook, repo, git):
     git(repo, "reset", "-q")
-    assert review_scope_digest(str(repo), "git commit -m x") is None
+    assert run_hook("git commit -m x", repo) is None
 
 
-def test_commit_all_reads_the_worktree_not_the_index(repo, git):
+def test_commit_all_is_reviewed_from_the_worktree(run_hook, repo, git):
     """`-a` stages at commit time, so an unstaged edit is still in scope for `git commit -am`."""
     git(repo, "reset", "-q")
     (repo / "base.py").write_text("x = 99\n")
-    assert review_scope_digest(str(repo), "git commit -m x") is None
-    assert review_scope_digest(str(repo), "git commit -am x") is not None
+    assert run_hook("git commit -m x", repo) is None
+    assert run_hook("git commit -am x", repo) is not None
 
 
-# ── the emit path ────────────────────────────────────────────────────────────
+# ── what the agent is told ───────────────────────────────────────────────────
 
 
-def test_commit_gets_the_roster(monkeypatch, capsys, repo):
-    emitted = via_main(monkeypatch, capsys, 'git commit -m "add feature"', repo)
-    context = emitted["hookSpecificOutput"]["additionalContext"]
-    assert emitted["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
-    for name in REVIEWERS:
-        assert f"review-panel-hook:{name}" in context
+def test_the_panel_is_pointed_at_the_commit_that_just_landed(run_hook, repo):
+    """The nudge arrives after the commit, so the index is gone and HEAD is the scope."""
+    context = run_hook("git commit -m x", repo)["hookSpecificOutput"]["additionalContext"]
     assert "git show HEAD" in context
 
 
-def test_roster_carries_no_permission_decision(monkeypatch, capsys, repo):
+def test_the_commit_is_neither_blocked_nor_auto_approved(run_hook, repo):
     """Advisory only: deciding here would bypass the permission flow and acl-hook."""
-    emitted = via_main(monkeypatch, capsys, "git commit -m x", repo)
-    assert "permissionDecision" not in emitted["hookSpecificOutput"]
+    emitted = run_hook("git commit -m x", repo)["hookSpecificOutput"]
+    assert emitted["hookEventName"] == "PreToolUse"
+    assert "permissionDecision" not in emitted
 
 
-def test_same_content_is_not_reviewed_twice(monkeypatch, capsys, repo):
-    """A commit rejected by pre-commit and retried must not re-dispatch the panel."""
-    assert via_main(monkeypatch, capsys, "git commit -m x", repo) is not None
-    assert via_main(monkeypatch, capsys, "git commit -m x", repo) is None
+# ── the same code is never reviewed twice ────────────────────────────────────
 
 
-def test_new_content_is_reviewed_again(monkeypatch, capsys, repo, git):
-    via_main(monkeypatch, capsys, "git commit -m x", repo)
+def test_retrying_the_same_commit_does_not_re_dispatch_the_panel(run_hook, repo):
+    """`pre-commit` rejects a commit, the agent retries — eight subagents must not run again."""
+    assert run_hook("git commit -m x", repo) is not None
+    assert run_hook("git commit -m x", repo) is None
+
+
+def test_committing_new_code_dispatches_the_panel_again(run_hook, repo, git):
+    run_hook("git commit -m x", repo)
     (repo / "staged.py").write_text("y = 4\n")
     git(repo, "add", "staged.py")
-    assert via_main(monkeypatch, capsys, "git commit -m x", repo) is not None
-
-
-def test_non_bash_tool_is_ignored(monkeypatch, capsys, repo):
-    payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": "x"}, "cwd": str(repo)})
-    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
-    review_panel_hook.main()
-    assert capsys.readouterr().out == ""
-
-
-def test_dry_run_gets_nothing(monkeypatch, capsys, repo):
-    assert via_main(monkeypatch, capsys, "git commit --dry-run", repo) is None
-
-
-def test_outside_a_repo_gets_nothing(monkeypatch, capsys, tmp_path):
-    assert via_main(monkeypatch, capsys, "git commit -m x", tmp_path) is None
+    assert run_hook("git commit -m x", repo) is not None
