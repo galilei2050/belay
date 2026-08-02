@@ -33,6 +33,7 @@ def fix_project_dir(tmp_path, monkeypatch):
         (project / sub).mkdir()
 
     monkeypatch.setattr(acl_hook, "PROJECT_DIR", str(project))
+    monkeypatch.setitem(acl_hook._INVOCATION, "cwd", str(project))
     monkeypatch.setattr(acl_hook, "_ACL_CACHE", None)
     monkeypatch.setenv("CLAUDE_PROJECT_DIR", str(project))
     return project

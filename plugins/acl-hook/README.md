@@ -33,7 +33,9 @@ The net effect: fewer prompts, and every prompt matters.
 /plugin install acl-hook@belay
 ```
 
-Requirements: Python ≥ 3.10 available as `python3`, plus `pip install bashlex`
+Requirements: Python ≥ 3.10 available as `python3`, an authenticated GitHub CLI
+(`gh`) for the merged-branch check — without it that one rule silently no-ops,
+everything else works — plus `pip install bashlex`
 (used to parse compound commands properly — `a && b | c`, here-docs, command
 substitutions are all decomposed into the individual commands they expand to,
 so dangerous parts can't hide inside a pipeline).
@@ -64,7 +66,7 @@ Aimed at "experienced developer who wants to stop clicking approve":
 | `allow` — read-only inspection | `ls`, `cat` (not `.env*`), `grep`, `rg`, `find`, `ps`, `git status/diff/log/branch`, `npm ls`, `pip show` |
 | `allow` — reversible local work | `git add <paths>`, `git commit`, `git merge`, `git revert`, `git config <k> <v>`, `git pull`, `git push <feature-branch>`, `git branch -D`, `docker build/rm/compose`, `make`, `rm` inside `.scratch/` |
 | `ask` — legitimate, but the effect leaves your working copy | `npm install`, `pip install`, `curl -X POST` to a remote host, `systemctl restart`, `gh pr comment`, `gh issue create`, `gcloud … deploy`, `docker push` |
-| `deny` — destructive, or can't work under an agent | `git push --force`, `git push` to `main`/`master`, `git reset`, `git rebase`, `git add -A`, `git clean -f`, `gh pr merge`, `docker prune`, `sudo`, `eval`, `bash file.sh`, `cat .env`, reading `.git/`, `rm` outside `.scratch/`, heredocs, bare interactive `claude` |
+| `deny` — destructive, or can't work under an agent | `git push --force`, `git push` to `main`/`master`, `git commit` on a branch whose PR already merged, `git reset`, `git rebase`, `git add -A`, `git clean -f`, `gh pr merge`, `docker prune`, `sudo`, `eval`, `bash file.sh`, `cat .env`, reading `.git/`, `rm` outside `.scratch/`, heredocs, bare interactive `claude` |
 
 Every `ask` stalls the agent and costs you a prompt, so the bar for one is high:
 the command has to reach outside this working copy. Anything local and
