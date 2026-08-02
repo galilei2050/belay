@@ -5,6 +5,7 @@ dedupe state file into tmp_path so tests never touch the real `~/.claude`, and b
 throwaway git repo with staged content for the digest / end-to-end paths.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -15,6 +16,18 @@ import pytest
 _HOOKS_DIR = str(Path(__file__).parent.parent / "hooks")
 if _HOOKS_DIR not in sys.path:
     sys.path.insert(0, _HOOKS_DIR)
+
+
+@pytest.fixture(autouse=True)
+def clean_git_env(monkeypatch):
+    """Drop inherited `GIT_*` vars so the fixture repo is not hijacked by an outer git process.
+
+    `make ci` runs with a clean environment, but the pre-push hook runs these tests *inside*
+    git, which exports GIT_DIR and GIT_INDEX_FILE. Without this the fixture's commits would
+    land in belay itself and `rev-parse --show-toplevel` would succeed outside any repo.
+    """
+    for name in [key for key in os.environ if key.startswith("GIT_")]:
+        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture(autouse=True)
