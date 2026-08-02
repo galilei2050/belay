@@ -88,6 +88,10 @@ The lanes that are easiest to blur. State the boundary explicitly in any new pro
   a wrong result.
 - **`correctness-reviewer` judges whether it is wrong, `test-integrity-reviewer` judges
   whether a test would notice.** Both can fire on one function; that is not duplication.
+- **`test-integrity-reviewer` owns everything about tests** — both whether they can fail and
+  whether they sit at the right level. "Too low-level" is about what a test *reaches for*,
+  never about how long it is; test verbosity belongs to nobody, and `bloat-reviewer`'s
+  standards must not leak into test files.
 - **`solid-reviewer` judges where a thing should live, `integration-reviewer` judges what
   breaks because it moved.**
 
