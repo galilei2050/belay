@@ -19,6 +19,11 @@
       "name": "fs-acl-hook",
       "source": "./plugins/fs-acl-hook",
       "description": "PreToolUse file-tool gate: a path-based ACL for Write/Edit/Read (the file-tool sibling of acl-hook)."
+    },
+    {
+      "name": "review-panel-hook",
+      "source": "./plugins/review-panel-hook",
+      "description": "PreToolUse hook on `git commit` that dispatches a panel of five read-only reviewer subagents over the diff just committed."
     }
   ]
 }
