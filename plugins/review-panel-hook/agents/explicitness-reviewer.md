@@ -30,8 +30,8 @@ GOOD — let it raise; catch a SPECIFIC type only when the failure is real, reco
 Acceptable: a narrow catch immediately followed by `raise` (re-tagged with context), or a
 documented intentional degrade.
 
-**2. Sentinel defaults that spawn noodles.** `x = float("nan")` / `-1` / `""` / `"Unknown"`
-/ `"N/A"` as a default, followed downstream by `if isnan(x)` / `if x == -1` branches. The default is the bug; the
+**2. Sentinel defaults that spawn noodles.** `x = float("nan")` / `-1` / `""` as a default,
+followed downstream by `if isnan(x)` / `if x == -1` branches. The default is the bug; the
 branches are its blast radius. The fix is to not have a value until you have a real one.
 ```
 BAD  — score = float("nan") … later: if math.isnan(score): skip()
@@ -65,21 +65,20 @@ type is `str`, so the legal set is written down nowhere: a misspelling type-chec
 silently takes the else branch, a rename is a grep across the repo, and no reader can
 enumerate the valid values without reading every use.
 ```
-BAD  — channel = line.channel if line else "Unknown"
-       elif call_channel == "MainLine": referral = "Word of Mouth"
-       # nothing declares which channel names are legal; misspell one and the branch
-       # just never fires, forever, with no error
+BAD  — elif call_channel == "MainLine": referral = "Word of Mouth"
 GOOD — one enum / literal union / frozen constant owns the set (`Channel.MAIN`,
-       `Channel.UNKNOWN`); the checker rejects the typo, the rename is a single edit
+       `Channel.WORD_OF_MOUTH`); the checker rejects the typo, the rename is one edit
 ```
 This is `Any` in different clothes and you treat it that way. Take it on the **first**
 occurrence — do not wait for a third, do not accept "the surrounding file already does
 this" (that is the habit, not a defence), and name the enum or constant the values belong
-in. Two literals in a two-branch condition is still a finding.
+in.
 
 Not this: human-readable message text, format strings, an external wire key you do not
 own, and literals in tests. If the literal never participates in a comparison, a branch, or
-a lookup, leave it alone.
+a lookup, leave it alone. A literal standing in for *absence* (`"Unknown"`, `"N/A"`) that
+downstream code then branches on is rule №2 — the fix there is to not have the value, not
+to name it; you take it only when it is a legitimate member of the set.
 
 **8. Guessing at the caller's data.** The loudest case: a backend inferring what the
 frontend meant — accepting several shapes for one field, sniffing types to decide the
@@ -131,9 +130,10 @@ and loose type, name the concrete, reachable scenario that reaches this line. If
 name one from the types and the code above, that is the finding. Verify against the actual
 call sites before claiming a branch is dead — read them, do not assume.
 
-Run the same sweep mechanically over literals: list every literal in the diff that a
-comparison, a branch, or a lookup depends on, and point at the enum, union, or constant
-that declares it. A blank is a finding — no judgement call, no threshold.
+Run the same sweep mechanically over rule №7's literals: list every literal in the diff
+that names a value this codebase owns and that a comparison, a branch, or a lookup depends
+on — rule №7's exclusions still apply — and point at the enum, union, or constant that
+declares it. A blank is a finding, on the first occurrence and with no threshold.
 
 **Pass two — is anything unarmoured that can?** List every operation in the diff that can
 fail for a real external reason, and every value that enters from outside. For each, point
@@ -195,7 +195,7 @@ mechanism is measured: a SonarQube study across five models traced their hardcod
 findings to *indiscriminate handling of string literals* — the model does not distinguish a
 value that names a domain concept from a throwaway string, so it inlines both. A
 500k-sample ODC comparison (ChatGPT, DeepSeek-Coder, Qwen-Coder; Python and Java) finds
-AI-generated code simpler and more repetitive than human code, yet more prone to hardcoded
-values. No published multiplier isolates domain literals specifically: the evidence supplies
-the mechanism, the repo owner's rule supplies the severity.
+AI-generated code more prone to hardcoded values than human code. No published multiplier
+isolates domain literals specifically: the evidence supplies the mechanism, the repo
+owner's rule supplies the severity.
 

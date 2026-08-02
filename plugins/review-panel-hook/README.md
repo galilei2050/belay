@@ -50,7 +50,7 @@ by design: the panel's job is to catch what the author missed, not to be a gate.
 
 One role = one class of smell, with an explicit *not your lane* section in each prompt so
 findings do not arrive eight times. All eight are read-only
-(`disallowedTools: Write, Edit`) and self-contained — the plugin works in a repo with no
+(`disallowedTools: Write, Edit, NotebookEdit`) and self-contained — the plugin works in a repo with no
 `rules/` directory.
 
 The first four are **semantic** — is the change right, whole, and provable? The last four are

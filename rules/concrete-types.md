@@ -32,6 +32,17 @@ A `# type: ignore` / `as any` / `@ts-expect-error` is a debt marker. If you must
 
 **3. Missing return / parameter annotations** in a typed codebase — leaving them off lets `Any` leak in silently.
 
+**4. A closed set of domain values typed as bare `str` / `int`.** A channel, status, role, source or kind compared with `==`/`in`, matched in an if/elif chain, or used as a dict key — while the type says only "some string". A closed set is a shape; give it one.
+```python
+# BAD — nothing declares which names are legal; misspell one and the branch silently never fires
+if call_channel == "MainLine":
+    referral = "Word of Mouth"
+# GOOD — the set is declared once; the checker rejects the typo and a rename is one edit
+if call_channel is Channel.MAIN:
+    referral = Referral.WORD_OF_MOUTH
+```
+An enum, a literal union (`Literal["main", "yelp"]`), or a frozen constant — any of them beats a bare `str`. Message text, format strings, and wire keys you don't own are not this.
+
 ## When a loose type is fine
 
 Genuinely unstructured data is allowed to be loose: a JSON blob you immediately validate into a model, a programmatically-built query/pipeline, a logging key-value bag, an inline mapping that never leaves the function. The rule is about data with a *known* shape that crosses a boundary — give that a name.
