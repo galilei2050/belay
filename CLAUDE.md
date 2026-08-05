@@ -25,6 +25,15 @@ The git hooks split the work across two stages (see `.pre-commit-config.yaml`):
 
 - `pre-commit` → `make lint-fix` (auto-format + ruff fix + `anon_lint.py`).
   Fast, runs on every `git commit`.
+
+  `anon_lint.py` here is a **deliberate fork**. The maintained version is
+  `baski_lint` (a standalone package shipped by baski, with ANON003 and a fixed
+  `# noqa` parser); this repo does not depend on baski, and pulling in its
+  runtime — fastapi, pymongo, google-cloud — to get a lint rule is not a trade
+  worth making for a hooks repo. The copy is safe from the shadowing bug that
+  forced `baski_lint` out of baski's root, because nothing installs belay as a
+  dependency. It will drift; port a fix across by hand when one matters, or give
+  the linter its own distribution if a third consumer ever appears.
 - `pre-push` → `make pre-push` (= `typecheck` + `test`). Runs on `git push`.
 
 So `git commit` succeeding does NOT mean tests/typecheck pass — those only
