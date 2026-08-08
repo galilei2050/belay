@@ -59,7 +59,10 @@ their head**.
 
 - A function that is a *copy* of existing code → `duplication-reviewer`.
 - A function doing two jobs that belong in different modules → `solid-reviewer`
-  (you flag it for being long; they flag it for being mixed).
+  (you flag it for being long; they flag it for being mixed). A type introduced because two
+  or more functions were passing the same subject between them is *their* finding, not
+  speculative generality — you own the type nobody needed, they own the type everybody was
+  already hand-rolling.
 - Guards, defaults, catch-alls, loose types → `explicitness-reviewer`.
 - Comments → `comments-reviewer`.
 - Whether the shorter version would still be *correct* → `correctness-reviewer` (never

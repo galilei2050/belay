@@ -113,6 +113,18 @@ The lanes that are easiest to blur. State the boundary explicitly in any new pro
   The defect is the undeclared value set, not the repetition — so it is a finding on the
   first occurrence, where a DRY reviewer only ever sees a repeated *block* and never the
   value on its own. Duplication keeps the block.
+- **A naive datetime is `explicitness-reviewer`'s on sight; a DST-boundary wrong answer is
+  `correctness-reviewer`'s.** Same split as every other implicit contract: explicitness owns
+  "this value does not declare whose clock it is", correctness owns "this input produces the
+  wrong number". Correctness still needs its input→output pair; explicitness does not.
+- **A type that two free functions were already hand-rolling is `solid-reviewer`'s; a type
+  nobody needed is `bloat-reviewer`'s speculative generality.** The threshold is two places
+  sharing a subject. Below it the reviewers would contradict each other, which is why the
+  number is written into both prompts.
+- **`comments-reviewer` owns prose, including whole doc files.** A `CLAUDE.md` that pastes
+  code instead of linking is a copy written in English — its harm is staleness and a reader
+  trusting it, which is that role's whole subject. `duplication-reviewer` keeps copies of
+  the *code*, and `integration-reviewer` keeps the doc that broke because the code moved.
 
 `explicitness-reviewer` deliberately owns **both** directions — over-armoured and
 under-armoured. Don't split it: the evidence says agents do both in the same file (GitClear
