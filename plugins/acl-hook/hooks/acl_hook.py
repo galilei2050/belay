@@ -724,6 +724,45 @@ def git_write_on_merged_branch(args: list[str]) -> bool:
     return _branch_has_merged_pr(branch)
 
 
+# `checkout` flags that mean "make a ref current", never "copy files over the working tree".
+_CHECKOUT_REF_FLAGS = {"-b", "-B", "--orphan", "--detach", "--track", "--no-track", "-t"}
+
+
+def _is_worktree_path(arg: str) -> bool:
+    """True iff this positional names something on disk — the tell that `checkout` is in path mode.
+
+    `git checkout <thing>` is a branch switch or a file overwrite depending only on what `<thing>` is,
+    and git resolves the ambiguity by looking for the path first. So do we: a name that exists in the
+    tree is a path (`.`, `src/`, `app/main.py`), a name that does not is a ref. Paths are resolved
+    from the invocation's cwd, which is where git would resolve them too.
+    """
+    return (Path(_INVOCATION["cwd"]) / arg).exists()
+
+
+def git_discards_worktree_changes(args: list[str]) -> bool:
+    """True iff a `git checkout`/`git restore` overwrites working-tree files with a committed version.
+
+    That overwrite is the one git operation with no undo of any kind: what it destroys was never
+    committed and never stashed, so there is no reflog entry and no dangling object to recover from.
+
+    Ref mode is not this and stays allowed — `git checkout <branch>`, `-b`, a sha — because git
+    refuses a switch that would clobber a modified file. `git restore --staged <path>` only rewrites
+    the index, leaving the file on disk untouched, so it stays allowed too; `--worktree` alongside it
+    puts the overwrite back.
+    """
+    if not args:
+        return False
+    sub, rest = args[0], args[1:]
+    if sub == "restore":
+        staged_only = bool({"--staged", "-S"} & set(rest)) and not ({"--worktree", "-W"} & set(rest))
+        return not staged_only
+    if sub != "checkout" or set(rest) & _CHECKOUT_REF_FLAGS:
+        return False
+    if "--" in rest:
+        return bool(rest[rest.index("--") + 1 :])
+    return any(_is_worktree_path(a) for a in rest if not a.startswith("-"))
+
+
 _GCS_COPY_SUBCOMMANDS = (["storage", "cp"], ["storage", "rsync"])
 _GCS_COPY_MIN_POSITIONALS = 2  # source + destination
 
@@ -754,6 +793,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "git_branch_off_protected": git_branch_off_protected,
     "git_branch_off_stale_main": git_branch_off_stale_main,
     "git_write_on_merged_branch": git_write_on_merged_branch,
+    "git_discards_worktree_changes": git_discards_worktree_changes,
     "any_path_under_git": any_path_under_git,
 }
 
