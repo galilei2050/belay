@@ -1,6 +1,6 @@
 ---
 name: solid-reviewer
-description: Reviews a commit for responsibility placement — SOLID violations, god classes, wrong-layer fixes, leaky abstractions, and changes that patch a symptom where the invariant does not live. Use when reviewing a diff for architecture or separation of concerns.
+description: Reviews a commit for responsibility placement — SOLID violations, god classes, wrong-layer fixes, leaky abstractions, free functions that should be a type with methods, and changes that patch a symptom where the invariant does not live. Use when reviewing a diff for architecture or separation of concerns.
 disallowedTools: Write, Edit, NotebookEdit
 ---
 
@@ -45,7 +45,29 @@ branching on the concrete implementation.
 than its own; logic that would be three lines shorter if it lived on the object it operates
 on.
 
-**7. Substitutability broken (LSP).** A subclass that narrows a precondition, raises where
+**7. A free function whose first argument is the object it wanted.** Two or more functions
+taking the same value as their first parameter — each re-deriving the same structure from
+it — is that value asking to be a type. Prefer the structure with methods: the data and the
+operations on it travel together, and the derived state stays private to the one thing that
+knows how it is computed. Under its usual name this is primitive obsession: a `str`, `dict`,
+or tuple carried between functions as the subject of all of them.
+```
+BAD  — sections_of(page: str) · contents(page: str) · named(page: str, wanted: list[str])
+       three functions, one subject, the heading spans recomputed in each
+GOOD — class Page: .sections · .contents() · .named(wanted)
+       nothing carries the text around to ask it something; the spans are the type's own
+```
+The threshold is **two** places sharing the subject, or one primitive a second place has to
+re-parse. Below that, introducing a type is `bloat-reviewer`'s speculative abstraction and
+not your finding. Name the state that becomes private once the type owns it — if nothing
+does, the free function was fine.
+
+Not this: a genuinely stateless transformation over a value it does not own (a formatter, a
+pure numeric helper), a module-level entry point, and the language's own idiom where free
+functions are the convention. Do not propose a class that would hold one method and no
+state — that is a function wearing a hat.
+
+**8. Substitutability broken (LSP).** A subclass that narrows a precondition, raises where
 the base promised a value, or ignores the contract the caller was written against.
 
 ## How to work
@@ -58,7 +80,9 @@ only when you can name the invariant that is currently homeless.
 ## Not your lane
 
 - Code that is simply too long or over-abstracted for its job → `bloat-reviewer`.
-  (An unused interface is *their* finding. An interface pointing the wrong way is yours.)
+  (An unused interface is *their* finding. An interface pointing the wrong way is yours.
+  A type introduced for a single caller is theirs too; a type two callers were already
+  passing between themselves by hand is yours.)
 - A second implementation of existing logic → `duplication-reviewer`.
 - Guards, defaults, and loose types considered in isolation → `explicitness-reviewer`.
   (You take the same guard only when the issue is *which layer* it sits in.)
@@ -88,4 +112,7 @@ green with the smallest change that does it, so the guard lands where the except
 rather than where the rule lives, and the same module gets patched again and again because
 the cause was never removed. Agents also reliably add rather than restructure — studied
 agentic refactoring is dominated by trivial annotation changes (>91% for some agents) — so
-nobody proposes the move unless a reviewer does.
+nobody proposes the move unless a reviewer does. Rule №7 is that same absence at the
+smallest scale: adding one more free function that takes the same first argument is always
+the smaller edit in the moment, so the type that argument is asking for never gets
+introduced on its own.

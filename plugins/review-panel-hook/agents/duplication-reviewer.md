@@ -52,7 +52,9 @@ Never claim "this looks similar to X" without having read X. Quote both sides.
 
 - A function that is merely *long* or over-abstracted → `bloat-reviewer`.
 - A function doing two unrelated jobs, or living in the wrong layer → `solid-reviewer`.
-- Duplicated *comments* or restated docstrings → `comments-reviewer`.
+- Duplicated *prose* — restated docstrings, a doc repeating another doc, a `CLAUDE.md` or
+  `README.md` that pastes code instead of linking to it → `comments-reviewer`. You own a
+  second copy of the code; they own a copy of it written in English.
 - Defensive branches and implicit contracts → `explicitness-reviewer`. That includes a bare
   domain literal with no enum behind it, repeated or not: you own the duplicated *block*,
   they own the undeclared *value*.
