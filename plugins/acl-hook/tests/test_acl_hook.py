@@ -269,6 +269,60 @@ def test_merged_pr_lookup_fails_open_without_gh(monkeypatch, hook_log):
     assert "cause=FileNotFoundError" in hook_log.read_text()
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git checkout .",
+        "git checkout app",
+        "git checkout -- app",
+        "git checkout HEAD -- app/main.py",
+        "git restore app",
+        "git restore .",
+        "git restore --staged --worktree app",
+    ],
+)
+def test_overwriting_the_working_tree_is_denied(cmd, fix_project_dir, logger):
+    (fix_project_dir / "app" / "main.py").write_text("x = 1\n")
+    decision, reason = decide(cmd, logger)
+    assert decision == "deny"
+    assert "never committed or stashed" in reason
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "git checkout main",  # a ref, not a path — git switches, and refuses if that would clobber
+        "git checkout -b feat/x",
+        "git checkout --detach HEAD~3",
+        "git switch main",
+        "git restore --staged app",  # rewrites the index only; the file on disk is untouched
+    ],
+)
+def test_switching_refs_and_unstaging_stay_allowed(cmd, logger):
+    assert decide(cmd, logger)[0] == "allow"
+
+
+def test_dropping_a_stash_is_denied_but_reading_the_stack_is_not(logger):
+    decision, reason = decide("git stash drop", logger)
+    assert decision == "deny"
+    assert "shared with the user" in reason
+    assert decide("git stash clear", logger)[0] == "deny"
+    assert decide("git stash list", logger)[0] == "allow"
+
+
+def test_stash_carries_a_reminder_that_the_stack_is_shared(logger):
+    decision, reason = decide("git stash pop", logger)
+    assert decision == "allow"
+    assert "one stack the user shares" in reason
+
+
+def test_clean_is_denied_with_its_own_reason_for_the_bundled_flags(logger):
+    # `-fd` is the spelling in the incident reports; a `["clean", "-f"]` token match misses it and
+    # falls through to the generic subcommand default, which says nothing about `git clean -n`.
+    _, reason = decide("git clean -fd", logger)
+    assert "git clean -n" in reason
+
+
 def test_refs_are_read_from_the_worktrees_common_git_dir(fix_project_dir, tmp_path, monkeypatch):
     # A worktree's gitdir holds HEAD but no refs — they stay in the main `.git` its `commondir` names.
     (fix_project_dir / ".git" / "refs" / "heads").mkdir(parents=True)

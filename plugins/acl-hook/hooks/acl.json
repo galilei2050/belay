@@ -55,12 +55,30 @@
         "reason": "Don't reset history. Commit forward (new commit / `git revert`) or ask the user to run `git reset` themselves."
       },
       {
-        "args": [
-          "clean",
-          "-f"
-        ],
+        "args_glob": "clean*-f*",
         "decision": "deny",
         "reason": "`git clean -f` deletes untracked files with no undo — same class as `rm` outside the scratch dir. Preview instead: `git clean -n`. Your own throwaway files belong in `.scratch/`, where `rm` is allowed. If real untracked files must go, leave the deletion to the user so it stays visible."
+      },
+      {
+        "fn": "git_discards_worktree_changes",
+        "decision": "deny",
+        "reason": "This overwrites working-tree files with a committed version, and whatever it overwrites was never committed or stashed — no reflog entry, no dangling object, nothing to recover from. It is the most-reported way an agent destroys a user's uncommitted work, and the tree you are about to revert holds their edits as well as yours. To unstage without touching the file: `git restore --staged <path>`. To undo an edit you made, edit it back with the Edit tool, which shows a diff. To see what would be lost: `git diff -- <path>`. Reverting the user's working tree is their call — leave the command to them."
+      },
+      {
+        "args": [
+          "stash",
+          "drop"
+        ],
+        "decision": "deny",
+        "reason": "`git stash drop` throws away a stash entry with no undo, and the stack is shared with the user — the entry you drop may be theirs. The reported pattern is exactly this: a `stash pop` hits a conflict, the stash gets dropped to clean up, and days of work are gone. Inspect instead: `git stash list`, then `git stash show -p 'stash@{0}'`. If a pop conflicted, resolve the conflict — the entry stays until it applies cleanly, which is the point. Dropping is the user's call."
+      },
+      {
+        "args": [
+          "stash",
+          "clear"
+        ],
+        "decision": "deny",
+        "reason": "`git stash clear` deletes every stash entry in the repo at once, including ones the user pushed before you started, with no undo. There is no agent task that needs this. Read the stack instead: `git stash list`. If a specific entry is genuinely in your way, leave the removal to the user."
       },
       {
         "fn": "git_branch_force_delete",
@@ -296,7 +314,7 @@
           "stash"
         ],
         "decision": "allow",
-        "reason": ""
+        "reason": "The stash is one stack the user shares with you. A bare `git stash` pockets their uncommitted changes along with yours and leaves a tree that looks clean, which is how the work gets forgotten; `pop`/`apply` takes the top entry, which may not be the one you pushed. Read the stack first (`git stash list`) and name what you take back: `git stash pop 'stash@{N}'`."
       },
       {
         "args": [

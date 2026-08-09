@@ -74,7 +74,9 @@ Classify every new command (and every new flag combo) into one of three buckets:
   agent context. The reason is shown to the agent; it must redirect, not
   prompt the human. Examples: `git push --force`, `git reset --hard`,
   `git rebase`, `git push` to main/master (`git_push_to_protected_branch` —
-  branch + PR instead), reading `.git/` with cat/head/tail/less/more/grep/rg
+  branch + PR instead), overwriting the working tree with a committed version
+  (`git_discards_worktree_changes` — see below), `git stash drop`/`clear`,
+  reading `.git/` with cat/head/tail/less/more/grep/rg
   (`any_path_under_git` — use `git` commands, `.git` is off-limits),
   `gh pr merge` (user-only), `git commit` / bare `git push` on a branch whose PR is
   already merged (`git_write_on_merged_branch` — that branch is finished; branch off
@@ -147,6 +149,42 @@ pull first. Phrase the reason as a second-person nudge ("You're branching off
 
 Don't overuse it: most commands are cleanly allow / ask / deny. A reminder on a
 genuinely safe command is just noise in the agent's context.
+
+## The dirty working tree is the thing most worth protecting
+
+`git reset`, `git clean -f`, `git checkout <path>`, `git restore <path>` and
+`git stash drop` share one property no other denied command has: what they
+destroy was never committed and never stashed, so there is no reflog entry and
+no dangling object — the work is simply gone. Published incident reports put
+this class first by a wide margin among ways a coding agent loses someone's
+work, well ahead of force-push and wrong-branch commits, which are severe but
+rarer. Weigh a new rule against that: a command that only rewrites *committed*
+history is recoverable and rarely deserves a deny.
+
+Two lines this class must keep holding:
+
+- **Split by mode, not by command name.** `git_discards_worktree_changes` denies
+  path-mode `checkout` and worktree `restore` while leaving `git checkout
+  <branch>`, `-b`, and `git restore --staged` alone — git refuses a ref switch
+  that would clobber a modified file, and `--staged` never touches the disk. A
+  blanket deny on `checkout`/`restore` would take the agent's normal workflow
+  with it and get routed around. The predicate's docstring holds the detail.
+- **`checkout` is path-mode iff the name exists on disk** — the same test git
+  itself applies. Don't replace it with a flag list; `git checkout .` carries no
+  flag at all.
+
+Considered against the evidence and deliberately **not** added — don't
+re-litigate without new data:
+
+- **Committing secrets / `.env`.** Out of scope by the first rule in this file
+  (no content scanning). A separate plugin, if anything.
+- **Detached-HEAD commits, bad cherry-picks, LFS, submodules.** Repeatedly
+  proposed, but the incident data shows no agent-specific frequency behind them.
+  A guard nobody's failure mode needs is noise on a real workflow.
+- **Duplicate work — the single largest *measured* waste** (~23% of rejected
+  agent PRs). It doesn't belong here: answering "does this work already exist"
+  needs PR search on every branch creation, and this plugin has one network call
+  and a hard bar for a second. It belongs in a plugin that reviews intent.
 
 ## Where the ACL config lives — one file, inside the plugin
 
