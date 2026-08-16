@@ -18,6 +18,11 @@ import pytest
 HOOK = Path(__file__).parent.parent / "hooks" / "review_panel_hook.py"
 
 
+def many_lines(marker: str) -> str:
+    """A file body well over the hook's dispatch threshold, so the change is one the panel takes."""
+    return "".join(f"{marker}{n} = {n}\n" for n in range(80))
+
+
 class HookSpecificOutput(TypedDict):
     """The payload Claude Code reads back from a PreToolUse hook."""
 
@@ -58,7 +63,11 @@ def git():
 
 @pytest.fixture
 def repo(tmp_path, git):
-    """A git repo with one commit on HEAD and `staged.py` staged on top of it."""
+    """A git repo with one commit on HEAD and a substantial `staged.py` staged on top of it.
+
+    Staged big deliberately: the hook ignores a diff under `MIN_CHANGED_LINES`, so a one-line
+    fixture would make every dispatch test pass for the wrong reason.
+    """
     root = tmp_path / "repo"
     root.mkdir()
     git(root, "init", "-q")
@@ -67,7 +76,7 @@ def repo(tmp_path, git):
     (root / "base.py").write_text("x = 1\n")
     git(root, "add", "base.py")
     git(root, "commit", "-qm", "base")
-    (root / "staged.py").write_text("y = 2\n")
+    (root / "staged.py").write_text(many_lines("y"))
     git(root, "add", "staged.py")
     return root
 

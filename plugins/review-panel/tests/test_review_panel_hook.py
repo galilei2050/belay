@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 import pytest
+from conftest import many_lines
 
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
 PROMPTS = sorted(AGENTS_DIR.glob("*.md"))
@@ -92,9 +93,29 @@ def test_a_commit_with_nothing_staged_is_left_alone(run_hook, repo, git):
 def test_commit_all_is_reviewed_from_the_worktree(run_hook, repo, git):
     """`-a` stages at commit time, so an unstaged edit is still in scope for `git commit -am`."""
     git(repo, "reset", "-q")
-    (repo / "base.py").write_text("x = 99\n")
+    (repo / "base.py").write_text(many_lines("w"))
     assert run_hook("git commit -m x", repo) is None
     assert run_hook("git commit -am x", repo) is not None
+
+
+# ── a commit too small to be worth eight subagents ───────────────────────────
+
+
+def test_a_two_line_commit_is_left_alone(run_hook, repo, git):
+    """The round the user refused to pay for: eight subagents over a changed constant."""
+    git(repo, "reset", "-q")
+    (repo / "base.py").write_text("x = 2\n")
+    git(repo, "add", "base.py")
+    assert run_hook("git commit -m x", repo) is None
+
+
+@pytest.mark.parametrize(("added", "dispatched"), [(63, False), (64, True)])
+def test_the_panel_starts_at_sixty_four_changed_lines(run_hook, repo, git, added, dispatched):
+    """Added and removed lines both count; the file headers do not."""
+    git(repo, "reset", "-q")
+    (repo / "new.py").write_text("".join(f"z{n} = {n}\n" for n in range(added)))
+    git(repo, "add", "new.py")
+    assert (run_hook("git commit -m x", repo) is not None) is dispatched
 
 
 # ── what the agent is told ───────────────────────────────────────────────────
@@ -131,6 +152,6 @@ def test_retrying_the_same_commit_does_not_re_dispatch_the_panel(run_hook, repo)
 
 def test_committing_new_code_dispatches_the_panel_again(run_hook, repo, git):
     run_hook("git commit -m x", repo)
-    (repo / "staged.py").write_text("y = 4\n")
-    git(repo, "add", "staged.py")
+    (repo / "more.py").write_text(many_lines("v"))
+    git(repo, "add", "more.py")
     assert run_hook("git commit -m x", repo) is not None

@@ -28,7 +28,7 @@
     {
       "name": "review-panel",
       "source": "./plugins/review-panel",
-      "description": "A panel of eight read-only reviewer subagents, dispatched over every commit by a PreToolUse hook on `git commit`."
+      "description": "A panel of eight read-only reviewer subagents, dispatched by a PreToolUse hook over every commit of 64+ changed lines."
     },
     {
       "name": "deep-investigation",
