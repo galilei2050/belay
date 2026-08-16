@@ -1,0 +1,8 @@
+{
+  "name": "branch-guard-hook",
+  "version": "0.1.0",
+  "description": "PreToolUse file-tool gate: denies file edits (Write/Edit/MultiEdit/NotebookEdit) while a protected branch (main/master) is checked out.",
+  "author": {
+    "name": "galilei2050"
+  }
+}

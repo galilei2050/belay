@@ -31,6 +31,7 @@ To keep the token cost down, the **code-specific** rules carry `paths:` frontmat
 | [surface-the-smell.md](surface-the-smell.md) | Building cleanly on top of rotten code without naming or fixing it |
 | [keep-it-simple.md](keep-it-simple.md) | God functions, deep nesting, long parameter lists, accreting complexity instead of simplifying |
 | [bind-deps-in-objects.md](bind-deps-in-objects.md) | Threading a client/db/store through every call, entities rendered by outside functions, a module used as a singleton |
+| [no-silent-empty.md](no-silent-empty.md) | Filtering after the fetch instead of scoping the query — an empty result that can't be told apart from a wrong one |
 | [no-dead-code.md](no-dead-code.md) | Leaving unused symbols, unreachable branches, commented-out code, or TODO/placeholder stubs |
 | [match-the-codebase.md](match-the-codebase.md) | Writing generically-styled code that ignores the repo's existing conventions and idioms |
 | [secure-by-default.md](secure-by-default.md) | Missing input validation, hardcoded secrets, injection, insecure defaults, hallucinated packages |

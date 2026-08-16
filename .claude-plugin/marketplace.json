@@ -21,9 +21,14 @@
       "description": "PreToolUse file-tool gate: a path-based ACL for Write/Edit/Read (the file-tool sibling of acl-hook)."
     },
     {
+      "name": "branch-guard-hook",
+      "source": "./plugins/branch-guard-hook",
+      "description": "PreToolUse file-tool gate: denies file edits (Write/Edit/MultiEdit/NotebookEdit) while a protected branch (main/master) is checked out."
+    },
+    {
       "name": "review-panel",
       "source": "./plugins/review-panel",
-      "description": "PreToolUse hook on `git commit` that dispatches a panel of eight read-only reviewer subagents over the diff just committed."
+      "description": "A panel of eight read-only reviewer subagents, dispatched over every commit by a PreToolUse hook on `git commit`."
     },
     {
       "name": "deep-investigation",
