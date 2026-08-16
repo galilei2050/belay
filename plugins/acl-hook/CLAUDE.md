@@ -224,24 +224,56 @@ Keep the conversion where it is — one place, after `_decide` — so the rule t
 stays a single source of truth and every rule's own actionable reason is preserved.
 Don't add per-rule "autonomous" variants.
 
-## Waiting / polling: never DENIED, silently BOUNDED
+## Hanging: never DENIED, silently BOUNDED
 
 We do **not deny or ask** on a wait loop — that's the bug that dropped the old
 `until_loop_with_sleep` / `chained_sleep` detectors: denying made acl-hook a
 *second, contradicting voice* (the harness recommends an until-loop, acl-hook
 denied it, the agent dead-ended bouncing between them).
 
-But an *unbounded* poll loop is a real leak — `until COND; do sleep N; done`
-whose condition never trips (failed deploy, wrong target) runs forever, and a
-background loop has no harness timeout to stop it. A leak IS this plugin's scope.
-So `wait_loop_unbounded` detects a loop body containing `sleep`, and `main()`
-**transparently rewrites** the command to `timeout 600 bash -c '…'` via
-`updatedInput` (`WAIT_TIMEOUT_SECONDS`). This is **not a gate**: `permissionDecision`
-stays `allow`, no prompt fires, the agent never sees it, and it doesn't contradict
-the harness — the loop still runs, just with an upper bound. `updatedInput` does
-not re-trigger the hook, so the emitted `bash -c` is never re-evaluated against
-the `bash` deny. Already-bounded loops (`timeout … bash -c '…'`) hide their body
-inside a quoted word, so the detector skips them — the wrap is idempotent.
+But an *unbounded* command is a real leak, and a leak IS this plugin's scope. So
+`main()` **transparently rewrites** it to run under `timeout` via `updatedInput`
+(`_bound`). This is **not a gate**: `permissionDecision` stays `allow`, no prompt
+fires, the agent never sees it, and it doesn't contradict the harness — the
+command still runs, just with an upper bound. `updatedInput` does not re-trigger
+the hook, so the emitted `bash -c` is never re-evaluated against the `bash` deny.
+
+Two rules, checked in that order:
+
+- **`wait_loop_unbounded` → 600s** (`WAIT_TIMEOUT_SECONDS`). A loop body
+  containing `sleep`: `until COND; do sleep N; done` whose condition never trips
+  (failed deploy, wrong target) runs forever. Applies foreground and background.
+- **`_bound_background` → 1800s** (`BACKGROUND_TIMEOUT_SECONDS`). Any command
+  with `run_in_background: true`, whatever its shape. See below.
+
+**Why the background rule is shape-blind.** The harness bounds a *foreground*
+Bash call itself (120s default, 600s max), so nothing there can hang past ten
+minutes — a second bound would be churn. A *detached* call has no cap at all:
+it runs until it exits on its own, i.e. for the rest of the session. That is the
+whole hole, and it isn't shaped like a loop:
+
+| detached command | why the loop detector misses it |
+|---|---|
+| `tail -f app.log`, `journalctl -f`, `docker logs -f` | no loop, no `sleep` |
+| `npm run dev`, `streamlit run app.py` | a server; exiting is the failure case |
+| `while true; do curl …; done` | a loop, but busy — no `sleep` in the body |
+| `cat` (no path), `grep pat` (no file) | blocked reading an stdin that never closes |
+
+Every enumeration of blocking shapes misses the next one, so the bound goes on
+the property that makes any of them a leak — being detached — not on the shape.
+Empirically that's also where the volume is: 293 `run_in_background: true` vs 76
+`false` across this machine's transcripts.
+
+**The escape hatch is explicit.** A leading `timeout …` the agent wrote itself
+is left alone (`_has_timeout_prefix`), so a job that genuinely needs hours says
+so: `timeout 7200 npm run dev`. Same mechanism makes the wrap idempotent.
+
+**`timeout -v`, not bare `timeout`.** On expiry GNU timeout prints `sending
+signal TERM to command` on stderr and exits 124. Without `-v`, a killed
+`until … done` ends in exactly the same silence as one whose condition tripped,
+and the agent reads the truncated log as a completed wait — a silent bound that
+manufactures a wrong conclusion is worse than no bound. `-v` needs coreutils
+≥8.29; the wrap already assumed GNU `timeout`.
 
 The line to hold: **bound, don't block.** Never turn this back into a `deny`/`ask`
 on waiting — that's the contradicting-voice bug. A silent `timeout` wrap is the

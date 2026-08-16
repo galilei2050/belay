@@ -156,8 +156,10 @@ Every command produces a `received` line before any work and exactly one
   `matched=` naming what fired: a `rule`, a `default:<x>`, or a gate
   (`agent_heredoc`, `command_too_long`, `autonomous_ask_denied`, …).
 - `final=` — the verdict the agent actually got, after the strictest-wins merge
-  across sub-commands. Variants: `final=rewrite` (an unbounded poll loop was
-  silently wrapped in `timeout`), `final=skip` (not a Bash call), `final=error`
+  across sub-commands. Variants: `final=rewrite` (an unbounded command was
+  silently wrapped in `timeout` — `matched=` says which rule,
+  `wait_loop_unbounded` or `background_unbounded`), `final=skip` (not a Bash
+  call), `final=error`
   (the hook itself crashed — the traceback follows, and Claude Code falls back
   to prompting).
 
