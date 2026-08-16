@@ -40,6 +40,10 @@ everything else works — plus `pip install bashlex`
 substitutions are all decomposed into the individual commands they expand to,
 so dangerous parts can't hide inside a pipeline).
 
+Linux only, in practice: the `timeout` wrap around unbounded commands is GNU
+coreutils ≥ 8.29 (for `-v`). macOS ships no `timeout(1)` at all and BusyBox's
+has no `-v`, so on those hosts every rewritten command would fail to launch.
+
 There is no per-project setup step. The rule table ships inside the plugin and
 is read from there on every invocation, so every project runs the rules of the
 installed plugin version.
@@ -156,8 +160,10 @@ Every command produces a `received` line before any work and exactly one
   `matched=` naming what fired: a `rule`, a `default:<x>`, or a gate
   (`agent_heredoc`, `command_too_long`, `autonomous_ask_denied`, …).
 - `final=` — the verdict the agent actually got, after the strictest-wins merge
-  across sub-commands. Variants: `final=rewrite` (an unbounded poll loop was
-  silently wrapped in `timeout`), `final=skip` (not a Bash call), `final=error`
+  across sub-commands. Variants: `final=rewrite` (an unbounded command was
+  silently wrapped in `timeout` — `matched=` says which rule,
+  `wait_loop_unbounded` or `background_unbounded`), `final=skip` (not a Bash
+  call), `final=error`
   (the hook itself crashed — the traceback follows, and Claude Code falls back
   to prompting).
 
@@ -177,9 +183,9 @@ If the log has no recent lines at all, the hook isn't running — check that
 The hook writes a single JSON object on stdout: a `PreToolUse`
 `hookSpecificOutput` carrying `permissionDecision` (`allow` / `ask` / `deny`)
 and `permissionDecisionReason`. An `allow` rule with a reason delivers it as
-`additionalContext` (a nudge to the agent, no prompt); an unbounded poll loop
-comes back as `allow` plus an `updatedInput` that wraps the command in
-`timeout`.
+`additionalContext` (a nudge to the agent, no prompt); an unbounded command — a
+poll loop, or anything with `run_in_background: true` — comes back as `allow`
+plus an `updatedInput` that wraps it in `timeout`.
 
 ## License
 

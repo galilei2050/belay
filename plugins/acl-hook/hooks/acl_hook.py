@@ -252,6 +252,11 @@ PYTHON_C_INLINE_MAX = 200
 # Cap an unbounded poll loop so a condition that never trips can't hang forever (foreground tool
 # timeout maxes at 600s; a background loop has no such cap, so this is the real guard). Tunable.
 WAIT_TIMEOUT_SECONDS = 600
+# Cap every detached command, whatever its shape: `run_in_background: true` is the one case the
+# harness does not bound at all (a foreground call dies at its tool timeout, a detached one runs
+# until it exits on its own). Shape-blind on purpose — see CLAUDE.md, "Hanging". Longer than
+# WAIT_TIMEOUT_SECONDS because backgrounding is what you do for slow work.
+BACKGROUND_TIMEOUT_SECONDS = 1800
 
 
 def rm_recursive(args: list[str]) -> bool:
@@ -1212,28 +1217,64 @@ def _decide(command: str, logger: logging.Logger, agent_type: str) -> Verdict:
     return _resolve_chained(command, logger, agent_type)
 
 
-def _has_timeout_prefix(command: str) -> bool:
-    """True iff the command already runs under a leading `timeout` (so its wait is bounded)."""
+def _link_starts_with_timeout(link: str) -> bool:
     try:
-        parts = _strip_wrapper(_strip_env_assignments(shlex.split(command)))
+        parts = _strip_wrapper(_strip_env_assignments(shlex.split(link)))
     except ValueError:
         return False
     return bool(parts) and Path(parts[0]).name == "timeout"
 
 
-def _bound_wait_loop(command: str) -> str | None:
-    """If `command` is an unbounded poll loop, return it wrapped in `timeout`; else None.
+def _has_timeout_prefix(command: str) -> bool:
+    """True iff every link of `command` already runs under a leading `timeout` — the agent bounded it itself.
 
-    Reached only for an otherwise-`allow` command, so bashlex already parsed it cleanly. Covers a
-    bare loop and a loop hidden inside `bash -c '…'`; a loop already under `timeout` is left alone.
+    Every link, not just the first: `timeout 60 gh pr checks 12; tail -f app.log` bounds the check
+    and leaves the tail running forever, so one bounded link must not exempt the rest. The cost of
+    reading it strictly is a chain like `cd repo && timeout 7200 npm run dev`, which gets the outer
+    bound anyway — write it as `timeout 7200 bash -c 'cd repo && npm run dev'` to keep the hatch.
+    """
+    return all(_link_starts_with_timeout(link) for link in split_chained_commands(command))
+
+
+def _wrap_timeout(seconds: int, command: str) -> str:
+    """`command` bounded by GNU `timeout`.
+
+    `-v` is what keeps the bound honest: on expiry timeout prints `sending signal TERM to command`
+    on stderr, so a job cut short reads as cut short. Without it a killed `until … done` ends with
+    the same silence as one whose condition tripped, and the agent concludes the wait succeeded.
+
+    A command that literally starts with `bash -c` / `sh -c` is only prefixed — re-wrapping nests a
+    second layer of quote escaping for no gain. Everything else is quoted whole, including a shell
+    behind an env assignment (`FOO=1 bash -c '…'`): prefixing there would hand `timeout` the
+    assignment as its program name, and the rewrite dies with exit 127 blaming the agent's own var.
+    """
+    if shlex.split(command)[:2] in (["bash", "-c"], ["sh", "-c"]):
+        return f"timeout -v {seconds} {command}"
+    return f"timeout -v {seconds} bash -c {shlex.quote(command)}"
+
+
+class BoundedCommand(NamedTuple):
+    """A command rewritten to run under `timeout`, with the log tag naming the rule that asked for it."""
+
+    command: str
+    matched: str
+
+
+def _bound(command: str, *, background: bool) -> BoundedCommand | None:
+    """The bounded rewrite of `command`, or None when it already carries a bound — or can't hang.
+
+    Reached only for an otherwise-`allow` command, so bashlex already parsed it cleanly. An explicit
+    leading `timeout …` wins over both rules: it's the agent's hatch for a job that genuinely needs
+    hours, and it's what makes the wrap idempotent. The tighter poll-loop cap is checked first, so a
+    detached wait loop keeps its 600s bound instead of inheriting the looser one.
     """
     if _has_timeout_prefix(command):
         return None
-    if wait_loop_unbounded(bashlex.parse(command)):
-        return f"timeout {WAIT_TIMEOUT_SECONDS} bash -c {shlex.quote(command)}"
     script = _extract_shell_c(command)
-    if script is not None and wait_loop_unbounded(bashlex.parse(script)):
-        return f"timeout {WAIT_TIMEOUT_SECONDS} {command}"
+    if wait_loop_unbounded(bashlex.parse(script if script is not None else command)):
+        return BoundedCommand(_wrap_timeout(WAIT_TIMEOUT_SECONDS, command), "wait_loop_unbounded")
+    if background:
+        return BoundedCommand(_wrap_timeout(BACKGROUND_TIMEOUT_SECONDS, command), "background_unbounded")
     return None
 
 
@@ -1261,10 +1302,10 @@ def _judge(command: str, tool_input: dict[str, object], agent_type: str, logger:
     ensure_scratch_dir()
     decision, reason = _decide(command, logger, agent_type)
     if decision == "allow":
-        wrapped = _bound_wait_loop(command)
-        if wrapped is not None:
-            logger.info('final=rewrite command="%s" matched=wait_loop_unbounded agent=%s', for_log(command), agent_type)
-            _emit_rewrite(tool_input, wrapped)
+        bounded = _bound(command, background=bool(tool_input.get("run_in_background")))
+        if bounded is not None:
+            logger.info('final=rewrite command="%s" matched=%s agent=%s', for_log(command), bounded.matched, agent_type)
+            _emit_rewrite(tool_input, bounded.command)
             return
     if decision == "ask" and _autonomous():
         decision = "deny"

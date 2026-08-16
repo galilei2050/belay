@@ -8,6 +8,7 @@ size/heredoc gates.
 
 import io
 import json
+import shlex
 import subprocess
 
 import acl_hook
@@ -31,11 +32,14 @@ def decide(cmd, logger):
     return decision, reason
 
 
-def via_main(monkeypatch, capsys, command):
+def via_main(monkeypatch, capsys, command, *, background=False):
+    # `run_in_background` is present only when set — the shape the harness actually sends. Stamping
+    # it in unconditionally would leave the key-absent case (the overwhelming majority of real
+    # payloads) untested by the whole suite.
     payload = json.dumps(
         {
             "tool_name": "Bash",
-            "tool_input": {"command": command},
+            "tool_input": {"command": command, **({"run_in_background": True} if background else {})},
             "session_id": "test-session",
             "agent_id": "agent-1",
             "agent_type": "subagent",
@@ -818,7 +822,7 @@ def test_until_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys):
     out = via_main(monkeypatch, capsys, "until curl -s http://localhost; do sleep 2; done")
     out_hook = out["hookSpecificOutput"]
     assert out_hook["permissionDecision"] == "allow"
-    assert out_hook["updatedInput"]["command"].startswith("timeout 600 bash -c ")
+    assert out_hook["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
     assert "until curl" in out_hook["updatedInput"]["command"]
 
 
@@ -826,7 +830,7 @@ def test_while_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys):
     out = via_main(monkeypatch, capsys, "while true; do sleep 2; done")
     out_hook = out["hookSpecificOutput"]
     assert out_hook["permissionDecision"] == "allow"
-    assert out_hook["updatedInput"]["command"].startswith("timeout 600 bash -c ")
+    assert out_hook["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
 
 
 def test_already_bounded_loop_is_not_rewrapped_via_main(monkeypatch, capsys):
@@ -852,7 +856,104 @@ def test_bare_loop_run_in_background_preserves_other_input_fields_via_main(monke
     acl_hook.main()
     out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
     assert out["updatedInput"]["run_in_background"] is True
-    assert out["updatedInput"]["command"].startswith("timeout 600 bash -c ")
+    assert out["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
+
+
+# ── every detached command is bounded, whatever its shape ────────────────────
+
+
+def test_background_tail_follow_is_bounded_via_main(monkeypatch, capsys):
+    # `tail -f` is no loop and has no sleep — the wait-loop detector never sees it, and detached
+    # there is no tool timeout either, so without this bound it runs for the rest of the session.
+    out = via_main(monkeypatch, capsys, "tail -f app.log", background=True)
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
+    assert out_hook["updatedInput"]["command"] == "timeout -v 1800 bash -c 'tail -f app.log'"
+
+
+def test_background_busy_loop_without_sleep_is_bounded_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, "while true; do date >> ticks.txt; done", background=True)
+    assert out["hookSpecificOutput"]["updatedInput"]["command"].startswith("timeout -v 1800 bash -c ")
+
+
+def test_background_dev_server_is_bounded_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, "npm run dev", background=True)
+    assert out["hookSpecificOutput"]["updatedInput"]["command"] == "timeout -v 1800 bash -c 'npm run dev'"
+
+
+def test_foreground_tail_follow_is_left_alone_via_main(monkeypatch, capsys):
+    # In the foreground the harness already caps the call — a second bound would be churn.
+    out = via_main(monkeypatch, capsys, "tail -f app.log")
+    assert "updatedInput" not in out["hookSpecificOutput"]
+
+
+def test_background_command_with_own_timeout_is_left_alone_via_main(monkeypatch, capsys):
+    # The escape hatch: a job that genuinely needs hours says so, and the hook doesn't second-guess it.
+    out = via_main(monkeypatch, capsys, "timeout 7200 npm run dev", background=True)
+    assert "updatedInput" not in out["hookSpecificOutput"]
+
+
+def test_background_wait_loop_keeps_the_loop_bound_via_main(monkeypatch, capsys):
+    # A detached poll loop matches both rules; the tighter poll cap wins.
+    out = via_main(monkeypatch, capsys, "until curl -sf localhost:8000; do sleep 2; done", background=True)
+    assert out["hookSpecificOutput"]["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
+
+
+def test_background_bash_c_is_prefixed_not_renested_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, "bash -c 'tail -f app.log'", background=True)
+    assert out["hookSpecificOutput"]["updatedInput"]["command"] == "timeout -v 1800 bash -c 'tail -f app.log'"
+
+
+def test_background_denied_command_is_not_rewritten_via_main(monkeypatch, capsys):
+    # The bound only applies to a command that was going to run — a deny stays a deny.
+    out = via_main(monkeypatch, capsys, "git push --force", background=True)
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "deny"
+    assert "updatedInput" not in out_hook
+
+
+def test_background_chain_with_one_bounded_link_is_still_bounded_via_main(monkeypatch, capsys):
+    # The hatch is per-chain, not per-first-word: bounding the poll must not exempt the tail behind it.
+    out = via_main(monkeypatch, capsys, "timeout 60 gh pr checks 12; tail -f app.log", background=True)
+    assert out["hookSpecificOutput"]["updatedInput"]["command"].startswith("timeout -v 1800 bash -c ")
+
+
+def test_background_env_prefixed_shell_is_quoted_whole_via_main(monkeypatch, capsys):
+    # Prefixing here would run `timeout -v 1800 FOO=1 …`, which execs the assignment and exits 127.
+    out = via_main(monkeypatch, capsys, "FOO=1 bash -c 'tail -f app.log'", background=True)
+    rewritten = out["hookSpecificOutput"]["updatedInput"]["command"]
+    assert rewritten == "timeout -v 1800 bash -c 'FOO=1 bash -c '\"'\"'tail -f app.log'\"'\"''"
+    assert shlex.split(rewritten)[-1] == "FOO=1 bash -c 'tail -f app.log'"  # round-trips verbatim
+
+
+def test_payload_without_the_background_key_is_not_bounded_via_main(monkeypatch, capsys):
+    # The harness omits the key entirely on most calls; absent must read as foreground, not crash.
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "tail -f app.log"}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    acl_hook.main()
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "allow"
+    assert "updatedInput" not in out
+
+
+def test_the_emitted_timeout_v_form_is_still_acld_via_main(monkeypatch, capsys):
+    # `timeout -v N bash -c '…'` is what the hook now emits, so it's the form the agent learns to
+    # write — the ACL has to keep seeing through it to the script inside.
+    out = via_main(monkeypatch, capsys, "timeout -v 1800 bash -c 'rm -rf /etc'")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_agent_written_timeout_v_is_allowed_and_left_alone_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, "timeout -v 60 pytest -q", background=True)
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
+    assert "updatedInput" not in out_hook
+
+
+def test_background_bound_is_logged_as_final_rewrite(monkeypatch, capsys, hook_log):
+    via_main(monkeypatch, capsys, "tail -f app.log", background=True)
+    assert "final=rewrite" in hook_log.read_text(encoding="utf-8")
+    assert "matched=background_unbounded" in hook_log.read_text(encoding="utf-8")
 
 
 # ── wait_loop_unbounded helper ────────────────────────────────────────────────
@@ -918,7 +1019,7 @@ def test_bash_c_hidden_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys
     out = via_main(monkeypatch, capsys, "bash -c 'until false; do sleep 2; done'")
     out_hook = out["hookSpecificOutput"]
     assert out_hook["permissionDecision"] == "allow"
-    assert out_hook["updatedInput"]["command"].startswith("timeout 600 bash -c ")
+    assert out_hook["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
 
 
 # ── sed -i inline length cap ─────────────────────────────────────────────────
