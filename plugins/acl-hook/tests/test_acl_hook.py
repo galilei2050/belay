@@ -8,6 +8,7 @@ size/heredoc gates.
 
 import io
 import json
+import shlex
 import subprocess
 
 import acl_hook
@@ -32,10 +33,13 @@ def decide(cmd, logger):
 
 
 def via_main(monkeypatch, capsys, command, *, background=False):
+    # `run_in_background` is present only when set — the shape the harness actually sends. Stamping
+    # it in unconditionally would leave the key-absent case (the overwhelming majority of real
+    # payloads) untested by the whole suite.
     payload = json.dumps(
         {
             "tool_name": "Bash",
-            "tool_input": {"command": command, "run_in_background": background},
+            "tool_input": {"command": command, **({"run_in_background": True} if background else {})},
             "session_id": "test-session",
             "agent_id": "agent-1",
             "agent_type": "subagent",
@@ -905,6 +909,44 @@ def test_background_denied_command_is_not_rewritten_via_main(monkeypatch, capsys
     out = via_main(monkeypatch, capsys, "git push --force", background=True)
     out_hook = out["hookSpecificOutput"]
     assert out_hook["permissionDecision"] == "deny"
+    assert "updatedInput" not in out_hook
+
+
+def test_background_chain_with_one_bounded_link_is_still_bounded_via_main(monkeypatch, capsys):
+    # The hatch is per-chain, not per-first-word: bounding the poll must not exempt the tail behind it.
+    out = via_main(monkeypatch, capsys, "timeout 60 gh pr checks 12; tail -f app.log", background=True)
+    assert out["hookSpecificOutput"]["updatedInput"]["command"].startswith("timeout -v 1800 bash -c ")
+
+
+def test_background_env_prefixed_shell_is_quoted_whole_via_main(monkeypatch, capsys):
+    # Prefixing here would run `timeout -v 1800 FOO=1 …`, which execs the assignment and exits 127.
+    out = via_main(monkeypatch, capsys, "FOO=1 bash -c 'tail -f app.log'", background=True)
+    rewritten = out["hookSpecificOutput"]["updatedInput"]["command"]
+    assert rewritten == "timeout -v 1800 bash -c 'FOO=1 bash -c '\"'\"'tail -f app.log'\"'\"''"
+    assert shlex.split(rewritten)[-1] == "FOO=1 bash -c 'tail -f app.log'"  # round-trips verbatim
+
+
+def test_payload_without_the_background_key_is_not_bounded_via_main(monkeypatch, capsys):
+    # The harness omits the key entirely on most calls; absent must read as foreground, not crash.
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": "tail -f app.log"}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    acl_hook.main()
+    out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
+    assert out["permissionDecision"] == "allow"
+    assert "updatedInput" not in out
+
+
+def test_the_emitted_timeout_v_form_is_still_acld_via_main(monkeypatch, capsys):
+    # `timeout -v N bash -c '…'` is what the hook now emits, so it's the form the agent learns to
+    # write — the ACL has to keep seeing through it to the script inside.
+    out = via_main(monkeypatch, capsys, "timeout -v 1800 bash -c 'rm -rf /etc'")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_agent_written_timeout_v_is_allowed_and_left_alone_via_main(monkeypatch, capsys):
+    out = via_main(monkeypatch, capsys, "timeout -v 60 pytest -q", background=True)
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "allow"
     assert "updatedInput" not in out_hook
 
 

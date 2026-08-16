@@ -240,33 +240,51 @@ the hook, so the emitted `bash -c` is never re-evaluated against the `bash` deny
 
 Two rules, checked in that order:
 
-- **`wait_loop_unbounded` → 600s** (`WAIT_TIMEOUT_SECONDS`). A loop body
+- **`matched=wait_loop_unbounded` → 600s** (`WAIT_TIMEOUT_SECONDS`). A loop body
   containing `sleep`: `until COND; do sleep N; done` whose condition never trips
-  (failed deploy, wrong target) runs forever. Applies foreground and background.
-- **`_bound_background` → 1800s** (`BACKGROUND_TIMEOUT_SECONDS`). Any command
-  with `run_in_background: true`, whatever its shape. See below.
+  (failed deploy, wrong target) runs forever.
+- **`matched=background_unbounded` → 1800s** (`BACKGROUND_TIMEOUT_SECONDS`). Any
+  command with `run_in_background: true`, whatever its shape. See below.
 
-**Why the background rule is shape-blind.** The harness bounds a *foreground*
-Bash call itself (120s default, 600s max), so nothing there can hang past ten
-minutes — a second bound would be churn. A *detached* call has no cap at all:
-it runs until it exits on its own, i.e. for the rest of the session. That is the
-whole hole, and it isn't shaped like a loop:
+**Why the background rule is shape-blind.** A *detached* call is the one with no
+cap at all: it runs until it exits on its own, i.e. for the rest of the session.
+That is the whole hole, and it isn't shaped like a loop:
 
 | detached command | why the loop detector misses it |
 |---|---|
 | `tail -f app.log`, `journalctl -f`, `docker logs -f` | no loop, no `sleep` |
 | `npm run dev`, `streamlit run app.py` | a server; exiting is the failure case |
 | `while true; do curl …; done` | a loop, but busy — no `sleep` in the body |
-| `cat` (no path), `grep pat` (no file) | blocked reading an stdin that never closes |
+| `nc -l 9000`, `ssh -N -L …` | blocked on a socket that nothing will close |
 
 Every enumeration of blocking shapes misses the next one, so the bound goes on
 the property that makes any of them a leak — being detached — not on the shape.
-Empirically that's also where the volume is: 293 `run_in_background: true` vs 76
-`false` across this machine's transcripts.
+Empirically that's also where the volume is: roughly 4:1 detached over
+foreground across this machine's transcripts (measured 2026-08-16).
+
+(A command reading stdin is *not* on that list: the harness gives Bash
+`/dev/null` on fd 0, so a bare `cat` gets EOF and exits at once.)
+
+**Foreground is the harness's job, and the loop rule still covers it.** A
+foreground Bash call dies at its own tool timeout (120s default, 600s max), so
+the 600s loop wrap can never bind tighter there — it's retained because a
+payload that omits `run_in_background` is indistinguishable from a foreground
+one, and because the shape is worth catching wherever it appears. The bound that
+actually does work no one else does is the detached one.
 
 **The escape hatch is explicit.** A leading `timeout …` the agent wrote itself
 is left alone (`_has_timeout_prefix`), so a job that genuinely needs hours says
-so: `timeout 7200 npm run dev`. Same mechanism makes the wrap idempotent.
+so: `timeout 7200 npm run dev`. Same mechanism makes the wrap idempotent. It is
+read per *link*, not per command: `timeout 60 gh pr checks; tail -f app.log`
+does not get a pass for the tail, so a chain wanting the hatch puts the whole
+thing under one bound — `timeout 7200 bash -c 'cd repo && npm run dev'`.
+
+**Known gap: an `ask` is never bounded.** `_bound` runs only on an `allow`, so a
+detached `npm install` / `gcloud … deploy` still runs uncapped once the human
+approves it. Closing it means emitting `updatedInput` alongside
+`permissionDecision: "ask"`, which is unverified against the harness — verify
+before claiming it works. (Under `ACL_HOOK_AUTONOMOUS=1` the question doesn't
+arise: every `ask` is already a `deny`.)
 
 **`timeout -v`, not bare `timeout`.** On expiry GNU timeout prints `sending
 signal TERM to command` on stderr and exits 124. Without `-v`, a killed
