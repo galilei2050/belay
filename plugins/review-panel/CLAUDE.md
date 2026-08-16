@@ -1,4 +1,4 @@
-# CLAUDE.md — review-panel-hook
+# CLAUDE.md — review-panel
 
 How to change the hook and the panel without breaking either.
 
@@ -141,9 +141,9 @@ the agent to ignore the panel.
 ## Testing
 
 ```
-uv run pytest plugins/review-panel-hook/ -q
-uv run ruff check plugins/review-panel-hook/
-uv run mypy plugins/review-panel-hook/hooks/review_panel_hook.py
+uv run pytest plugins/review-panel/ -q
+uv run ruff check plugins/review-panel/
+uv run mypy plugins/review-panel/hooks/review_panel_hook.py
 ```
 
 **Test at the highest level, never the internals.** Every test drives the hook through the

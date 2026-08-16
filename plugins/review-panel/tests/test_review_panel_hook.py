@@ -1,4 +1,4 @@
-"""Behavioral tests for review-panel-hook.
+"""Behavioral tests for review-panel.
 
 Every test drives the hook through its real boundary — the script Claude Code runs, JSON on
 stdin, JSON on stdout — and asserts what the agent would actually receive. Nothing imports
@@ -14,7 +14,7 @@ import pytest
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
 PROMPTS = sorted(AGENTS_DIR.glob("*.md"))
 
-_ROSTER_RE = re.compile(r"`review-panel-hook:([\w-]+)`")
+_ROSTER_RE = re.compile(r"`review-panel:([\w-]+)`")
 
 
 def roster_of(emitted) -> set[str]:

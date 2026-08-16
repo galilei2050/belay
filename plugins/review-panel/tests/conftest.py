@@ -1,4 +1,4 @@
-"""Test fixtures for review-panel-hook.
+"""Test fixtures for review-panel.
 
 Everything here exists to exercise the hook at its real boundary: the script Claude Code
 actually runs, fed a JSON payload on stdin. Nothing imports the hook module, so the tests

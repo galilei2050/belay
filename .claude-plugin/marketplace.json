@@ -26,9 +26,14 @@
       "description": "PreToolUse file-tool gate: denies file edits (Write/Edit/MultiEdit/NotebookEdit) while a protected branch (main/master) is checked out."
     },
     {
-      "name": "review-panel-hook",
-      "source": "./plugins/review-panel-hook",
-      "description": "PreToolUse hook on `git commit` that dispatches a panel of eight read-only reviewer subagents over the diff just committed."
+      "name": "review-panel",
+      "source": "./plugins/review-panel",
+      "description": "A panel of eight read-only reviewer subagents, dispatched over every commit by a PreToolUse hook on `git commit`."
+    },
+    {
+      "name": "deep-investigation",
+      "source": "./plugins/deep-investigation",
+      "description": "Skill + three subagents that answer a why-question by enumerating every hypothesis first, then falsifying branches until one mechanism accounts for the whole effect."
     }
   ]
 }

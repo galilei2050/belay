@@ -65,4 +65,4 @@ A prompt rule shapes behavior but fails silently a meaningful fraction of the ti
 
 ## Provenance
 
-Built from a hypothesis-tree investigation (methodology: `docs/metric-investigation-methodology.md`). Evidence: the 16-hypothesis catalog `docs/agent-code-smells-2026-05.md`, the findings summary `docs/agent-code-smell-rules-findings-2026-06.md`, and a four-source Perplexity sweep (academic / security / Reddit-HN / rule-collections). Investigation notes: `.work/code-smell-rules/`.
+Built from a hypothesis-tree investigation (that methodology is now a plugin: `plugins/deep-investigation`). Evidence: the 16-hypothesis catalog `docs/agent-code-smells-2026-05.md`, the findings summary `docs/agent-code-smell-rules-findings-2026-06.md`, and a four-source Perplexity sweep (academic / security / Reddit-HN / rule-collections). Investigation notes: `.work/code-smell-rules/`.
