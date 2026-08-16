@@ -34,7 +34,7 @@ def fix_project_dir(tmp_path, monkeypatch):
 
 @pytest.fixture
 def on_branch(fix_project_dir):
-    """Point the tmp checkout's HEAD at `name`."""
+    """Yields a setter that repoints the tmp checkout's HEAD and returns the checkout."""
 
     def _set(name: str) -> Path:
         (fix_project_dir / ".git" / "HEAD").write_text(f"ref: refs/heads/{name}\n", encoding="utf-8")

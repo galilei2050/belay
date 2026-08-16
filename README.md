@@ -19,7 +19,7 @@ a climber when they fall. These plugins are the belay for the agent.
 |------|------|--------------|
 | [acl-hook](plugins/acl-hook) | PreToolUse | Gates Bash commands against a project ACL |
 | [fs-acl-hook](plugins/fs-acl-hook) | PreToolUse | Gates Write/Edit/Read by path: `.git` off-limits, scratch allowed, no out-of-project writes |
-| [branch-guard-hook](plugins/branch-guard-hook) | PreToolUse | Denies Write/Edit while `main`/`master` is checked out — branch first |
+| [branch-guard-hook](plugins/branch-guard-hook) | PreToolUse | Denies file edits while `main`/`master` is checked out — branch first |
 | [no-shirk-hook](plugins/no-shirk-hook) | Stop | Blocks ending a turn with an ask-instead-of-do question |
 | [review-panel-hook](plugins/review-panel-hook) | PreToolUse | Dispatches eight read-only reviewer subagents (correctness, integration, test integrity, explicitness, DRY, bloat, SOLID, comments) over every commit |
 
