@@ -4,12 +4,14 @@ How to change the hook and the panel without breaking either.
 
 ## Scope (don't expand it)
 
-The hook decides **one** thing: is this Bash call a commit whose content the panel has not
-seen yet? It does NOT review code, call an LLM, read the transcript, parse the diff, or
+The hook decides **one** thing: is this Bash call a commit the panel has not seen and big
+enough to be worth a round? It does NOT review code, call an LLM, read the transcript, or
 know anything about the reviewers beyond their names. All the judgment lives in
 `agents/*.md`, which are prompts, not code.
 
-If a change would make the hook *understand* the diff, it belongs in a reviewer prompt
+It touches the diff twice, and both are blind to what the diff *says*: a hash of it, and a
+count of its changed lines. If a change would make the hook read the diff for meaning —
+which files, which language, whether a change looks risky — it belongs in a reviewer prompt
 instead.
 
 ## Advisory is the design, not a weaker version of a gate
@@ -48,12 +50,23 @@ every mechanical measure, and telling it apart from genuine new work needs to kn
 commit was for. Only the agent knows that, so the rule is in `_PROMPT` and the hook keeps
 guessing nothing (see Scope).
 
-Two hook-side "fixes" that look tempting and are not. Going quiet after every dispatch
-silences the next commit whenever the panel came back clean, and a skipped review is
-invisible. A size threshold on the diff is worse: it drops the small commits — a flipped
-condition, a changed constant — that this panel exists to catch. The cost being defended
-against is real (a round is eight subagents, and a panel handed its own corrections will
-keep finding wording to object to), but neither of those buys it honestly.
+## The size threshold, and the cost it accepts
+
+`MIN_CHANGED_LINES = 64` is the second bound on the spend, and it is the one the hook *can*
+compute: `git commit` is the exact moment the size of a change is known for free. Eight
+subagents over a two-line diff is not a trade anyone makes on purpose.
+
+It buys that with a known loss — a flipped condition committed on its own now goes
+unreviewed. That was weighed and accepted (the panel is advisory; a small commit whose
+correctness is load-bearing can be handed to the reviewers by hand). Don't reintroduce the
+small-commit case by lowering the number to near-zero; move it deliberately or not at all.
+
+Count added *and* removed lines, minus the `+++`/`--- ` file headers — a rewrite that
+replaces 40 lines with 40 is an 80-line review, not a zero-line one.
+
+One hook-side "fix" that looks tempting and is not: going quiet after every dispatch. It
+silences the next commit whenever the panel came back clean, and a skipped review leaves no
+trace at all.
 
 ## Changing the panel
 
