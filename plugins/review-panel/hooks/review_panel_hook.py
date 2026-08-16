@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-STATE_PATH = Path.home() / ".claude" / "review-panel-hook" / "reviewed.json"
+STATE_PATH = Path.home() / ".claude" / "review-panel" / "reviewed.json"
 GIT = shutil.which("git")
 
 # The panel. They run in parallel, so this order only sets the reading order of the merged
@@ -116,7 +116,7 @@ def record_reviewed(repo: str, digest: str) -> None:
 
 def build_prompt() -> str:
     """The advisory text handed to the agent: the roster plus what to do with its findings."""
-    roster = "\n".join(f"- `review-panel-hook:{name}`" for name in REVIEWERS)
+    roster = "\n".join(f"- `review-panel:{name}`" for name in REVIEWERS)
     return _PROMPT.format(count=len(REVIEWERS), roster=roster)
 
 

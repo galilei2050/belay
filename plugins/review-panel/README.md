@@ -1,4 +1,4 @@
-# review-panel-hook
+# review-panel
 
 A panel of eight read-only reviewer subagents, dispatched automatically after every
 `git commit`.
@@ -40,7 +40,7 @@ earlier: `NO FINDINGS` means nothing to fix, no further commit, and no further n
 **Three ways to stay silent** (step 2), so the panel is not a tax on every Bash call: the
 command is not a commit (`--dry-run`, `git status`, not a git repo); nothing is staged; or
 the content was already handed to the panel. That last one is a fingerprint of the diff
-under review, kept in `~/.claude/review-panel-hook/reviewed.json`, so a commit rejected by
+under review, kept in `~/.claude/review-panel/reviewed.json`, so a commit rejected by
 `pre-commit` and retried does not re-dispatch eight subagents — but once the agent fixes
 something, the content changes and the panel runs again. `git commit -a` is read from
 `git diff HEAD`, since `-a` stages at commit time and the index is still empty when the
@@ -103,7 +103,7 @@ treats "handling present, but in the wrong place" as its highest-value finding.
 ## Install
 
 ```
-/plugin install review-panel-hook@belay
+/plugin install review-panel@belay
 ```
 
 Pairs with [`no-shirk-hook`](../no-shirk-hook): the panel produces findings, and no-shirk
