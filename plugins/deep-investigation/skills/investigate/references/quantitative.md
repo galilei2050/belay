@@ -1,7 +1,6 @@
 # Quantitative evidence
 
-Read this before computing any relationship between two series. Every rule here exists
-because skipping it produces a confident answer with the wrong sign.
+Read this before computing any relationship between two series.
 
 ## Raw correlation between two business series is meaningless on its own
 
@@ -36,17 +35,10 @@ anything on n < 24:
 3. Do not drop more than two points without writing down why.
 4. Flag `n < 15` results as "direction indicated, magnitude uncertain" — never as "strong".
 
-## Correlation earns the word "mechanism" only from the changelog
+## Correlation earns the word "mechanism" only from a dated event
 
-After a leaf reaches `[VERIFIED]` statistically, search the business/engineering changelog
-— git log, deploy history, incident channel, ops docs, Notion — for a recorded decision at
-that date that would produce this pattern. Statistics gives you a consistent hypothesis;
-the changelog entry converts it into a cause.
-
-If nothing is recorded, say so explicitly. An unrecorded change is itself a finding
-(undocumented intervention, unplanned drift) — much better than inventing a mechanism to
-fill the gap. Some patterns are structural (definition, attribution window) and correctly
-have no changelog entry at all.
+A statistical result is a consistent hypothesis, never a cause. Step 5b of the skill is what
+converts it — do not skip it because the numbers look decisive.
 
 ## Sanity checks that catch fabricated analysis
 

@@ -13,3 +13,4 @@ venv/
 .claude/settings.local.json
 .scratch/
 *.egg-info/
+.work/

@@ -1,43 +1,59 @@
 ---
 name: investigate
-description: Answer a "why is X the way it is?" question by building a full hypothesis tree first, then falsifying branches with narrow evidence-gathering subagents until one mechanism is proven to the size of the effect. Use for metric anomalies, incidents, regressions, contradictory data, "why did N drop/spike", "разберись почему", "докопайся" — any question where "probably X" is not an acceptable answer.
+description: Explains a measured effect whose cause is genuinely unknown — a metric that moved, an incident nobody can account for, two sources reporting different numbers for the same thing, a regression that survived the obvious fix. Enumerates every candidate cause as a hypothesis tree before checking any of them, then kills branches with evidence until the verified mechanisms account for the observed size. Use when several explanations compete, when someone will decide something from the answer, or when you catch yourself about to write "probably" — "why did N drop/spike", "почему упало", "что произошло", "разберись почему", "докопайся", conflicting dashboards. NOT for a bug whose cause is visible in a stack trace, a cause the user already named, or code archaeology ("why is this written this way?") that one grep or `git blame` settles — say the cause and fix it.
 ---
 
 # Investigate
 
-A question is not a bug report. This is for the case where you must *explain* something —
-a number, a behavior, a regression, a contradiction — and a plausible-sounding answer is
-worse than none, because someone will act on it.
+**Enumerate every candidate explanation before checking any of them, then kill branches with
+evidence until what survives accounts for the whole effect.**
 
-The method: **enumerate every candidate explanation before checking any of them, then kill
-branches with evidence until what survives accounts for the whole effect.**
+## Three gates, all checkable before you start
 
-## When to run this (and when not)
+1. **There is an effect with a size** — a number that moved, a rate, a gap between two
+   sources, a count of occurrences. Step 7 closes against it; without one there is no
+   stopping rule.
+2. **The cause is genuinely unknown**, not merely unconfirmed. A stack trace naming the
+   line, a cause the user already named, a question one grep settles: known.
+3. **Someone acts on the answer**, or several explanations compete.
 
-Run it when: the observed thing contradicts intuition or another signal · several
-explanations compete and you catch yourself about to write "probably" · the definition of
-the thing being measured is itself suspect · someone will make a decision from your answer.
+Fail any gate and don't run this — it costs several subagent dispatches and most of a
+context window. Say "this doesn't need an investigation — the cause is `<X>` at
+`<file:line>`" and fix it.
 
-Don't run it when a single obvious cause is visible in one file and the fix is five
-minutes. This process costs several subagent dispatches. Say "this doesn't need an
-investigation, the cause is <X> at <file:line>" and just fix it.
+## What is yours, what you dispatch
 
-## Step 0 — Freeze the question and the closing criterion
+Three things are never delegated: **the tree** (Step 2), **every status change** (Step 5),
+**the synthesis** (Steps 7 and 9). A subagent that builds the tree or writes the findings
+has replaced this method with its own guess. The subagents cannot write outside
+`.work/<topic>/evidence/`, so the tree and the report are yours by construction.
 
-Write down, verbatim, what is being asked. Then write what would count as an answer:
-**a named mechanism plus a number that accounts for the observed magnitude.**
+Read yourself: the definition (Step 1) and anything whose exact wording you must reason
+over. Dispatch: anything where the raw output is bulky or the search space is wide — counts,
+distributions, log sweeps, external facts. The criterion is context, not difficulty. If the
+evidence is 200 lines and the answer is 3, dispatch it.
 
-Without the criterion you will stop at the first plausible story. With it, you stop when
-the arithmetic closes (Step 7).
+## Step 0 — Freeze the question, and measure the effect yourself
+
+Write down verbatim what is asked. Then **re-derive the magnitude from the primary source**
+— you close against the number you measured, not the one you were handed. A dashboard
+timezone, a changed threshold, or someone who just started looking produces a perfectly
+rigorous investigation of a non-event.
 
 ## Step 1 — Read the definition before you read the data
 
-Whatever the question is about — a metric, an endpoint, a job, a rate — find where it is
-*defined* and read that first: the compute function, the query, the config, the spec.
+Find where the subject is *defined* and read that first: the compute function, the query,
+the config, the spec. Field semantics come from code, never from names — `createdAt` means
+"when the row was inserted" until the code says otherwise. An investigation can legitimately
+end here.
 
-Field semantics come from code, never from names. `createdAt` means "when the row was
-inserted", not "when the event happened", until the code says otherwise. A whole
-investigation can end here: the thing measures something other than what everyone assumed.
+For a behavior or an incident, the definitional read is **reproducing it and recording the
+exact trigger**. Do that before enumerating causes.
+
+For a ratio, check that numerator and denominator share a scope. A paid-only numerator over
+a paid+organic denominator is already broken, and fixing one side leaves it dishonest —
+restate the scope and derive both sides together, or split it in two. Scope mismatches come
+in groups; check the sibling metrics.
 
 ## Step 2 — Build the whole tree before the first check
 
@@ -47,145 +63,122 @@ falsifiable:
 ```
 Q0: Why does X show Y?
 ├── Q1: Is the measurement wrong?
-│   ├── H1.1: definition/scope mismatch (numerator and denominator disagree)   [untested]
+│   ├── H1.1: definition/scope mismatch                                        [untested]
 │   └── H1.2: collection bug — dedup, filter, attribution window               [untested]
 ├── Q2: Did the input change?
 │   ├── H2.1: volume shift                                                     [untested]
 │   └── H2.2: composition shift — same volume, different mix                   [untested]
-├── Q3: Did the system change?
-│   ├── H3.1: a deploy/config/schema change at the right date                  [untested]
-│   └── H3.2: a dependency or infra change                                     [untested]
-├── Q4: Did the outside world change?
-│   ├── H4.1: seasonality / market / upstream provider                         [untested]
-│   └── H4.2: a competitor/platform/policy event                               [untested]
-└── Q5: Is the measurement right and the reality is genuinely that?
-    └── H5.1: real degradation, no artifact                                    [untested]
+├── Q3: Did the system change?  (deploy, config, schema, dependency, infra)    [untested]
+├── Q4: Did the outside world change?  (seasonality, provider, platform, policy) [untested]
+└── Q5: Measurement right, reality genuinely that — real degradation           [untested]
 ```
 
-Those five branches are the default spine — instantiate all five for any domain, then add
-domain-specific ones. Every leaf gets an ID and `[untested]`.
+Those five branches are the default spine for any domain; add domain-specific ones.
 
-**MECE check before you proceed:** ask "what explanation would a skeptic name that has no
-home in this tree?" Add it. A tree missing the true cause cannot find it, and every later
-step will look rigorous while being wrong.
+**Then dispatch the completeness check before Step 3 may start.** Send the frozen question
+and the tree to one `general-purpose` subagent: *"name three explanations that have no home
+in this tree; do not evaluate them."* Append its reply verbatim to `hypotheses.md` and add
+what fits. A tree missing the true cause cannot find it, and every later step will look
+rigorous — and grading your own tree shares its blind spot.
 
-**Every mid-investigation fork is two hypotheses, not a question for the user.** If you
-find yourself writing "this could be A or B — which should I dig into?", stop: add A and B
-as leaves and check both. The user sees resolved findings, not your forks.
+A mid-investigation fork ("could be A or B") is two leaves, never a question for the user.
 
-## Step 3 — Order by cost, eliminate families early
+## Step 3 — Order by cost, kill families not leaves
 
-1. Read code / grep — free
-2. Local counts, distributions, log greps — cheap
-3. Heavy aggregations, joins, cross-system — moderate
-4. Quantitative analysis (correlations, lags) — moderate
-5. External lookups (web, third-party APIs) — expensive
-
-If reading one filter in the code kills all of Q1, do that before any query. Kill families,
-not leaves.
+Code/grep (free) → counts and distributions (cheap) → heavy aggregations (moderate) →
+quantitative analysis → external lookups (expensive). If reading one filter kills all of Q1,
+do that first. Dispatch tier 1 as an `evidence-collector` slice the moment the search space
+is wider than a file you can name.
 
 ## Step 4 — One subagent, one slice
 
-Dispatch `evidence-collector` for local facts (code, files, data, logs, git history) and
-`web-researcher` for facts that live outside the system. Send several in parallel when the
-slices are independent.
+`evidence-collector` for facts reachable from this machine, `web-researcher` for facts that
+live on the public web. Several in parallel when the slices are independent. Two rules the
+agents can't enforce for themselves:
 
-Hard rules:
-
-- **One hypothesis per dispatch.** A prompt covering H2.1–H4.5 comes back as a summary
-  instead of data, and you cannot audit a summary.
-- **Ask for raw output, forbid conclusions.** "Return counts grouped by X for range Y. No
-  analysis." The orchestrator — you — is the only one who synthesizes.
+- **One hypothesis per dispatch.** A prompt covering H2.1–H4.5 comes back as a summary, and
+  you cannot audit a summary.
 - **Name the hypothesis ID in the prompt** so the returned evidence files itself.
 
 ## Step 5 — Status the leaf the moment its evidence lands
 
-Replace `[untested]` with one of, and put the key number inline next to it:
+Replace `[untested]`, key number inline:
 
 | Status | Means |
 |---|---|
 | `[VERIFIED]` | real mechanism, magnitude measured |
 | `[FALSIFIED]` | ruled out by evidence |
 | `[NOT A FACTOR]` | mechanism exists, too small to matter — state its size |
-| `[PARTIAL]` | real, explains only part of the gap — state which part |
-| `[OPEN]` | evidence insufficient; state exactly what data would close it |
+| `[PARTIAL]` | real, explains part of the gap — state which part |
+| `[OPEN]` | evidence insufficient — state exactly what data would close it |
 
-Never leave a leaf `[untested]` after its evidence returned. `[FALSIFIED]` is a finding and
-ships in the report — it is what stops the next person re-checking it.
+Never leave a leaf `[untested]` after its evidence returned; a hedge in your own text
+("probably", "скорее всего") means a leaf is `[untested]` and a dispatch is missing.
+`[FALSIFIED]` ships in the report.
+
+Sizes must be measured on **disjoint** populations. Two leaves measured independently on
+overlapping rows both look large and are the same mechanism twice.
+
+## Step 5b — Find the event
+
+For each `[VERIFIED]` leaf, search the changelog for a recorded decision that would produce
+this pattern: git log and deploy history, incident channel, ops docs, campaign and config
+changes, vendor status pages. Statistics gives you a consistent hypothesis; a dated event
+turns it into a cause.
+
+If nothing is recorded, say so — an unrecorded change is itself a finding (undocumented
+intervention, unplanned drift), and structural causes (a definition, an attribution window)
+correctly have no entry. Never invent a mechanism to fill the gap.
 
 ## Step 6 — Try to kill what survived
 
-Every `[VERIFIED]` and `[PARTIAL]` leaf goes to `hypothesis-falsifier` before it can be
-called a finding. A hypothesis that has not survived a deliberate attempt to destroy it is
-a story, not a result.
+Every `[VERIFIED]` and `[PARTIAL]` leaf goes to `hypothesis-falsifier` before it is a
+finding. Pass it the current tree with statuses, so it doesn't re-raise leaves you already
+killed. Order: the largest-share leaf first, then any leaf whose claimed share exceeds the
+residual; the rest are optional.
 
-If the falsifier returns KILLED, restatus the leaf and go back to Step 3 with the branches
-still standing. If WEAKENED, downgrade to `[PARTIAL]` or `[OPEN]` and record what it would
-take to settle it.
+KILLED → restatus and return to Step 3 with the branches still standing. WEAKENED →
+downgrade to `[PARTIAL]` or `[OPEN]` and record what would settle it.
 
-## Step 7 — Make the arithmetic close
+## Step 7 — Close it, or say it isn't closed
 
-The stopping test, and the difference between this and a plausible narrative:
+**Quantitative subject:** do the verified mechanisms, at their measured sizes, add up to the
+observed effect? Observed −40% and one verified mechanism at −12% means **the tree is
+incomplete** — go back to Step 2 for the missing −28%. Report the residual explicitly when
+you cannot close it: "mechanisms account for 31 of 40 points; 9 unexplained, would need
+`<data>`."
 
-> Do the verified mechanisms, at their measured sizes, add up to the observed effect?
+**Behavioral subject** (incident, regression, contradiction) — two tests instead of the sum:
 
-Observed −40%, and your one verified mechanism accounts for −12%? **The tree is
-incomplete.** Do not report "the main cause is H3.1". Go back to Step 2, add branches for
-the missing −28%, and keep going. Report the residual explicitly when you genuinely cannot
-close it: "mechanisms account for 31 of the 40 points; 9 points unexplained, would need
-<data>."
+- **Counterfactual**: remove the mechanism (revert, flag off, patch) and the effect
+  disappears; restore it and it returns.
+- **Coverage**: every observed instance is accounted for — including the near-misses where
+  the mechanism was present and the effect was not.
 
-## Step 8 — When the user hands you a new fact, walk the tree back
+Two further rules before you may name a primary cause:
 
-User-stated facts ("we shut that campaign off in July") are accepted as facts. Claims
-*derived* from them ("so that's why the number moved") are new hypotheses, `[untested]`.
+- If an `[OPEN]` leaf could plausibly account for the residual, you are not finished. Get
+  the data, or report the question as unresolved.
+- If the residual is large and no single new leaf plausibly covers it, add **conjunction**
+  leaves (H_i × H_j — the effect needs both) before adding more independent branches.
 
-When a new fact contradicts an earlier assumption, find every leaf that depended on it and
-restatus. The tree exists so these dependencies are visible instead of forgotten.
+## Step 8 — When a new fact arrives, walk the tree back
+
+User-stated facts are facts. Claims *derived* from them are new leaves, `[untested]`. When a
+new fact contradicts an earlier assumption, restatus every leaf that depended on it.
 
 ## Step 9 — Report
 
-Write the synthesis to `.work/<topic>/findings.md` using
-[references/report-template.md](references/report-template.md). Keep the full tree with
-statuses in it — the tree is the audit trail that makes the conclusion checkable.
+Write the synthesis yourself to `.work/<topic>/findings.md` using
+[references/report-template.md](references/report-template.md), keeping the full tree with
+statuses in it.
 
-## External facts: which tool
+## Pointers
 
-In priority order, using what is actually available in the session:
-
-1. **Perplexity MCP** (`mcp__plugin_perplexity_perplexity__perplexity_ask` / `_research`) —
-   best for "what is the known mechanism / benchmark / did something happen in this
-   market". `_research` for multi-source depth, `_ask` for a cited one-shot.
-2. **Built-in `WebSearch` / `WebFetch`** — when you need the primary page itself.
-3. **SerpAPI** via `scripts/serp_search.py` — only when you need the raw result list
-   (ranking, what a query actually returns) rather than a synthesized answer. Requires
-   `SERPAPI_API_KEY` in the environment; the script fails loudly if it is absent. Check
-   with `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/serp_search.py --check` before planning
-   around it.
-
-Never let an external claim in without a source and a date next to it in the tree.
-
-## Quantitative evidence
-
-The moment the question involves two numeric series ("did A cause B?"), read
-[references/quantitative.md](references/quantitative.md) before computing anything. Raw
-same-period correlation is the single most common way these investigations produce a
-confident wrong answer.
-
-## Anti-patterns
-
-**Handing the fork to the user.** "Возможно A, возможно B — что копать?" Both go in the
-tree; you check both.
-
-**The mega-prompt.** One subagent, many hypotheses → a summary you cannot audit.
-
-**Hedging where a number belongs.** "probably", "скорее всего", "usually" about anything
-checkable is a query you skipped. Mark the leaf `[untested]` and dispatch it.
-
-**Stopping at the first VERIFIED.** One confirmed mechanism is not the answer until Step 7
-says it accounts for the effect.
-
-**Fixing one side of a scope mismatch.** If a ratio has one scope on top and another on the
-bottom, correcting only one side yields a number that is less wrong and still dishonest.
-Restate the scope, then derive both sides together — or split it into two honest measures.
-When you find one scope mismatch, audit its siblings: they come in groups.
+- Never run this method before? [references/worked-example.md](references/worked-example.md)
+  is one full investigation compressed to a page — the tree, the numbers, the close.
+- Two numeric series in play ("did A cause B?") → read
+  [references/quantitative.md](references/quantitative.md) before computing anything. Raw
+  same-period correlation is how these investigations produce a confident wrong answer.
+- External facts go to `web-researcher`, which owns the source order. Your rule: nothing
+  enters the tree without a source and a date beside it.

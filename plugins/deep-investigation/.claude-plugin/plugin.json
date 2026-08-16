@@ -1,6 +1,6 @@
 {
   "name": "deep-investigation",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Skill + three subagents that answer a \"why is X like this?\" question by enumerating every hypothesis first, then falsifying branches with evidence until one mechanism accounts for the whole effect.",
   "author": {
     "name": "galilei2050"
