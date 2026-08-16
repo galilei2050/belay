@@ -24,6 +24,11 @@
       "name": "review-panel-hook",
       "source": "./plugins/review-panel-hook",
       "description": "PreToolUse hook on `git commit` that dispatches a panel of eight read-only reviewer subagents over the diff just committed."
+    },
+    {
+      "name": "deep-investigation",
+      "source": "./plugins/deep-investigation",
+      "description": "Skill + three subagents that answer a why-question by enumerating every hypothesis first, then falsifying branches until one mechanism accounts for the whole effect."
     }
   ]
 }
