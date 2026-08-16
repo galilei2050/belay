@@ -167,6 +167,22 @@ against *internal* impossible states are noise, but the untrusted edge — reque
 param, uploaded file, env var, third-party response — must be validated exactly once, at
 that edge. If nothing in the path validates it, say where it should go.
 
+**15. An empty result that can't be told apart from a wrong one.** A collection fetched, then
+narrowed in our own code by a field the source itself takes as a parameter — location, tenant,
+account, date range. Where the source was never global, the filter matches nothing and the
+caller sees the same blank list it would see on a quiet day. No exception, no log, no failing
+test: a diff review is the only place this is visible at all. Its siblings count too — a
+`.get()` lookup miss that yields nothing instead of raising, and an average or rate computed
+over zero rows and handed on as a number.
+```
+BAD  — orders = fetch_orders(since=start); return [o for o in orders if o.location == loc]
+       # the client is pinned to one shop; for any other loc this is [] forever
+GOOD — return fetch_orders(since=start, location=loc)
+       # scope in the request; a source that can't take it is a finding, not a filter
+```
+Lane: yours is that absence and error arrive indistinguishable. If you can name an input and
+the wrong value it produces, that is `correctness-reviewer`'s finding, not yours.
+
 ## How to work
 
 Two passes over the diff, in this order.
