@@ -42,9 +42,19 @@ REVIEWERS = (
     "comments-reviewer",
 )
 
-# `git -C dir commit`, `foo && git commit -m x`, `git commit`. Leading `-`/`--` options
-# belong to git itself (-C, --no-pager); the subcommand is the first bare word.
-_GIT_COMMIT_RE = re.compile(r"(?:^|[;&|(]|&&)\s*git\b(?:\s+-{1,2}\S+(?:\s+\S+)?)*\s+commit\b")
+# A Bash call is a list of segments, and each is judged on its own: a newline separates two
+# commands exactly like `;` does, and a flag belongs to the segment it appears in. Reading the
+# whole call as one string missed `git add -A\ngit commit -m x` — 3 of the 29 multi-line Bash
+# calls in one real session — and let a `--dry-run` in a neighbouring segment silence a commit.
+_SEGMENT_SPLIT_RE = re.compile(r"[;&|\n()]+")
+# Quoted spans are blanked before any flag is read: `--dry-run` inside a commit message is prose.
+_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+# `-C dir` / `--git-dir` / `--work-tree` point git at another repository, while the diff this
+# hook measures comes from the payload's `cwd`. Reviewing one repo's commit against another's
+# index is worse than staying quiet.
+_OTHER_REPO_RE = re.compile(r"(?<![\w-])(?:-C|--git-dir|--work-tree)(?![\w-])")
+# Leading `-`/`--` options belong to git itself (--no-pager); the subcommand is the first bare word.
+_GIT_COMMIT_RE = re.compile(r"^\s*git\b(?:\s+-{1,2}\S+(?:\s+\S+)?)*\s+commit\b")
 _DRY_RUN_RE = re.compile(r"(?<![\w-])--dry-run(?![\w-])")
 # `-a` / `-am` stage tracked files at commit time, so the index is empty until then and
 # the review scope has to come from the worktree instead. `(?!-)` keeps `--amend` out.
@@ -76,9 +86,19 @@ get a second opinion.
 The panel is advisory — none of this blocks the commit that already happened."""
 
 
-def is_reviewable_commit(command: str) -> bool:
-    """True iff this Bash command actually creates a commit (so `--dry-run` is out)."""
-    return bool(_GIT_COMMIT_RE.search(command)) and not _DRY_RUN_RE.search(command)
+def committing_segment(command: str) -> str | None:
+    """The segment of this Bash call that commits to the session's own repo, or None.
+
+    The segment, not the whole call: `--dry-run` and `-a` belong to the command they were
+    written on, and every later read (`_STAGE_ALL_RE`) has to be scoped the same way.
+    """
+    blanked = _QUOTED_RE.sub(lambda match: " " * len(match.group()), command)
+    for segment in _SEGMENT_SPLIT_RE.split(blanked):
+        if _OTHER_REPO_RE.search(segment) or _DRY_RUN_RE.search(segment):
+            continue
+        if _GIT_COMMIT_RE.search(segment):
+            return segment
+    return None
 
 
 def _git(cwd: str, *args: str) -> str | None:
@@ -97,14 +117,17 @@ def changed_lines(diff: str) -> int:
     return sum(1 for line in body if line.startswith(("+", "-")))
 
 
-def review_scope_digest(cwd: str, command: str) -> str | None:
+def review_scope_digest(cwd: str, segment: str) -> str | None:
     """Digest of the code about to be committed, or None if it is not worth a round.
+
+    Takes the committing segment rather than the whole Bash call: `-a` in an earlier command
+    (`git stash -a && git commit -m x`) says nothing about what this commit stages.
 
     The digest is what makes the hook idempotent: a commit rejected by pre-commit and
     retried carries the same content, and re-dispatching the whole panel over it is pure
     waste. Once the agent fixes something the content changes and the panel runs again.
     """
-    diff = _git(cwd, "diff", "HEAD" if _STAGE_ALL_RE.search(command) else "--cached")
+    diff = _git(cwd, "diff", "HEAD" if _STAGE_ALL_RE.search(segment) else "--cached")
     if not diff or changed_lines(diff) < MIN_CHANGED_LINES:
         return None
     return hashlib.sha256(diff.encode()).hexdigest()
@@ -137,14 +160,15 @@ def main() -> None:
     if data.get("tool_name") != "Bash":
         return
     command = data.get("tool_input", {}).get("command", "")
-    if not is_reviewable_commit(command):
+    segment = committing_segment(command)
+    if segment is None:
         return
 
     cwd = data.get("cwd") or "."
     toplevel = _git(cwd, "rev-parse", "--show-toplevel")
     if toplevel is None:
         return  # not a git repo — the commit will fail on its own
-    digest = review_scope_digest(cwd, command)
+    digest = review_scope_digest(cwd, segment)
     if digest is None:
         return
     repo = toplevel.strip()

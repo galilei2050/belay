@@ -854,6 +854,11 @@
         ],
         "decision": "deny",
         "reason": "Env files blocked"
+      },
+      {
+        "fn": "tee_writes_outside_project",
+        "decision": "deny",
+        "reason": "`tee` to a path outside the project writes to the user's machine — the same write a `>` redirect is denied for. Tee inside the project (`.scratch/` for throwaway output), or to `/tmp/` if it must be out-of-tree."
       }
     ],
     "default": "allow"
@@ -1609,32 +1614,32 @@
   "bash": {
     "rules": [],
     "default": "deny",
-    "reason": "Use the Bash tool directly or chain commands with && instead"
+    "reason": "A nested shell hides its script from every rule here. Run the commands directly in the Bash tool, or chain them with &&. If this is a downloaded script (`curl … | sh`), that is the shape being refused: fetch it to a file first, read it, then run the specific commands it needs — an unread script from the network gets no shell."
   },
   "sh": {
     "rules": [],
     "default": "deny",
-    "reason": "Use the Bash tool directly or chain commands with && instead"
+    "reason": "A nested shell hides its script from every rule here. Run the commands directly in the Bash tool, or chain them with &&. If this is a downloaded script (`curl … | sh`), that is the shape being refused: fetch it to a file first, read it, then run the specific commands it needs — an unread script from the network gets no shell."
   },
   "dash": {
     "rules": [],
     "default": "deny",
-    "reason": "Use the Bash tool directly or chain commands with && instead"
+    "reason": "A nested shell hides its script from every rule here. Run the commands directly in the Bash tool, or chain them with &&. If this is a downloaded script (`curl … | sh`), that is the shape being refused: fetch it to a file first, read it, then run the specific commands it needs — an unread script from the network gets no shell."
   },
   "zsh": {
     "rules": [],
     "default": "deny",
-    "reason": "Use the Bash tool directly or chain commands with && instead"
+    "reason": "A nested shell hides its script from every rule here. Run the commands directly in the Bash tool, or chain them with &&. If this is a downloaded script (`curl … | sh`), that is the shape being refused: fetch it to a file first, read it, then run the specific commands it needs — an unread script from the network gets no shell."
   },
   "ksh": {
     "rules": [],
     "default": "deny",
-    "reason": "Use the Bash tool directly or chain commands with && instead"
+    "reason": "A nested shell hides its script from every rule here. Run the commands directly in the Bash tool, or chain them with &&. If this is a downloaded script (`curl … | sh`), that is the shape being refused: fetch it to a file first, read it, then run the specific commands it needs — an unread script from the network gets no shell."
   },
   "fish": {
     "rules": [],
     "default": "deny",
-    "reason": "Use the Bash tool directly or chain commands with && instead"
+    "reason": "A nested shell hides its script from every rule here. Run the commands directly in the Bash tool, or chain them with &&. If this is a downloaded script (`curl … | sh`), that is the shape being refused: fetch it to a file first, read it, then run the specific commands it needs — an unread script from the network gets no shell."
   },
   "command": {
     "rules": [],

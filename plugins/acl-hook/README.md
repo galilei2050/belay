@@ -70,7 +70,7 @@ Aimed at "experienced developer who wants to stop clicking approve":
 | `allow` — read-only inspection | `ls`, `cat` (not `.env*`), `grep`, `rg`, `find`, `ps`, `git status/diff/log/branch`, `npm ls`, `pip show` |
 | `allow` — reversible local work | `git add <paths>`, `git commit`, `git merge`, `git revert`, `git config <k> <v>`, `git pull`, `git push <feature-branch>`, `git branch -D`, `docker build/rm/compose`, `make`, `rm` inside `.scratch/` |
 | `ask` — legitimate, but the effect leaves your working copy | `npm install`, `pip install`, `curl -X POST` to a remote host, `systemctl restart`, `gh pr comment`, `gh issue create`, `gcloud … deploy`, `docker push` |
-| `deny` — destructive, or can't work under an agent | `git push --force`, `git push` to `main`/`master`, `git commit` on a branch whose PR already merged, `git reset`, `git rebase`, `git checkout <path>` / `git restore <path>`, `git stash drop`/`clear`, `git add -A`, `git clean -f`, `gh pr merge`, `docker prune`, `sudo`, `eval`, `bash file.sh`, `cat .env`, reading `.git/`, `rm` outside `.scratch/`, heredocs, bare interactive `claude` |
+| `deny` — destructive, or can't work under an agent | `git push --force`, `git push` to `main`/`master`, `git commit` on a branch whose PR already merged, `git reset`, `git rebase`, `git checkout <path>` / `git restore <path>`, `git stash drop`/`clear`, `git add -A`, `git clean -f`, `gh pr merge`, `docker prune`, `sudo`, `eval`, `bash file.sh`, `cat .env`, reading `.git/`, `rm` outside `.scratch/`, `>` / `tee` writing outside the project or into `.git/`, heredocs, bare interactive `claude` |
 
 Every `ask` stalls the agent and costs you a prompt, so the bar for one is high:
 the command has to reach outside this working copy. Anything local and

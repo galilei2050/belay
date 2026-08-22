@@ -685,6 +685,47 @@ def test_rm_inside_project_source_is_denied(logger):
     assert ".scratch" in reason
 
 
+# ── writes that reach past the project: `>` and `tee` ───────────────────────
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo hi > /etc/hosts",
+        "echo x >> ~/.bashrc",
+        "cat key > ~/.ssh/authorized_keys",
+        "echo ref > .git/HEAD",
+        "echo hi | tee /etc/hosts",
+        "echo hi | tee -a ~/.ssh/authorized_keys",
+    ],
+)
+def test_a_write_past_the_project_boundary_is_denied(monkeypatch, capsys, command):
+    """A redirect is a write: `rm README.md` was denied while `echo x > README.md` was not.
+
+    Driven through `main` because the redirect check is an AST gate — `check_command` never
+    sees the redirect node, and a test at that level would pass while the hole stayed open.
+    """
+    out = via_main(monkeypatch, capsys, command)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo x > app/generated.py",
+        "echo x > .scratch/out.txt",
+        "pytest -q > /tmp/out.log",
+        "echo x > /dev/null",
+        "make ci 2>&1 | tail -5",
+        "make ci | tee .scratch/ci.log",
+    ],
+)
+def test_a_write_the_agent_needs_is_left_alone(monkeypatch, capsys, command):
+    """In-tree output, the scratch dir, the temp roots and `2>&1` are how the agent works."""
+    out = via_main(monkeypatch, capsys, command)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
 def test_rm_tmp_under_project_is_denied(logger):
     # A project's own top-level tmp/ is NOT the scratch dir.
     assert decide("rm tmp/scratch.json", logger)[0] == "deny"

@@ -20,6 +20,7 @@ import os
 import shlex
 import subprocess
 import sys
+import tempfile
 from fnmatch import fnmatch
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -305,6 +306,37 @@ def all_paths_under_scratch(args: list[str]) -> bool:
         if real != scratch_root and scratch_root not in real.parents:
             return False
     return has_path
+
+
+# Where a write may land outside the project. Everything else out there is the user's machine:
+# `~/.bashrc`, `~/.ssh/authorized_keys`, `/etc/hosts` — files no task needs to overwrite, and
+# whose damage no `git checkout` undoes. `/dev/*` are sinks, and both temp roots are areas the
+# harness already hands the agent for throwaway output.
+_WRITABLE_OUTSIDE = ("/dev/", tempfile.gettempdir() + "/", str(Path.home() / ".claude" / "jobs") + "/")
+
+
+def write_escapes_project(target: str) -> bool:
+    """True iff writing to `target` lands outside the project, or inside its `.git`.
+
+    One boundary, shared by every way a Bash call writes a file — a `>` redirect, or a program
+    like `tee` that takes the path as an argument.
+    """
+    if target.startswith(_WRITABLE_OUTSIDE):
+        return False
+    project_root = Path(PROJECT_DIR).resolve()
+    # `expanduser` first: the shell expands `~` before the write happens, and treating
+    # `~/.bashrc` as a relative path would place the user's dotfile inside the project.
+    expanded = Path(target).expanduser()
+    candidate = expanded if expanded.is_absolute() else project_root / expanded
+    real = candidate.resolve()
+    if project_root not in real.parents:
+        return True
+    return any(part == ".git" for part in real.relative_to(project_root).parts)
+
+
+def tee_writes_outside_project(args: list[str]) -> bool:
+    """True iff `tee` was given a path outside the project — the redirect hole, spelled as a program."""
+    return any(write_escapes_project(arg) for arg in args if not arg.startswith("-"))
 
 
 def ensure_scratch_dir() -> None:
@@ -797,6 +829,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "git_write_on_merged_branch": git_write_on_merged_branch,
     "git_discards_worktree_changes": git_discards_worktree_changes,
     "any_path_under_git": any_path_under_git,
+    "tee_writes_outside_project": tee_writes_outside_project,
 }
 
 
@@ -854,6 +887,33 @@ def has_function_def(trees: Iterable[BashNode]) -> bool:
             if getattr(node, "kind", None) == "function":
                 return True
     return False
+
+
+def _redirect_targets(trees: Iterable[BashNode]) -> Iterator[str]:
+    """Every filename a `>` / `>>` in these trees writes to.
+
+    `2>&1` carries an int on `output` and `> $LOG` a non-literal word; neither names a path we
+    can vet, and both are left to the other gates rather than guessed at.
+    """
+    for tree in trees:
+        for node, _parent, _pos in _walk_with_parent(tree):
+            if getattr(node, "kind", None) != "redirect":
+                continue
+            output = getattr(node, "output", None)
+            word = getattr(output, "word", None)
+            if isinstance(word, str) and "$" not in word:
+                yield word
+
+
+def redirect_escapes_project(trees: Iterable[BashNode]) -> bool:
+    """True iff a redirect writes outside the project, or into its `.git`.
+
+    The hole this closes: every rule in `acl.json` judges the *command*, so `rm README.md` is
+    denied while `echo x > README.md` — same file, gone the same way — was allowed, and
+    `echo x > ~/.ssh/authorized_keys` with it. A redirect is a write; it gets the same
+    boundary the Write tool has.
+    """
+    return any(write_escapes_project(target) for target in _redirect_targets(trees))
 
 
 def _c_arg(words: list[str]) -> str | None:
@@ -1147,9 +1207,17 @@ _PYTHON_C_REASON = (
     "hidden in one arg it bypasses the size gate and isn't reviewable. Options: (1) pipe data in; "
     "(2) Write the script to a file and run it; (3) split into simple Bash builtins or `jq`."
 )
+_REDIRECT_REASON = (
+    "A `>` / `>>` outside the project is a write to the user's machine, and no rule here reads "
+    "redirect targets — so `echo x > ~/.bashrc` would land unchecked while `rm` on the same file "
+    "is denied. Write inside the project (`.scratch/` for throwaway output), or to `/tmp/` if it "
+    "must be out-of-tree. `.git/` is off-limits: use git commands. If the user's own dotfile "
+    "genuinely has to change, hand them the line to run."
+)
 _AST_DETECTORS: list[tuple[Callable[[Iterable[BashNode]], bool], str, str]] = [
     (has_function_def, _FUNCTION_DEF_REASON, "function_def"),
     (python_c_not_after_pipe, _PYTHON_C_REASON, "python_c_standalone"),
+    (redirect_escapes_project, _REDIRECT_REASON, "redirect_outside_project"),
 ]
 
 

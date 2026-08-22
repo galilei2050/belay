@@ -55,6 +55,14 @@ def test_prompt_demands_the_clean_verdict(prompt):
         "git commit -am 'wip'",
         "git commit --amend --no-edit",
         "make lint && git commit -F .scratch/COMMIT_MSG",
+        # A newline separates two commands exactly like `;` does, and the agent writes them
+        # this way: 3 of the 29 multi-line Bash calls in one real session commit on a later line.
+        "git add -A\ngit commit -m x",
+        "make lint\nmake test\ngit commit -m x",
+        # The flag is prose here, not a flag — the commit is real.
+        'git commit -m "stop passing --dry-run to this"',
+        # `--dry-run` belongs to the segment it was written on, not to the commit beside it.
+        "git commit -m x && git push --dry-run",
     ],
 )
 def test_a_commit_puts_the_panel_on_the_agents_desk(run_hook, repo, command):
@@ -70,6 +78,12 @@ def test_a_commit_puts_the_panel_on_the_agents_desk(run_hook, repo, command):
         "git add -A",
         "git show HEAD",
         "grep -r commit .",
+        # Another repository's commit: the diff this hook can measure is the session's own,
+        # so reviewing it against that commit would be reviewing the wrong code.
+        "git -C /somewhere/else commit -m x",
+        "git --git-dir=/elsewhere/.git commit -m x",
+        # The command is quoted prose, not a command.
+        "echo 'run git commit next'",
     ],
 )
 def test_anything_that_does_not_create_a_commit_is_left_alone(run_hook, repo, command):

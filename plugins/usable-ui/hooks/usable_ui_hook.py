@@ -82,8 +82,13 @@ EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 # is what keeps a commit message from being parsed as part of the command.
 _QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
 # `git -C dir commit`, `foo && git commit -m x`, `git commit`. Leading `-`/`--` options
-# belong to git itself (-C, --no-pager); the subcommand is the first bare word.
-_GIT_COMMIT_RE = re.compile(r"(?:^|[;&|(]|&&)\s*git\b(?:\s+-{1,2}\S+(?:\s+\S+)?)*\s+commit\b")
+# belong to git itself (-C, --no-pager); the subcommand is the first bare word. A newline
+# separates two commands exactly like `;` does — without it in the class, `git add -A` on one
+# line and `git commit` on the next was invisible here.
+_GIT_COMMIT_RE = re.compile(r"(?:^|[;&|(\n]|&&)\s*git\b(?:\s+-{1,2}\S+(?:\s+\S+)?)*\s+commit\b")
+# Where the commit's own command ends. Flags after this belong to the next command, and
+# `git commit -m x && git push --dry-run` is a real commit beside a dry run, not a dry run.
+_SEGMENT_END_RE = re.compile(r"[;&|\n)]")
 _DRY_RUN_RE = re.compile(r"(?<![\w-])--dry-run(?![\w-])")
 # `-a` / `-am` stage tracked files at commit time, so the index is empty until then and
 # the scope has to come from the worktree instead. `(?!-)` keeps `--amend` out.
@@ -144,7 +149,8 @@ def commit_flags(command: str) -> str | None:
     match = _GIT_COMMIT_RE.search(unquoted)
     if match is None:
         return None
-    flags = unquoted[match.start() :]
+    end = _SEGMENT_END_RE.search(unquoted, match.end())
+    flags = unquoted[match.start() : end.start() if end else len(unquoted)]
     return None if _DRY_RUN_RE.search(flags) else flags
 
 
