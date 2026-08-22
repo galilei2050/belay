@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Delegation gate for Claude Code subagents — foreground only, under a hard tool-call budget.
+"""Delegation gate for Claude Code subagents — background only, under a hard tool-call budget.
 
 Two ways handing work to a subagent goes wrong, one plugin:
 
-* **Detached.** A background subagent gives the caller nothing to block on, so the next step is
-  always polling the task output file in a wait loop — minutes of wall-clock and a context full of
-  `tail` output for a result the foreground call would have handed over directly. Denied at the
-  `Agent` call, where `run_in_background: false` still fixes it.
+* **Blocking.** A foreground subagent freezes the caller for its whole run — minutes during which
+  the session can do nothing else, including the parts of the task that never needed the subagent's
+  answer. The harness re-invokes the caller when a background agent finishes, so the result arrives
+  without anyone waiting for it, and several agents can run at once. Denied at the `Agent` call,
+  where dropping `run_in_background: false` fixes it.
 * **Oversized.** An open-ended slice makes the subagent grind: it keeps exploring, its window fills
   with its own tool output, and it answers from that. Bounded by counting its tool calls and cutting
   them off at `BUDGET`, which forces an answer from what it already has and names what it missed.
@@ -44,12 +45,13 @@ STALE_AFTER_SECONDS = 24 * 60 * 60
 
 _UNSAFE_IN_NAME = re.compile(r"[^A-Za-z0-9_-]")
 
-_BACKGROUND_DENIED = (
-    "Subagents must run in the foreground — pass `run_in_background: false` and call it again. "
-    "A detached agent hands you nothing to block on, so the next step is always polling its output "
-    "file in a wait loop: minutes of wall-clock and a context full of `tail` output, for a result "
-    "the foreground call returns to you directly. If the work feels too big to wait for, that is a "
-    "reason to split it into smaller agents, not to detach it."
+_FOREGROUND_DENIED = (
+    "Subagents run in the background — drop `run_in_background: false` and call it again. A "
+    "foreground agent freezes this session for its entire run, and nothing about waiting makes its "
+    "answer better. Detached, the harness re-invokes you the moment it finishes, several agents can "
+    "run at once, and you keep working on the parts of the task that never needed its answer. Do "
+    "not poll its output file — the notification is the signal, and a wait loop is the one thing "
+    "that turns a background agent back into a blocking one."
 )
 
 _SLICE_THE_TASK = (
@@ -120,9 +122,9 @@ def judge(data: dict[str, object]) -> Verdict:
     tool_input = data.get("tool_input")
     if data.get("tool_name") == "Agent" and isinstance(tool_input, dict):
         # Absent means background: the Agent tool detaches by default, so only an explicit false
-        # counts as foreground.
-        if tool_input.get("run_in_background") is not False:
-            deny = _BACKGROUND_DENIED
+        # counts as foreground — and that is the one shape denied.
+        if tool_input.get("run_in_background") is False:
+            deny = _FOREGROUND_DENIED
         else:
             context.append(_SLICE_THE_TASK)
 

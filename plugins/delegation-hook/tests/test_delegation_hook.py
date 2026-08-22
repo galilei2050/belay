@@ -39,21 +39,28 @@ def burn(agent_id, calls):
         record_call(agent_id)
 
 
-# ── subagents must run in the foreground ─────────────────────────────────────
+# ── subagents must run in the background ─────────────────────────────────────
 
 
-@pytest.mark.parametrize("background", [True, None])
-def test_background_spawn_denied(monkeypatch, capsys, background):
-    """Explicit background and the omitted default (which detaches) both deny."""
-    out = via_main(monkeypatch, capsys, **spawn(background))
+def test_foreground_spawn_denied(monkeypatch, capsys):
+    """A foreground agent freezes the session for its whole run; the harness notifies instead."""
+    out = via_main(monkeypatch, capsys, **spawn(background=False))
     assert out["permissionDecision"] == "deny"
     assert "run_in_background: false" in out["permissionDecisionReason"]
 
 
-def test_foreground_spawn_allowed_with_slicing_rule(monkeypatch, capsys):
-    out = via_main(monkeypatch, capsys, **spawn(background=False))
+@pytest.mark.parametrize("background", [True, None])
+def test_background_spawn_allowed_with_slicing_rule(monkeypatch, capsys, background):
+    """Explicit background and the omitted default (which detaches) are both the wanted shape."""
+    out = via_main(monkeypatch, capsys, **spawn(background))
     assert "permissionDecision" not in out  # never allow: a sibling hook's verdict must survive
     assert f"{BUDGET} tool calls" in out["additionalContext"]
+
+
+def test_the_denial_does_not_send_the_agent_to_poll(monkeypatch, capsys):
+    """Waiting in a loop is the failure this plugin exists to prevent, in either direction."""
+    reason = via_main(monkeypatch, capsys, **spawn(background=False))["permissionDecisionReason"]
+    assert "poll" in reason.lower()
 
 
 def test_non_agent_tool_in_main_thread_is_silent(monkeypatch, capsys):
@@ -104,14 +111,14 @@ def test_main_thread_has_no_budget(monkeypatch, capsys):
 def test_spent_budget_denies_a_spawn_too(monkeypatch, capsys):
     """An out-of-budget subagent can't delegate its way out — the deny outranks the slicing rule."""
     burn(SUBAGENT, BUDGET)
-    out = via_main(monkeypatch, capsys, agent_id=SUBAGENT, **spawn(background=False))
+    out = via_main(monkeypatch, capsys, agent_id=SUBAGENT, **spawn(background=True))
     assert out["permissionDecision"] == "deny"
     assert "budget is spent" in out["permissionDecisionReason"]
 
 
 def test_warning_and_slicing_rule_are_delivered_together(monkeypatch, capsys):
     burn(SUBAGENT, WARN_FROM - 1)
-    out = via_main(monkeypatch, capsys, agent_id=SUBAGENT, **spawn(background=False))
+    out = via_main(monkeypatch, capsys, agent_id=SUBAGENT, **spawn(background=True))
     assert f"{WARN_FROM}/{BUDGET} used" in out["additionalContext"]
     assert f"This subagent gets {BUDGET} tool calls" in out["additionalContext"]
 
