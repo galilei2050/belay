@@ -48,7 +48,7 @@
     {
       "name": "pr-flow",
       "source": "./plugins/pr-flow",
-      "description": "Skill that writes PR descriptions a reviewer can act on, plus a PostToolUse hook that says what the branch still owes — a push, a PR, a refreshed body — right after each commit and push."
+      "description": "Skill that writes PR descriptions a reviewer can act on, a CI script that blocks to a verdict and prints only the failing log, plus a PostToolUse hook that says what the branch still owes — a push, a PR, a refreshed body, a green CI — right after each commit and push."
     }
   ]
 }

@@ -8,7 +8,14 @@ Keyed by `Step.kind` and formatted with the whole step, so a text uses whichever
 needs and ignores the rest.
 """
 
+from pathlib import Path
+
 SKILL = "pr-flow:pr-description"
+
+# Absolute, and resolved here: a hook's `additionalContext` is text, so nothing expands
+# `${CLAUDE_PLUGIN_ROOT}` after we emit it, and a relative path breaks the moment the agent runs
+# from a subdirectory. The agent must be able to paste the line as-is.
+CI = f"python3 {Path(__file__).resolve().parent.parent / 'scripts' / 'ci.py'}"
 
 NUDGES = {
     "push": (
@@ -22,13 +29,17 @@ NUDGES = {
         "skill — it produces a description a reviewer can act on: what was actually broken (with "
         "the numbers you measured), a mermaid diagram of the mechanism, what changed, what you "
         "verified, the risk and the rollback. A bullet list of commit subjects is not a PR "
-        "description; the diff already says that."
+        "description; the diff already says that. Then find out what CI does with it: `" + CI + " "
+        "wait` blocks until the checks conclude and prints the failing log and nothing else."
     ),
     "update": (
         "PR #{number} already covers `{branch}` ({url}), and you just pushed to it. Re-read its "
         "body: if this push changed what the PR does, what you verified, or what it leaves open, "
         "update the description — `gh pr edit {number} --body-file <file>`; the `" + SKILL + "` "
         "skill has the shape. A description that describes the first commit of a five-commit "
-        "branch is worse than none. If nothing material changed, say so in one line and move on."
+        "branch is worse than none. If nothing material changed, say so in one line and move on. "
+        "Either way this push started a CI run you have not seen: `" + CI + " wait` blocks until "
+        "the checks conclude and prints the failing log and nothing else. A branch is finished "
+        "when CI is green, not when the push succeeded."
     ),
 }
