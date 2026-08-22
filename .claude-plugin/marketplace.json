@@ -34,6 +34,11 @@
       "name": "deep-investigation",
       "source": "./plugins/deep-investigation",
       "description": "Skill + three subagents that answer a why-question by enumerating every hypothesis first, then falsifying branches until one mechanism accounts for the whole effect."
+    },
+    {
+      "name": "usable-ui",
+      "source": "./plugins/usable-ui",
+      "description": "Skill deciding UI wording, control, placement and states, plus five read-only UI reviewers, supplied by a PreToolUse hook while UI is written and once it is committed."
     }
   ]
 }
