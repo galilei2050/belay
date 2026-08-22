@@ -53,7 +53,8 @@ _STAGE_ALL_RE = re.compile(r"(?<![\w-])(?:-(?!-)\w*a\w*|--all)(?![\w-])")
 _PROMPT = """\
 You just ran `git commit`. Before moving on, put that commit through the review panel.
 
-Dispatch all {count} reviewers **in a single message** so they run in parallel. Each is
+Dispatch all {count} reviewers **in a single message**, each with `run_in_background: false`,
+so they run in parallel and hand their reports straight back. Each is
 read-only and reviews the same scope: the diff of the commit that just landed
 (`git show HEAD`) — plus whatever surrounding files it needs to read for context.
 

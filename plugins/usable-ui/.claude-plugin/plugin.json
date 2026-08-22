@@ -1,0 +1,8 @@
+{
+  "name": "usable-ui",
+  "version": "0.1.1",
+  "description": "A skill that decides UI wording, control, placement and states, five read-only UI reviewers, and a PreToolUse hook that supplies the first while UI is written and the second once it is committed.",
+  "author": {
+    "name": "galilei2050"
+  }
+}

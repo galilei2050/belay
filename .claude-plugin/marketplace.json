@@ -26,6 +26,11 @@
       "description": "PreToolUse file-tool gate: denies file edits (Write/Edit/MultiEdit/NotebookEdit) while a protected branch (main/master) is checked out."
     },
     {
+      "name": "delegation-hook",
+      "source": "./plugins/delegation-hook",
+      "description": "PreToolUse delegation gate: subagents must run in the foreground, and each one gets a 30 tool-call budget before its tools are cut off."
+    },
+    {
       "name": "review-panel",
       "source": "./plugins/review-panel",
       "description": "A panel of eight read-only reviewer subagents, dispatched by a PreToolUse hook over every commit of 64+ changed lines."
@@ -34,6 +39,11 @@
       "name": "deep-investigation",
       "source": "./plugins/deep-investigation",
       "description": "Skill + three subagents that answer a why-question by enumerating every hypothesis first, then falsifying branches until one mechanism accounts for the whole effect."
+    },
+    {
+      "name": "usable-ui",
+      "source": "./plugins/usable-ui",
+      "description": "Skill deciding UI wording, control, placement and states, plus five read-only UI reviewers, supplied by a PreToolUse hook while UI is written and once it is committed."
     }
   ]
 }

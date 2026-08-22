@@ -160,10 +160,9 @@ Every command produces a `received` line before any work and exactly one
   `matched=` naming what fired: a `rule`, a `default:<x>`, or a gate
   (`agent_heredoc`, `command_too_long`, `autonomous_ask_denied`, …).
 - `final=` — the verdict the agent actually got, after the strictest-wins merge
-  across sub-commands. Variants: `final=rewrite` (an unbounded command was
-  silently wrapped in `timeout` — `matched=` says which rule,
-  `wait_loop_unbounded` or `background_unbounded`), `final=skip` (not a Bash
-  call), `final=error`
+  across sub-commands. Variants: `final=rewrite` (a detached command was
+  silently wrapped in `timeout` — `matched=background_unbounded`), `final=skip`
+  (not a Bash call), `final=error`
   (the hook itself crashed — the traceback follows, and Claude Code falls back
   to prompting).
 
@@ -183,9 +182,10 @@ If the log has no recent lines at all, the hook isn't running — check that
 The hook writes a single JSON object on stdout: a `PreToolUse`
 `hookSpecificOutput` carrying `permissionDecision` (`allow` / `ask` / `deny`)
 and `permissionDecisionReason`. An `allow` rule with a reason delivers it as
-`additionalContext` (a nudge to the agent, no prompt); an unbounded command — a
-poll loop, or anything with `run_in_background: true` — comes back as `allow`
-plus an `updatedInput` that wraps it in `timeout`.
+`additionalContext` (a nudge to the agent, no prompt); a detached command
+(`run_in_background: true`) comes back as `allow` plus an `updatedInput` that
+wraps it in `timeout`. A poll loop that carries no `timeout` of its own is
+denied, with the three ways out in the reason.
 
 ## License
 
