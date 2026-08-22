@@ -1,9 +1,9 @@
 """Test fixtures for pr-flow.
 
-Both hooks are exercised at their real boundary: the script Claude Code runs, fed a JSON payload
-on stdin, against a real git repo with a real remote. `gh` is the one thing faked — a stub on
-PATH — because the whole decision hinges on telling "no PR here" apart from "gh cannot answer",
-and only a stub produces both on demand.
+The hook is exercised at its real boundary: the script Claude Code runs, fed a JSON payload on
+stdin, against a real git repo with a real remote. `gh` is the one thing faked — a stub on PATH
+— because the whole decision hinges on telling "no PR here" apart from "gh cannot answer", and
+only a stub produces both on demand.
 """
 
 import json
@@ -122,8 +122,8 @@ def commit(git):
 def run_hook(tmp_path):
     """Run one of the hooks the way Claude Code does, and return its parsed output (None if silent).
 
-    `HOME` points at tmp_path so the Stop backstop's dedupe state never touches the real
-    `~/.claude`, and a stub `gh` is prepended to PATH so no test can reach GitHub.
+    A stub `gh` is prepended to PATH so no test can reach GitHub, and `HOME` points at tmp_path
+    so nothing a hook might write lands in the real `~/.claude`.
     """
     home = tmp_path / "home"
     home.mkdir()
@@ -166,16 +166,5 @@ def bash(run_hook):
             "tool_input": {"command": command},
         }
         return run_hook("nudge_after_git.py", payload, cwd, gh_mode)
-
-    return run
-
-
-@pytest.fixture
-def stop(run_hook):
-    """Run `require_pr.py` the way Claude Code does when the agent tries to end its turn."""
-
-    def run(cwd: Path, gh_mode: str = "none", *, active: bool = False) -> HookOutput | None:
-        payload: dict[str, object] = {"hook_event_name": "Stop", "stop_hook_active": active}
-        return run_hook("require_pr.py", payload, cwd, gh_mode)
 
     return run

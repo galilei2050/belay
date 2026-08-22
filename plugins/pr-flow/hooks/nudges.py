@@ -2,13 +2,10 @@
 """Everything this plugin says to the agent, in one place.
 
 Kept apart from the logic because the wording is the product here: the hook's whole job is to
-put one sentence in front of the agent at the moment it would otherwise walk away. `NUDGES` is
-advisory context after a git command; `REFUSALS` comes back as a blocked Stop, so each one
-opens with why the turn cannot end and then names the single action that clears it.
+put one sentence in front of the agent at the moment it would otherwise walk away.
 
-Both are keyed by `Step.kind` and formatted with the whole step, so a text uses whichever
-fields it needs and ignores the rest. A kind missing from `REFUSALS` is a kind that can never
-block a turn.
+Keyed by `Step.kind` and formatted with the whole step, so a text uses whichever fields it
+needs and ignores the rest.
 """
 
 SKILL = "pr-flow:pr-description"
@@ -33,18 +30,5 @@ NUDGES = {
         "update the description — `gh pr edit {number} --body-file <file>`; the `" + SKILL + "` "
         "skill has the shape. A description that describes the first commit of a five-commit "
         "branch is worse than none. If nothing material changed, say so in one line and move on."
-    ),
-}
-
-REFUSALS = {
-    "push": (
-        "Do not end the turn yet: `{branch}` has {unpushed} unpushed commit(s). Push the branch, "
-        "then open its PR (or refresh the existing one) with the `" + SKILL + "` skill. If you "
-        "genuinely must leave the commits local, say why in one sentence and stop — this refusal "
-        "fires once."
-    ),
-    "open": (
-        "Do not end the turn yet: `{branch}` is pushed but has no open PR, so nobody can review "
-        "or merge this work. Run the `" + SKILL + "` skill and open it. This refusal fires once."
     ),
 }

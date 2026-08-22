@@ -70,6 +70,23 @@ def test_a_commit_in_another_repo_is_not_ours(bash, repo, commit):
     assert bash("git -C /somewhere/else commit -m x", repo) is None
 
 
+def test_a_repo_with_no_remote_is_silent(bash, tmp_path, git, commit):
+    """Nothing to push to and no PR to open."""
+    root = tmp_path / "local"
+    root.mkdir()
+    git(root, "init", "-q", "-b", "feature")
+    git(root, "config", "user.email", "t@example.com")
+    git(root, "config", "user.name", "t")
+    commit(root)
+    assert bash("git commit -m x", root) is None
+
+
+def test_outside_a_repo_is_silent(bash, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert bash("git commit -m x", plain) is None
+
+
 def test_unrelated_bash_command_is_silent(bash, repo, commit):
     commit(repo)
     assert bash("pytest -q", repo) is None

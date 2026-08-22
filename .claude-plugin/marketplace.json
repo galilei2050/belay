@@ -48,7 +48,7 @@
     {
       "name": "pr-flow",
       "source": "./plugins/pr-flow",
-      "description": "Skill that writes PR descriptions a reviewer can act on, plus hooks that nudge after every commit/push and refuse to end the turn while the branch is unpushed or has no open PR."
+      "description": "Skill that writes PR descriptions a reviewer can act on, plus a PostToolUse hook that says what the branch still owes — a push, a PR, a refreshed body — right after each commit and push."
     }
   ]
 }

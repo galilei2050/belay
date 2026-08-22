@@ -3,10 +3,11 @@
 
 Fires at the one moment the branch is already what the agent is thinking about — the commit
 just landed, the push just went out — and states the next step then, instead of hoping the
-agent remembers it four tool calls later. Advisory only: it emits `additionalContext` and no
-decision, so it can never fail a git command.
+agent remembers it four tool calls later.
 
-`require_pr.py` is the backstop for when this is ignored.
+Advisory by design: it emits `additionalContext` and no decision, so it can never fail a git
+command and never blocks the agent. Saying the next step once, at the right moment, is the
+whole intervention.
 """
 
 from __future__ import annotations

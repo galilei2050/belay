@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """What the current branch still owes: a push, a PR, or a refreshed PR body.
 
-The one place in this plugin that talks to git and `gh`. Both hook scripts ask it the same
-question and differ only in what they do with the answer, so the repo is read exactly one way:
-from the repository itself, never from the output of the command the agent just ran. `ahead`
-and the PR list are facts; "the push probably worked" is not.
+The one place in this plugin that talks to git and `gh`. The repo is read exactly one way: from
+the repository itself, never from the output of the command the agent just ran. `ahead` and the
+PR list are facts; "the push probably worked" is not.
 
-A `Step` carries facts, not sentences — `nudges.py` turns it into either wording, and
-`require_pr.py` decides which kinds may block a turn.
+A `Step` carries facts, not sentences — `nudges.py` turns it into the wording.
 """
 
 from __future__ import annotations
@@ -31,11 +29,10 @@ GH_TIMEOUT_S = float(os.environ.get("PR_FLOW_GH_TIMEOUT_S", "15"))
 
 
 class Step(NamedTuple):
-    """What the branch still needs, and the facts each wording needs to say it.
+    """What the branch still needs, and the facts the wording needs to say it.
 
-    ``kind`` doubles as the dedupe key for the Stop backstop: the agent gets one refusal per
-    (HEAD, kind), so a push turns "push" into "open" and earns a second one, while an agent
-    that answers a refusal in words is not trapped in a loop.
+    ``kind`` selects the text in `nudges.py`; the remaining fields are what that text
+    interpolates, and each kind uses only some of them.
     """
 
     kind: str
