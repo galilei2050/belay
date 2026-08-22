@@ -1,0 +1,8 @@
+{
+  "name": "delegation-hook",
+  "version": "0.1.0",
+  "description": "PreToolUse delegation gate: subagents must run in the foreground, and each one gets a 30 tool-call budget before its tools are cut off.",
+  "author": {
+    "name": "galilei2050"
+  }
+}
