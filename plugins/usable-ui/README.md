@@ -16,21 +16,11 @@ Three parts, one concern:
 ## Why this exists
 
 Rules in the model's context is a measured intervention, not a hope. Mowar et al. (W4A
-2025) generated 80 banking UIs with GPT-4-turbo and Claude 3.5 Haiku and compared
-accessibility-agnostic against accessibility-oriented prompting:
-
-| Measure | Without rules | With rules |
-|---|---:|---:|
-| Expert-judged violation rate | 58% | **19%** |
-| Mean severity (0–4) | 1.53 | **0.30** |
-| Adequate touch targets | 32% | **100%** |
-| Visible focus indicators | 56% | **98%** |
-| Keyboard operability | 48% | **94%** |
-| ARIA labels | 28% | **95%** |
-
-Aljedaani et al. (2024) found **84%** of ChatGPT-generated websites carried accessibility
-violations with no such prompt; A11yn (2025) cut a code model's inaccessibility rate from
-0.38 to 0.15.
+2025) generated 80 banking UIs with GPT-4-turbo and Claude 3.5 Haiku: expert-judged
+violations fell from **58% to 19%** and adequate touch targets rose from **32% to 100%**
+when the prompt carried the rules. Aljedaani et al. (2024) found **84%** of
+ChatGPT-generated websites carried accessibility violations with no such prompt. The
+per-criterion figures are in `skills/ui-decisions/SKILL.md`.
 
 The same study is why the reviewers are subagents and not a linter: the *automated*
 violation rate barely moved between the two conditions (15.93% → 17.32%) while the expert
@@ -40,23 +30,10 @@ focus order that makes no sense, or an empty state that a failed request also re
 ## The skill
 
 `usable-ui:ui-decisions` classifies the element first — **action, destination, object,
-setting, or event** — and lets the class pick everything downstream:
-
-| Class | Label grammar | Control |
-|---|---|---|
-| Action | imperative verb + object — `Send SMS` | `<button>` |
-| Destination | noun — `Billing` | `<a href>` |
-| Object / view | noun phrase — `Payment methods` | heading, tab |
-| Setting (immediate) | what it controls — `Email notifications` | switch |
-| Setting (deferred) | what it controls | checkbox |
-| Event | object + past tense — `SMS sent` | list row |
-
-Then: the label (verb-first, never `OK`/`Yes`/`Submit` on a decision, natural word order,
-sentence case, 1–3 words), the control (button vs link, switch vs checkbox, radios vs
-select at 2–7 vs 8+, modal vs inline vs page), the placement (dialog order by platform,
-form submit by the form rule, dividers only where whitespace cannot carry the boundary),
-the five states every screen owes, and the accessibility floor (24×24 CSS px / 44 pt /
-48 dp, 4.5:1 and 3:1, names, focus, never colour alone).
+setting, or event** — and lets the class pick everything downstream: the grammar of the
+label (`Send SMS` vs `Outbound SMS` vs `SMS sent`), the control, the placement, and the
+states. The class table and the rules are in `skills/ui-decisions/SKILL.md`; the depth,
+including every threshold, is in `skills/ui-decisions/references/`.
 
 Where design systems genuinely disagree — dialog button order, sentence vs title case,
 on-blur vs on-submit validation — the reference names the disagreement and tells the agent
@@ -85,8 +62,8 @@ A clean reviewer replies exactly `NO FINDINGS`.
 
 One predicate — *is this file a user-facing surface?* — applied at two moments:
 
-- **`Write`/`Edit`/`MultiEdit`/`NotebookEdit`** on a UI file → the rules, **once per
-  session**. Repeating them on every component teaches the agent to skim past them.
+- **`Write`/`Edit`/`MultiEdit`** on a UI file → the rules, **once per session**. Repeating
+  them on every component teaches the agent to skim past them.
 - **`git commit`** whose staged diff touches a UI file → the roster of five, deduplicated by
   a digest of that UI content, so a commit rejected by `pre-commit` and retried does not
   re-dispatch the panel.
@@ -94,12 +71,11 @@ One predicate — *is this file a user-facing surface?* — applied at two momen
 It is **advisory**: it emits only `additionalContext`, never a `permissionDecision`, so the
 call still goes through the normal permission flow and `acl-hook` keeps the last word.
 
-Trigger extensions: `.jsx .tsx .vue .svelte .astro .html .htm .hbs .ejs .pug .erb .haml
-.liquid .twig .njk .mustache .jinja .jinja2 .j2 .blade.php .razor .cshtml .xaml .axaml
-.qml`. Deliberately narrow — `.swift`, `.dart`, `.kt` and stylesheets stay out, because
-telling a widget from a repository means reading the file, which is the reviewers' job and
-not the hook's. In those projects the skill still triggers on its own description, and
-`/ui-review` still works.
+Trigger extensions: the `UI_SUFFIXES` list in `hooks/usable_ui_hook.py` — component and
+template files only. Deliberately narrow: `.swift`, `.dart`, `.kt` and stylesheets stay
+out, because telling a widget from a repository means reading the file, which is the
+reviewers' job and not the hook's. In those projects the skill still triggers on its own
+description, and `/ui-review` still works.
 
 ## Manual entry point
 

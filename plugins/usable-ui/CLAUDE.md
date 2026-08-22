@@ -18,21 +18,26 @@ If a change would make the hook *understand* the UI, it belongs in a reviewer pr
 `deny` would put five subagents between the agent and every `git commit`. Don't "upgrade"
 this to a gate.
 
-## Why the extension list is narrow, and why it stays that way
+## Why the extension list stays narrow
 
-`.swift`, `.dart`, `.kt` and stylesheets are excluded on purpose. SwiftUI, Flutter and
-Compose are genuinely UI, but those extensions also carry repositories, models and
-networking, and telling them apart requires reading the file — which is the reviewers' job.
-A false positive costs five subagents of the user's money on every commit.
+The *why* is in the `UI_SUFFIXES` comment in the hook. The policy is here: the tempting fix
+for the excluded ecosystems is to sniff the content for `Widget`, `@Composable` or
+`View {`. Don't — it makes the hook understand the diff, which is the one thing Scope
+forbids. If Flutter, SwiftUI or Compose need coverage, the honest answer is that the skill
+still triggers on its own description and `/ui-review` still works.
 
-The tempting fix is to sniff the content for `Widget`, `@Composable` or `View {`. Don't: it
-makes the hook understand the diff, which is the one thing Scope forbids. If those
-ecosystems need coverage, the honest answer is that the skill still triggers on its own
-description and `/ui-review` still works.
+## The known gap in the commit-time dedupe
 
-Stylesheets are excluded for a different reason: a contrast or target-size change that
-matters travels in the same commit as the component it styles, and that component is on the
-list. A pure-CSS commit would dispatch five reviewers so that one of them has work.
+`claim_review` runs at `PreToolUse`, i.e. **before** the commit exists. If that `git commit`
+then fails for a reason the content does not change — a rejected message, a signing failure
+— the agent has already been handed a roster pointing at the previous `HEAD`, and the
+identical retry that actually lands is silenced as a duplicate.
+
+Not fixed here, deliberately: the correct key is the resulting commit sha, which a
+`PreToolUse` hook cannot know, and `review-panel` makes the same trade with the same
+digest-of-staged-content design. Changing it in one of the two plugins and not the other
+buys a divergence worth more than the case it fixes. If it is ever fixed, fix both — the
+shape would be a `PostToolUse` claim, not a smarter digest.
 
 ## The lanes, and where they are easiest to blur
 
@@ -87,21 +92,26 @@ lines, the new material belongs in a reference.
 
 ## Testing
 
-```
-uv run pytest plugins/usable-ui/ -q
-uv run ruff check plugins/usable-ui/
-uv run mypy plugins/usable-ui/hooks/usable_ui_hook.py
-```
+`make ci` is the gate, as everywhere in this repo. `uv run pytest plugins/usable-ui/ -q`
+narrows it while iterating.
 
-**Test at the highest level, never the internals.** Every test drives the hook through the
-boundary Claude Code uses — the real script, JSON on stdin, JSON on stdout — via the `hook`
-fixture. Nothing imports `usable_ui_hook`.
+**Test at the highest level, never the internals.** Every test that exercises the hook
+drives it through the boundary Claude Code uses — the real script, JSON on stdin, JSON on
+stdout — via the `hook` fixture. Nothing imports `usable_ui_hook`. The rest read shipped
+artifacts (the agent prompts, `hooks.json`, the command file), because those are what the
+loader reads and the hook never computes them.
 
-Two fixtures make that possible: `repo` builds a real throwaway git repo (the hook's job is
-reading git state, so a mocked git would test nothing), and `hook` points `HOME` at
-`tmp_path` so the dedupe state never touches the real `~/.claude` and each test starts fresh.
-The `hook` fixture holds that `HOME` for the whole test, which is what lets one test assert
-across two calls — that is how the once-per-session and retry-dedupe tests work.
+The fixtures worth knowing about: `clean_git_env` is autouse and drops inherited `GIT_*`
+vars, without which the fixture repo's commits land in belay itself when the suite runs
+under `pre-push`; `repo` builds a real throwaway git repo, because the hook's job is reading
+git state and a mocked git would test nothing; `hook` points `HOME` at `tmp_path / "home"`
+and holds it for the whole test, which is what lets one test assert across two calls — that
+is how the once-per-session and retry-dedupe tests work.
+
+Two invariants the tests pin because nothing else can: the roster in the hook, the roster in
+`commands/ui-review.md`, and the shipped `agents/*.md` must name the same five; and the
+tools under test must be the tools `hooks.json` actually matches, so a matcher can never
+list a tool the hook ignores.
 
 Before trusting a new test, break the thing it covers and watch it fail. The roster test was
 verified that way: adding a name to `REVIEWERS` with no matching `agents/<name>.md` makes it

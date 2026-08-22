@@ -94,8 +94,7 @@ class Hook:
         return self._run("Bash", {"command": command}, str(cwd), session_id)
 
     def edit(self, path: str, tool_name: str = "Write", session_id: str = "s1") -> HookOutput | None:
-        key = "notebook_path" if tool_name == "NotebookEdit" else "file_path"
-        return self._run(tool_name, {key: path}, ".", session_id)
+        return self._run(tool_name, {"file_path": path}, ".", session_id)
 
     def _run(self, tool_name: str, tool_input: dict[str, str], cwd: str, session_id: str) -> HookOutput | None:
         payload = json.dumps({"tool_name": tool_name, "tool_input": tool_input, "cwd": cwd, "session_id": session_id})

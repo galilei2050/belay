@@ -1,10 +1,13 @@
 """Behavioral tests for usable-ui.
 
-Every test drives the hook through the boundary Claude Code uses — the real script, JSON on
-stdin, JSON on stdout — and asserts what the agent would actually receive. Nothing imports
-the hook module: the internals stay refactorable, the behavior does not.
+Every test that exercises the hook drives it through the boundary Claude Code uses — the
+real script, JSON on stdin, JSON on stdout — and asserts what the agent would actually
+receive. Nothing imports the hook module: the internals stay refactorable, the behavior does
+not. The remaining tests read the shipped prompts and config directly, because those are
+artifacts the loader reads rather than anything the hook computes.
 """
 
+import json
 import re
 from pathlib import Path
 
@@ -14,6 +17,8 @@ PLUGIN = Path(__file__).parent.parent
 AGENTS_DIR = PLUGIN / "agents"
 PROMPTS = sorted(AGENTS_DIR.glob("*.md"))
 SKILL = PLUGIN / "skills" / "ui-decisions" / "SKILL.md"
+UI_REVIEW_COMMAND = PLUGIN / "commands" / "ui-review.md"
+HOOKS_JSON = PLUGIN / "hooks" / "hooks.json"
 
 _ROSTER_RE = re.compile(r"`usable-ui:([\w-]+)`")
 
@@ -28,6 +33,12 @@ def roster_of(emitted) -> set[str]:
     return set(_ROSTER_RE.findall(context_of(emitted)))
 
 
+def matched_tools() -> list[str]:
+    """The tools Claude Code will actually run this hook for, read from the shipped config."""
+    entries = json.loads(HOOKS_JSON.read_text())["hooks"]["PreToolUse"]
+    return [tool for entry in entries for tool in entry["matcher"].split("|")]
+
+
 # ── the shipped prompts back the roster the agent receives ───────────────────
 
 
@@ -35,6 +46,12 @@ def test_agent_is_sent_to_every_shipped_reviewer_and_no_other(hook, repo, stage)
     """A name in the roster with no prompt would dispatch a subagent that does not exist."""
     stage(repo, "Button.tsx")
     assert roster_of(hook.bash("git commit -m x", repo)) == {path.stem for path in PROMPTS}
+
+
+def test_the_slash_command_dispatches_the_same_panel():
+    """`/ui-review` names the five by hand; the same ghost-subagent bug is reachable through it."""
+    names = set(_ROSTER_RE.findall(UI_REVIEW_COMMAND.read_text()))
+    assert names - {"ui-decisions"} == {path.stem for path in PROMPTS}
 
 
 @pytest.mark.parametrize("prompt", PROMPTS, ids=lambda p: p.stem)
@@ -68,16 +85,25 @@ def test_editing_a_user_facing_file_hands_over_the_rules(hook, path):
     assert "ui-decisions" in context_of(hook.edit(path))
 
 
+def test_the_nudge_names_the_file_being_edited(hook):
+    """Without the path the agent has to guess which of its pending edits this is about."""
+    assert "src/Cart.tsx" in context_of(hook.edit("src/Cart.tsx"))
+
+
 @pytest.mark.parametrize("path", ["service.py", "client.ts", "styles.css", "README.md", "data.json"])
 def test_editing_anything_else_is_silent(hook, path):
     """A false positive costs the user an interruption on every non-UI file they touch."""
     assert hook.edit(path) is None
 
 
-@pytest.mark.parametrize("tool", ["Write", "Edit", "MultiEdit", "NotebookEdit"])
-def test_every_edit_tool_is_covered(hook, tool):
-    """`NotebookEdit` names its target `notebook_path`; the others use `file_path`."""
+@pytest.mark.parametrize("tool", ["Write", "Edit", "MultiEdit"])
+def test_every_matched_edit_tool_is_covered(hook, tool):
     assert hook.edit("Widget.tsx", tool_name=tool) is not None
+
+
+def test_the_tools_under_test_are_the_tools_the_loader_dispatches():
+    """A matcher listing a tool the hook ignores spawns a process that can only exit silently."""
+    assert set(matched_tools()) == {"Write", "Edit", "MultiEdit", "Bash"}
 
 
 def test_the_rules_are_handed_over_once_per_session(hook):
@@ -115,11 +141,38 @@ def test_the_panel_is_told_which_files_are_user_facing(hook, repo, stage):
     assert "service.py" not in context
 
 
+def test_a_non_ascii_filename_is_still_a_user_facing_file(hook, repo, stage):
+    """`git diff --name-only` C-quotes non-ASCII paths, and a quoted name matches no suffix."""
+    stage(repo, "Кнопка.tsx")
+    assert "Кнопка.tsx" in context_of(hook.bash("git commit -m x", repo))
+
+
 @pytest.mark.parametrize(
     "command",
-    ["git commit --dry-run -m x", "git status", "git add .", "echo 'git commit'  # not a commit"],
+    [
+        "git commit -m x",
+        "make lint && git commit -F .scratch/COMMIT_MSG",
+        "git --no-pager commit -m x",
+        "git commit --amend --no-edit",
+    ],
 )
-def test_a_command_that_does_not_create_a_commit_is_silent(hook, repo, stage, command):
+def test_every_commit_form_the_agent_writes_dispatches_the_panel(hook, repo, stage, command):
+    stage(repo, "Button.tsx")
+    assert roster_of(hook.bash(command, repo))
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "git commit --dry-run -m x",
+        "git status",
+        "git add .",
+        "echo 'git commit'  # not a commit",
+        "git -C /other/repo commit -m x",
+    ],
+)
+def test_a_command_that_does_not_commit_here_is_silent(hook, repo, stage, command):
+    """`-C` commits into a repo the payload's cwd does not name — the panel would read the wrong HEAD."""
     stage(repo, "Button.tsx")
     assert hook.bash(command, repo) is None
 
@@ -130,6 +183,16 @@ def test_commit_all_reads_the_worktree(hook, repo, stage, git):
     git(repo, "commit", "-qm", "first")
     (repo / "Button.tsx").write_text("<div>changed</div>\n")
     assert roster_of(hook.bash("git commit -am x", repo))
+
+
+def test_a_flag_named_in_the_commit_message_is_not_a_flag(hook, repo, stage, git):
+    """`-m "fix -a flag"` must not widen the scope to the worktree, nor `--dry-run` silence it."""
+    stage(repo, "Button.tsx")
+    git(repo, "commit", "-qm", "first")
+    stage(repo, "service.py", content="y = 2\n")
+    (repo / "Button.tsx").write_text("<div>unstaged</div>\n")
+    assert hook.bash('git commit -m "fix the -a flag"', repo) is None
+    assert hook.bash('git commit -m "document --dry-run"', repo) is None
 
 
 def test_an_identical_retry_stays_silent(hook, repo, stage):
