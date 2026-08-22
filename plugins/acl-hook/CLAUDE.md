@@ -332,9 +332,11 @@ everywhere else with a message that says exactly that.
   non-flag path must resolve under `<project>/.scratch/`. `resolve()` collapses
   `..`, so a traversal out of scratch falls through to deny.
 - Real in-tree source files are **not** an allow anymore (they used to be). The
-  deny message tells the agent: scratch goes in `.scratch/`; a tracked file
-  that should be removed is left for the user to delete, so the removal stays
-  visible in review instead of vanishing under a silent `rm`.
+  deny message hands the agent a route rather than a wall: scratch goes in
+  `.scratch/`, and a tracked file that should be removed is *moved* there —
+  `mv <path> .scratch/`. That retires the file for the build and the tests,
+  still shows as a deletion in `git status` and the diff, and is one `mv` from
+  coming back — where a silent `rm` is neither visible nor reversible.
 - `rmdir` is untouched — it only removes *empty* dirs (no data loss), so it
   keeps the `all_paths_inside_project` allow.
 
