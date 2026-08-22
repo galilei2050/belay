@@ -44,6 +44,7 @@ To keep the token cost down, the **code-specific** rules carry `paths:` frontmat
 | ⭐ [ground-claims-in-data.md](ground-claims-in-data.md) | Hedging ("наверное"/"probably"/"should"), guessing, fabricating, or echoing a wrong premise instead of checking |
 | [minimal-scope.md](minimal-scope.md) | Touching unasked files, ripping out working code, unreviewable whole-file rewrites |
 | [be-concise.md](be-concise.md) | Wasting tokens on verbose prose, padded comments, and wall-of-text output |
+| [agent-dispatch.md](agent-dispatch.md) | Freezing the session on a foreground subagent, polling for one, prompts that dictate HOW, and slices that span two owners so the agent hits a deny and hacks around it |
 
 ⭐ = highest-priority (the user's explicit pet peeves).
 
