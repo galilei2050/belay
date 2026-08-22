@@ -11,8 +11,9 @@ reaches the model *after*. That split is the whole design:
 ```
 1. agent  →  Bash: git commit -m "add feature"
 2. HOOK   ·  PreToolUse fires, before git runs. Reads tool_input.command + cwd:
-             · is this a command that creates a commit?      (no → silent)
-             · is anything staged to review?                 (no → silent)
+             · is this a command that creates a commit?      (no  → silent)
+             · is anything staged to review?                 (no  → silent)
+             · is the diff at least 64 changed lines?        (no  → silent)
              · has this exact content been reviewed already? (yes → silent)
              → emits additionalContext, NO permissionDecision
 3.        ·  normal permission flow runs (acl-hook still decides) → git commit executes
@@ -37,10 +38,16 @@ findings applied or genuine new work. Eight subagents is real money, and a panel
 own corrections finds fresh wording to object to indefinitely. A clean panel ends it a step
 earlier: `NO FINDINGS` means nothing to fix, no further commit, and no further nudge.
 
-**Three ways to stay silent** (step 2), so the panel is not a tax on every Bash call: the
-command is not a commit (`--dry-run`, `git status`, not a git repo); nothing is staged; or
-the content was already handed to the panel. That last one is a fingerprint of the diff
-under review, kept in `~/.claude/review-panel/reviewed.json`, so a commit rejected by
+**A round has a floor: 64 changed lines** (added plus removed, file headers excluded).
+`git commit` is the one moment the size of a change is known for free, and eight subagents
+over a two-line diff is not a trade worth making. The cost is deliberate — a flipped
+condition committed on its own goes unreviewed; dispatch the panel by hand when a small
+commit is load-bearing.
+
+**Four ways to stay silent** (step 2), so the panel is not a tax on every Bash call: the
+command is not a commit (`--dry-run`, `git status`, not a git repo); nothing is staged; the
+diff is under the floor; or the content was already handed to the panel. That last one is a
+fingerprint of the diff under review, kept in `~/.claude/review-panel/reviewed.json`, so a commit rejected by
 `pre-commit` and retried does not re-dispatch eight subagents — but once the agent fixes
 something, the content changes and the panel runs again. `git commit -a` is read from
 `git diff HEAD`, since `-a` stages at commit time and the index is still empty when the
@@ -111,5 +118,6 @@ stops the agent from ending the turn by asking whether to fix them.
 
 ## Config
 
-None. The roster lives in `REVIEWERS` in `hooks/review_panel_hook.py`; adding or removing
-a seat means editing the plugin — see [CLAUDE.md](CLAUDE.md).
+None. The roster (`REVIEWERS`) and the size floor (`MIN_CHANGED_LINES`) are constants in
+`hooks/review_panel_hook.py`; changing either means editing the plugin — see
+[CLAUDE.md](CLAUDE.md).

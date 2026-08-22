@@ -22,7 +22,7 @@ a climber when they fall. These plugins are the belay for the agent.
 | [branch-guard-hook](plugins/branch-guard-hook) | PreToolUse | Denies file edits while `main`/`master` is checked out — branch first |
 | [no-shirk-hook](plugins/no-shirk-hook) | Stop | Blocks ending a turn with an ask-instead-of-do question |
 | [delegation-hook](plugins/delegation-hook) | PreToolUse | Subagents run in the foreground only, and each gets a 30 tool-call budget before its tools are cut off |
-| [review-panel](plugins/review-panel) | Agents + PreToolUse | Dispatches eight read-only reviewer subagents (correctness, integration, test integrity, explicitness, DRY, bloat, SOLID, comments) over every commit |
+| [review-panel](plugins/review-panel) | Agents + PreToolUse | Dispatches eight read-only reviewer subagents (correctness, integration, test integrity, explicitness, DRY, bloat, SOLID, comments) over every commit of 64+ changed lines |
 | [deep-investigation](plugins/deep-investigation) | Skill + agents | Answers a why-question by building the whole hypothesis tree first, then falsifying branches until the verified mechanisms add up to the observed effect |
 | [usable-ui](plugins/usable-ui) | Skill + agents + PreToolUse | Decides UI wording, control, placement and states while UI is written, then dispatches five read-only UI reviewers (copy, control, layout, state, a11y) over the commit |
 

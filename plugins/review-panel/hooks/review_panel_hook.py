@@ -25,6 +25,10 @@ from pathlib import Path
 STATE_PATH = Path.home() / ".claude" / "review-panel" / "reviewed.json"
 GIT = shutil.which("git")
 
+# Under this many changed lines a round costs more than the commit is worth — eight subagents
+# over a diff its author can hold in their head. `git commit` is the moment the size is known.
+MIN_CHANGED_LINES = 64
+
 # The panel. They run in parallel, so this order only sets the reading order of the merged
 # report — semantic findings first, because a wrong answer outranks a long function.
 REVIEWERS = (
@@ -87,15 +91,21 @@ def _git(cwd: str, *args: str) -> str | None:
     return result.stdout if result.returncode == 0 else None
 
 
+def changed_lines(diff: str) -> int:
+    """Added plus removed lines in a unified diff, not counting the `+++`/`--- ` file headers."""
+    body = (line for line in diff.splitlines() if not line.startswith(("+++ ", "--- ")))
+    return sum(1 for line in body if line.startswith(("+", "-")))
+
+
 def review_scope_digest(cwd: str, command: str) -> str | None:
-    """Digest of the code about to be committed, or None if there is nothing to review.
+    """Digest of the code about to be committed, or None if it is not worth a round.
 
     The digest is what makes the hook idempotent: a commit rejected by pre-commit and
     retried carries the same content, and re-dispatching the whole panel over it is pure
     waste. Once the agent fixes something the content changes and the panel runs again.
     """
     diff = _git(cwd, "diff", "HEAD" if _STAGE_ALL_RE.search(command) else "--cached")
-    if not diff or not diff.strip():
+    if not diff or changed_lines(diff) < MIN_CHANGED_LINES:
         return None
     return hashlib.sha256(diff.encode()).hexdigest()
 
