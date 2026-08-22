@@ -63,6 +63,10 @@ def test_prompt_demands_the_clean_verdict(prompt):
         'git commit -m "stop passing --dry-run to this"',
         # `--dry-run` belongs to the segment it was written on, not to the commit beside it.
         "git commit -m x && git push --dry-run",
+        "git commit --dry-run && git commit -m x",
+        # git's own `-C` names another repo; `commit`'s `-C` reuses a message and commits here.
+        "git commit -C HEAD~1",
+        "git -C /elsewhere commit -m x && git commit -m y",
     ],
 )
 def test_a_commit_puts_the_panel_on_the_agents_desk(run_hook, repo, command):
@@ -109,6 +113,13 @@ def test_commit_all_is_reviewed_from_the_worktree(run_hook, repo, git, big_file)
     (repo / "base.py").write_text(big_file("w"))
     assert run_hook("git commit -m x", repo) is None
     assert run_hook("git commit -am x", repo) is not None
+
+
+def test_a_flag_on_an_earlier_command_does_not_widen_the_review_scope(run_hook, repo, git, big_file):
+    """`ls -la` carries an `-a`; reading it as `git commit -a` would review unstaged noise."""
+    git(repo, "reset", "-q")
+    (repo / "base.py").write_text(big_file("w"))
+    assert run_hook("ls -la && git commit -m x", repo) is None
 
 
 # ── a commit too small to be worth eight subagents ───────────────────────────

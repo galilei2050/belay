@@ -45,7 +45,8 @@ condition committed on its own goes unreviewed; dispatch the panel by hand when 
 commit is load-bearing.
 
 **Four ways to stay silent** (step 2), so the panel is not a tax on every Bash call: the
-command is not a commit (`--dry-run`, `git status`, not a git repo); nothing is staged; the
+command is not a commit here (`--dry-run`, `git status`, a commit aimed at another repository
+with `-C` / `--git-dir` / `--work-tree`, not a git repo); nothing is staged; the
 diff is under the floor; or the content was already handed to the panel. That last one is a
 fingerprint of the diff under review, kept in `~/.claude/review-panel/reviewed.json`, so a commit rejected by
 `pre-commit` and retried does not re-dispatch eight subagents — but once the agent fixes

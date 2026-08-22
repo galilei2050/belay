@@ -42,16 +42,15 @@ REVIEWERS = (
     "comments-reviewer",
 )
 
-# A Bash call is a list of segments, and each is judged on its own: a newline separates two
-# commands exactly like `;` does, and a flag belongs to the segment it appears in. Reading the
-# whole call as one string missed `git add -A\ngit commit -m x` — 3 of the 29 multi-line Bash
-# calls in one real session — and let a `--dry-run` in a neighbouring segment silence a commit.
+# A Bash call is a list of commands, and each is judged on its own: a newline separates two
+# commands exactly like `;` does, and a flag belongs to the command it was written on.
 _SEGMENT_SPLIT_RE = re.compile(r"[;&|\n()]+")
 # Quoted spans are blanked before any flag is read: `--dry-run` inside a commit message is prose.
 _QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
 # `-C dir` / `--git-dir` / `--work-tree` point git at another repository, while the diff this
 # hook measures comes from the payload's `cwd`. Reviewing one repo's commit against another's
-# index is worse than staying quiet.
+# index is worse than staying quiet. Matched only in the span *before* the subcommand, where
+# git's own options live: `git commit -C HEAD~1` reuses a message and commits right here.
 _OTHER_REPO_RE = re.compile(r"(?<![\w-])(?:-C|--git-dir|--work-tree)(?![\w-])")
 # Leading `-`/`--` options belong to git itself (--no-pager); the subcommand is the first bare word.
 _GIT_COMMIT_RE = re.compile(r"^\s*git\b(?:\s+-{1,2}\S+(?:\s+\S+)?)*\s+commit\b")
@@ -92,12 +91,14 @@ def committing_segment(command: str) -> str | None:
     The segment, not the whole call: `--dry-run` and `-a` belong to the command they were
     written on, and every later read (`_STAGE_ALL_RE`) has to be scoped the same way.
     """
-    blanked = _QUOTED_RE.sub(lambda match: " " * len(match.group()), command)
+    blanked = _QUOTED_RE.sub(" ", command)
     for segment in _SEGMENT_SPLIT_RE.split(blanked):
-        if _OTHER_REPO_RE.search(segment) or _DRY_RUN_RE.search(segment):
+        match = _GIT_COMMIT_RE.search(segment)
+        if match is None or _DRY_RUN_RE.search(segment):
             continue
-        if _GIT_COMMIT_RE.search(segment):
-            return segment
+        if _OTHER_REPO_RE.search(segment[: match.end()]):
+            continue
+        return segment
     return None
 
 

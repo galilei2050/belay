@@ -858,7 +858,7 @@
       {
         "fn": "tee_writes_outside_project",
         "decision": "deny",
-        "reason": "`tee` to a path outside the project writes to the user's machine — the same write a `>` redirect is denied for. Tee inside the project (`.scratch/` for throwaway output), or to `/tmp/` if it must be out-of-tree."
+        "reason": "`tee` to a path outside the project writes to the user's machine — the same write a `>` redirect is denied for. Tee inside the project; throwaway output goes in `.scratch/`."
       }
     ],
     "default": "allow"

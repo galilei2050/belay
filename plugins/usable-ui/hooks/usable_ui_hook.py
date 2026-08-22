@@ -81,21 +81,19 @@ EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 # and `echo 'git commit'` is not a commit. Blanking quotes before anything else is read
 # is what keeps a commit message from being parsed as part of the command.
 _QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
-# `git -C dir commit`, `foo && git commit -m x`, `git commit`. Leading `-`/`--` options
-# belong to git itself (-C, --no-pager); the subcommand is the first bare word. A newline
-# separates two commands exactly like `;` does — without it in the class, `git add -A` on one
-# line and `git commit` on the next was invisible here.
-_GIT_COMMIT_RE = re.compile(r"(?:^|[;&|(\n]|&&)\s*git\b(?:\s+-{1,2}\S+(?:\s+\S+)?)*\s+commit\b")
-# Where the commit's own command ends. Flags after this belong to the next command, and
-# `git commit -m x && git push --dry-run` is a real commit beside a dry run, not a dry run.
-_SEGMENT_END_RE = re.compile(r"[;&|\n)]")
+# A Bash call is a list of commands, and each is judged on its own: a newline separates two
+# commands exactly like `;` does, and a flag belongs to the command it was written on.
+_SEGMENT_SPLIT_RE = re.compile(r"[;&|\n()]+")
+# Leading `-`/`--` options belong to git itself (--no-pager); the subcommand is the first bare word.
+_GIT_COMMIT_RE = re.compile(r"^\s*git\b(?:\s+-{1,2}\S+(?:\s+\S+)?)*\s+commit\b")
 _DRY_RUN_RE = re.compile(r"(?<![\w-])--dry-run(?![\w-])")
 # `-a` / `-am` stage tracked files at commit time, so the index is empty until then and
 # the scope has to come from the worktree instead. `(?!-)` keeps `--amend` out.
 _STAGE_ALL_RE = re.compile(r"(?<![\w-])(?:-(?!-)\w*a\w*|--all)(?![\w-])")
-# `git -C <dir>` commits into a repo the payload's `cwd` does not name, and the panel
-# would be pointed at the wrong `HEAD`. A scope the hook cannot resolve is one it stays
-# out of.
+# `git -C <dir>` commits into a repo the payload's `cwd` does not name, and the panel would be
+# pointed at the wrong `HEAD`. A scope the hook cannot resolve is one it stays out of. Read only
+# in the span *before* the subcommand, where git's own options live: `git commit -C HEAD~1`
+# reuses a message and commits right here.
 _OTHER_REPO_RE = re.compile(r"(?<![\w-])(?:-C|--git-dir|--work-tree)(?![\w-])")
 
 _SKILL_PROMPT = """\
@@ -139,19 +137,23 @@ def is_ui_path(path: str) -> bool:
 
 
 def commit_flags(command: str) -> str | None:
-    """The flags git itself will see on a real commit, or None if this is not one.
+    """The segment of this Bash call that commits here, or None if there is none.
 
-    Quoted spans are blanked and everything before `git … commit` is dropped, so neither a
-    message mentioning `--dry-run` nor an unrelated `ls -la` earlier in the line can be read
-    as a flag on the commit.
+    Quoted spans are blanked first, then each command in the call is judged on its own, so a
+    message mentioning `--dry-run`, a dry run standing beside a real commit, and an `ls -la`
+    earlier in the line are all read as what they are. Kept identical in shape to
+    review-panel's `committing_segment`: the two hooks answer the same question about the same
+    command, and a divergence between them shows up as one panel firing and the other not.
     """
     unquoted = _QUOTED_RE.sub(" ", command)
-    match = _GIT_COMMIT_RE.search(unquoted)
-    if match is None:
-        return None
-    end = _SEGMENT_END_RE.search(unquoted, match.end())
-    flags = unquoted[match.start() : end.start() if end else len(unquoted)]
-    return None if _DRY_RUN_RE.search(flags) else flags
+    for segment in _SEGMENT_SPLIT_RE.split(unquoted):
+        match = _GIT_COMMIT_RE.search(segment)
+        if match is None or _DRY_RUN_RE.search(segment):
+            continue
+        if _OTHER_REPO_RE.search(segment[: match.end()]):
+            continue
+        return segment
+    return None
 
 
 def _git(cwd: str, *args: str) -> str | None:
@@ -242,7 +244,7 @@ def on_edit(path: str, session_id: str) -> None:
 def on_bash(command: str, cwd: str) -> None:
     """A Bash call is about to run: hand over the roster if it commits UI."""
     flags = commit_flags(command)
-    if flags is None or _OTHER_REPO_RE.search(flags):
+    if flags is None:
         return
 
     toplevel = _git(cwd, "rev-parse", "--show-toplevel")
