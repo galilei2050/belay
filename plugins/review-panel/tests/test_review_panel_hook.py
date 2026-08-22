@@ -55,8 +55,7 @@ def test_prompt_demands_the_clean_verdict(prompt):
         "git commit -am 'wip'",
         "git commit --amend --no-edit",
         "make lint && git commit -F .scratch/COMMIT_MSG",
-        # A newline separates two commands exactly like `;` does, and the agent writes them
-        # this way: 3 of the 29 multi-line Bash calls in one real session commit on a later line.
+        # A newline separates two commands exactly like `;` does, and the agent writes them this way.
         "git add -A\ngit commit -m x",
         "make lint\nmake test\ngit commit -m x",
         # The flag is prose here, not a flag — the commit is real.
