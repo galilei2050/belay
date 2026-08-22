@@ -23,6 +23,15 @@ def many_lines(marker: str) -> str:
     return "".join(f"{marker}{n} = {n}\n" for n in range(80))
 
 
+@pytest.fixture
+def big_file():
+    """`many_lines` as a fixture — every plugin's `conftest.py` is the same top-level module name
+    to a type checker, so a test that reaches one by `from conftest import ...` resolves to
+    whichever plugin sorts first. Fixtures are looked up by pytest per directory instead.
+    """
+    return many_lines
+
+
 class HookSpecificOutput(TypedDict):
     """The payload Claude Code reads back from a PreToolUse hook."""
 

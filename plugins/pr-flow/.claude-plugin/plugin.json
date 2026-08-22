@@ -1,0 +1,8 @@
+{
+  "name": "pr-flow",
+  "version": "0.1.0",
+  "description": "A skill that writes PR descriptions a reviewer can act on, and a hook that carries every commit through to a pushed branch and an open PR — nudging after commit/push and refusing to end the turn while the work is unpushed or unproposed.",
+  "author": {
+    "name": "galilei2050"
+  }
+}

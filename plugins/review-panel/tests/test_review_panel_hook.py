@@ -10,7 +10,6 @@ import re
 from pathlib import Path
 
 import pytest
-from conftest import many_lines
 
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
 PROMPTS = sorted(AGENTS_DIR.glob("*.md"))
@@ -90,10 +89,10 @@ def test_a_commit_with_nothing_staged_is_left_alone(run_hook, repo, git):
     assert run_hook("git commit -m x", repo) is None
 
 
-def test_commit_all_is_reviewed_from_the_worktree(run_hook, repo, git):
+def test_commit_all_is_reviewed_from_the_worktree(run_hook, repo, git, big_file):
     """`-a` stages at commit time, so an unstaged edit is still in scope for `git commit -am`."""
     git(repo, "reset", "-q")
-    (repo / "base.py").write_text(many_lines("w"))
+    (repo / "base.py").write_text(big_file("w"))
     assert run_hook("git commit -m x", repo) is None
     assert run_hook("git commit -am x", repo) is not None
 
@@ -150,8 +149,8 @@ def test_retrying_the_same_commit_does_not_re_dispatch_the_panel(run_hook, repo)
     assert run_hook("git commit -m x", repo) is None
 
 
-def test_committing_new_code_dispatches_the_panel_again(run_hook, repo, git):
+def test_committing_new_code_dispatches_the_panel_again(run_hook, repo, git, big_file):
     run_hook("git commit -m x", repo)
-    (repo / "more.py").write_text(many_lines("v"))
+    (repo / "more.py").write_text(big_file("v"))
     git(repo, "add", "more.py")
     assert run_hook("git commit -m x", repo) is not None

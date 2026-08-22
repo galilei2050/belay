@@ -44,6 +44,11 @@
       "name": "usable-ui",
       "source": "./plugins/usable-ui",
       "description": "Skill deciding UI wording, control, placement and states, plus five read-only UI reviewers, supplied by a PreToolUse hook while UI is written and once it is committed."
+    },
+    {
+      "name": "pr-flow",
+      "source": "./plugins/pr-flow",
+      "description": "Skill that writes PR descriptions a reviewer can act on, plus hooks that nudge after every commit/push and refuse to end the turn while the branch is unpushed or has no open PR."
     }
   ]
 }
