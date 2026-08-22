@@ -79,9 +79,33 @@ flowchart LR
 - Every count comes from a query you ran. If you cannot count a branch, do not draw the branch.
 - Two or three levels. A deeper tree stops being readable in the PR column.
 
+## Quote any label that carries punctuation
+
+A label is parsed with mermaid's own grammar, so a bracket or a separator inside it ends the
+statement early and the whole diagram is replaced by a parse error in the PR. Observed: a note
+reading ``` не в [;&|(] ``` failed with `Expecting 'NEWLINE', … got 'INVALID'` — and the PR
+showed no diagram at all until it was fixed.
+
+**Wrap the label in `"…"` the moment it contains anything but words, digits and spaces.** That
+turns the punctuation into data:
+
+```
+D["deny — цель невозможно проверить"]          %% not D[deny: …]
+O{"это /dev или каталог задания?"}             %% not O{/dev …?}
+V -->|"осталось нераскрытым"| D                %% edge labels too
+```
+
+Safe unquoted (these render as-is): plain prose, `#4231`, `create_estimate (…)` in a
+`sequenceDiagram` message, and `<br/>`, which is mermaid's own line break.
+
+Better still: **don't put code in a diagram.** A regex, a flag list or a shell fragment as a
+node label is both the thing most likely to break the parser and the thing a reader cannot
+follow at diagram size. Name the mechanism in words in the box; put the literal in the prose
+underneath, where a backtick span renders it correctly.
+
 ## Before you paste it in
 
-- Does it render? A mermaid syntax error shows up as a grey error block in the PR. Fences are
-  ```` ```mermaid ````, labels with `(`, `:` or `#` need quotes: `B["fetch(id)"]`.
+- Every label with punctuation is quoted (above). This is the failure that produces a PR with
+  a grey error box where the diagram should be.
 - Would a table say it better? Then use the table.
 - Does any label contain a number you did not measure? Remove the number, or go measure it.

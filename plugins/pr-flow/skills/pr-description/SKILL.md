@@ -68,6 +68,9 @@ before drawing.
   where it is written down.
 - Checks list real outcomes, including the ones that failed or were skipped and why.
 - No commit-by-commit narration, no "as requested", no changelog of your own process.
+- Every mermaid label carrying punctuation is quoted (`references/diagrams.md`). An unquoted
+  bracket turns the whole diagram into a parse error in the PR, and you will not see it —
+  the person reading the PR does.
 - Language of the body matches how the repo and the user write. Do not translate a
   Russian-speaking team's PR into English because English is the default.
 
