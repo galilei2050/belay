@@ -1,0 +1,8 @@
+{
+  "name": "pr-flow",
+  "version": "0.1.0",
+  "description": "A skill that writes PR descriptions a reviewer can act on, and a PostToolUse hook that carries every commit through to a pushed branch and an open PR by saying what the branch still owes, right after each commit and push.",
+  "author": {
+    "name": "galilei2050"
+  }
+}
