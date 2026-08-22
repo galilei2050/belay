@@ -817,24 +817,30 @@ def test_chained_sleep_is_allowed_without_rewrite_via_main(monkeypatch, capsys):
     assert "updatedInput" not in out_hook
 
 
-def test_until_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys):
-    # An unbounded poll loop is allowed but transparently wrapped in `timeout` (no prompt).
+def test_until_loop_is_denied_via_main(monkeypatch, capsys):
+    # A poll loop that never says how long it will wait is denied outright.
     out = via_main(monkeypatch, capsys, "until curl -s http://localhost; do sleep 2; done")
     out_hook = out["hookSpecificOutput"]
-    assert out_hook["permissionDecision"] == "allow"
-    assert out_hook["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
-    assert "until curl" in out_hook["updatedInput"]["command"]
+    assert out_hook["permissionDecision"] == "deny"
+    assert "updatedInput" not in out_hook
 
 
-def test_while_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys):
+def test_while_loop_is_denied_via_main(monkeypatch, capsys):
     out = via_main(monkeypatch, capsys, "while true; do sleep 2; done")
-    out_hook = out["hookSpecificOutput"]
-    assert out_hook["permissionDecision"] == "allow"
-    assert out_hook["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_already_bounded_loop_is_not_rewrapped_via_main(monkeypatch, capsys):
-    # Idempotent: a loop already under `timeout … bash -c '…'` is left exactly as-is.
+def test_wait_loop_deny_recommends_timeout_and_the_two_alternatives(monkeypatch, capsys):
+    # The deny is only useful if it hands back a route — all three must survive edits to the text.
+    out = via_main(monkeypatch, capsys, "until curl -s http://localhost; do sleep 2; done")
+    reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "timeout -v 300" in reason
+    assert "run_in_background: true" in reason
+    assert "Monitor" in reason
+
+
+def test_loop_with_its_own_timeout_is_allowed_via_main(monkeypatch, capsys):
+    # The hatch the deny points at: a bounded wait is exactly the shape being asked for.
     cmd = "timeout 600 bash -c 'until curl -s http://localhost; do sleep 2; done'"
     out = via_main(monkeypatch, capsys, cmd)
     out_hook = out["hookSpecificOutput"]
@@ -842,8 +848,8 @@ def test_already_bounded_loop_is_not_rewrapped_via_main(monkeypatch, capsys):
     assert "updatedInput" not in out_hook
 
 
-def test_bare_loop_run_in_background_preserves_other_input_fields_via_main(monkeypatch, capsys):
-    # updatedInput must carry the full tool_input, not just command (e.g. run_in_background).
+def test_detached_wait_loop_is_denied_too_via_main(monkeypatch, capsys):
+    # Detaching the poll doesn't buy an exemption — it's the shape with no bound at all.
     payload = json.dumps(
         {
             "tool_name": "Bash",
@@ -855,8 +861,7 @@ def test_bare_loop_run_in_background_preserves_other_input_fields_via_main(monke
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
     acl_hook.main()
     out = json.loads(capsys.readouterr().out)["hookSpecificOutput"]
-    assert out["updatedInput"]["run_in_background"] is True
-    assert out["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
+    assert out["permissionDecision"] == "deny"
 
 
 # ── every detached command is bounded, whatever its shape ────────────────────
@@ -893,10 +898,10 @@ def test_background_command_with_own_timeout_is_left_alone_via_main(monkeypatch,
     assert "updatedInput" not in out["hookSpecificOutput"]
 
 
-def test_background_wait_loop_keeps_the_loop_bound_via_main(monkeypatch, capsys):
-    # A detached poll loop matches both rules; the tighter poll cap wins.
+def test_background_wait_loop_is_denied_before_it_is_bounded_via_main(monkeypatch, capsys):
+    # A detached poll loop matches both rules; the deny wins, so no rewrite is emitted.
     out = via_main(monkeypatch, capsys, "until curl -sf localhost:8000; do sleep 2; done", background=True)
-    assert out["hookSpecificOutput"]["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_background_bash_c_is_prefixed_not_renested_via_main(monkeypatch, capsys):
@@ -1014,12 +1019,10 @@ def test_bash_file_invocation_stays_denied_via_main(monkeypatch, capsys):
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
-def test_bash_c_hidden_loop_is_bounded_with_timeout_via_main(monkeypatch, capsys):
-    # A loop hidden inside bash -c (no timeout) is still bounded — closes the B-opens-a-hole gap.
+def test_bash_c_hidden_loop_is_denied_via_main(monkeypatch, capsys):
+    # A loop smuggled through bash -c (no timeout) is still seen — closes the B-opens-a-hole gap.
     out = via_main(monkeypatch, capsys, "bash -c 'until false; do sleep 2; done'")
-    out_hook = out["hookSpecificOutput"]
-    assert out_hook["permissionDecision"] == "allow"
-    assert out_hook["updatedInput"]["command"].startswith("timeout -v 600 bash -c ")
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 # ── sed -i inline length cap ─────────────────────────────────────────────────
@@ -1265,8 +1268,15 @@ def test_a_crashing_hook_logs_the_command_and_reraises(monkeypatch, capsys, hook
     assert "bashlex exploded" in logged  # traceback, so the crash is debuggable from the log alone
 
 
-def test_rewritten_wait_loop_is_logged_as_final(monkeypatch, capsys, hook_log):
+def test_denied_wait_loop_names_itself_in_the_log(monkeypatch, capsys, hook_log):
     via_main(monkeypatch, capsys, "until curl -sf localhost:8000; do sleep 2; done")
+    logged = hook_log.read_text(encoding="utf-8")
+    assert "matched=wait_loop_unbounded" in logged
+    assert "final=deny" in logged
+
+
+def test_rewritten_background_command_is_logged_as_final(monkeypatch, capsys, hook_log):
+    via_main(monkeypatch, capsys, "tail -f app.log", background=True)
     assert "final=rewrite" in hook_log.read_text(encoding="utf-8")
 
 
