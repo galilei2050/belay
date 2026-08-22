@@ -109,10 +109,11 @@ The commit you just made touches user-facing surfaces:
 
 {files}
 
-Put it through the UI panel. Dispatch all {count} reviewers **in a single message**, each with
-`run_in_background: false`, so they run in parallel and hand their reports straight back.
-Each is read-only and reviews the same scope: the diff of the commit that
-just landed (`git show HEAD`), plus whatever surrounding files it needs for context.
+Put it through the UI panel. Dispatch all {count} reviewers **in a single message** so they run
+in parallel. They run in the background and each report arrives as a notification — carry on
+with something else meanwhile, and never poll for them. Each is read-only and reviews the same
+scope: the diff of the commit that just landed (`git show HEAD`), plus whatever surrounding
+files it needs for context.
 
 {roster}
 
