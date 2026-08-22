@@ -3,7 +3,8 @@
 
 The nudge from `nudge_after_git.py` is advisory, and advisory text gets skipped. This is the
 backstop — the turn does not end while commits sit on this machine only, or sit on the remote
-with no PR in front of them.
+with no PR in front of them. Which steps are worth a refusal is decided here, by what `REFUSALS`
+has a wording for: a stale PR body is a judgment call and never blocks.
 
 It refuses once per (HEAD, step). A push turns "push me" into "open a PR", which is a different
 demand and earns its own refusal; an agent that answers a refusal in words and stops again is
@@ -17,6 +18,7 @@ import sys
 from pathlib import Path
 
 from branch_state import git, next_step
+from nudges import REFUSALS
 
 STATE_PATH = Path.home() / ".claude" / "pr-flow" / "refused.json"
 
@@ -32,11 +34,17 @@ def already_refused(repo: str, key: str) -> bool:
 
 
 def record_refused(repo: str, key: str) -> None:
-    """Remember the refusal, so the same one cannot fire twice."""
+    """Remember the refusal, so the same one cannot fire twice.
+
+    Written through a temp file: every repo on this machine shares one state file, and a reader
+    in another session must never see a half-written one.
+    """
     state = json.loads(STATE_PATH.read_text()) if STATE_PATH.exists() else {}
     state[repo] = [*state.get(repo, []), key][-_MAX_KEYS_PER_REPO:]
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    STATE_PATH.write_text(json.dumps(state))
+    pending = STATE_PATH.with_suffix(".tmp")
+    pending.write_text(json.dumps(state))
+    pending.replace(STATE_PATH)
 
 
 def refusal_for(data: dict[str, object]) -> str | None:
@@ -44,8 +52,8 @@ def refusal_for(data: dict[str, object]) -> str | None:
     if data.get("stop_hook_active"):
         return None
     cwd = str(data.get("cwd") or ".")
-    step = next_step(cwd, after_push=False)
-    if step is None or not step.refusal:
+    step = next_step(cwd)
+    if step is None or step.kind not in REFUSALS:
         return None
 
     toplevel = git(cwd, "rev-parse", "--show-toplevel")
@@ -56,7 +64,7 @@ def refusal_for(data: dict[str, object]) -> str | None:
     if already_refused(toplevel, key):
         return None
     record_refused(toplevel, key)
-    return step.refusal
+    return REFUSALS[step.kind].format(**step._asdict())
 
 
 def main() -> None:

@@ -9,8 +9,9 @@ Take the current branch all the way to a proposed change, without waiting for th
 3. Write the body with the `pr-flow:pr-description` skill. Collect the facts first (the failure
    and its measured size, what you verified with real outcomes, what stayed out of scope), then
    diagram what prose explains badly.
-4. `gh pr create --body-file <file>` or `gh pr edit <number> --body-file <file>`. Never pass a
-   body inline — mermaid fences do not survive an argument list.
+4. `gh pr create --body-file <file>` or `gh pr edit <number> --body-file <file>`. Never pass the
+   body inline — the ``` fences are backticks, and a double-quoted shell argument runs them as
+   command substitution.
 
 If `$ARGUMENTS` names a PR number or a branch, work on that one instead of the current branch.
 

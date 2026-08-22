@@ -28,6 +28,14 @@ def test_refuses_again_once_the_state_moves_on(stop, repo, commit, git):
     assert stop(repo, gh_mode="none")["decision"] == "block"
 
 
+def test_refuses_again_when_new_work_lands_on_the_same_branch(stop, repo, commit):
+    """The dedupe key is (HEAD, step): more commits is a new state, not the one already refused."""
+    commit(repo, "one.py")
+    assert stop(repo)["decision"] == "block"
+    commit(repo, "two.py")
+    assert stop(repo)["decision"] == "block"
+
+
 def test_silent_when_the_branch_is_pushed_and_has_a_pr(stop, repo):
     assert stop(repo, gh_mode="open") is None
 
@@ -35,6 +43,13 @@ def test_silent_when_the_branch_is_pushed_and_has_a_pr(stop, repo):
 def test_silent_when_gh_cannot_answer(stop, repo):
     """Blocking a turn over a PR we could not look up would strand an offline agent."""
     assert stop(repo, gh_mode="unauth") is None
+
+
+def test_silent_when_the_branch_holds_nothing_trunk_lacks(stop, repo, git):
+    """A branch level with trunk cannot have a PR opened for it, so demanding one traps the agent."""
+    git(repo, "checkout", "-q", "-b", "scratch", "origin/HEAD")
+    git(repo, "push", "-q", "-u", "origin", "scratch")
+    assert stop(repo, gh_mode="none") is None
 
 
 def test_silent_on_trunk(stop, repo, git, commit):

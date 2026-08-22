@@ -34,13 +34,19 @@ class HookOutput(TypedDict, total=False):
     reason: str
 
 
-# Modes the `gh` stub understands, chosen by FAKE_GH_MODE in the hook's environment.
+# The `gh` stub. It asserts its own argv first, so a hook that changes the subcommand or drops a
+# `--json` field turns the suite red instead of silently passing against a stub that answers
+# anything. Behaviour after that is chosen by FAKE_GH_MODE in the hook's environment.
 GH_STUB = """#!/bin/sh
+case "$1 $2 $5 $6 $7" in
+  "pr list --state open --json") ;;
+  *) echo "unexpected gh call: $*" >&2; exit 99 ;;
+esac
 case "$FAKE_GH_MODE" in
-  open)   printf '{"number":12,"url":"https://example.test/pr/12","state":"OPEN"}'; exit 0 ;;
-  merged) printf '{"number":12,"url":"https://example.test/pr/12","state":"MERGED"}'; exit 0 ;;
+  open)   printf '[{"number":12,"url":"https://example.test/pr/12"}]'; exit 0 ;;
   unauth) echo "gh: To get started with GitHub CLI, please run: gh auth login" >&2; exit 4 ;;
-  *)      echo "no pull requests found for branch \\"feature\\"" >&2; exit 1 ;;
+  hang)   sleep 30 ;;
+  *)      printf '[]'; exit 0 ;;
 esac
 """
 
@@ -91,6 +97,7 @@ def repo(tmp_path, git):
     git(root, "add", "base.py")
     git(root, "commit", "-qm", "base")
     git(root, "push", "-q", "-u", "origin", "main")
+    git(root, "remote", "set-head", "origin", "main")  # `origin/HEAD`: the trunk branches are measured against
     git(root, "checkout", "-q", "-b", "feature")
     (root / "feature.py").write_text("y = 2\n")
     git(root, "add", "feature.py")
@@ -132,6 +139,7 @@ def run_hook(tmp_path):
             "HOME": str(home),
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
             "FAKE_GH_MODE": gh_mode,
+            "PR_FLOW_GH_TIMEOUT_S": "1",  # the `hang` mode must be cheap to assert
         }
         # S603: argv is this interpreter plus the hook under test; no shell, no user input.
         result = subprocess.run(  # noqa: S603

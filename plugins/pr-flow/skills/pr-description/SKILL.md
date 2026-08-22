@@ -53,14 +53,11 @@ orders`, not `Update service_orders and add guard`.
 
 ## Step 3 — diagram what prose explains badly
 
-GitHub renders ```mermaid``` fences in a PR body. Use that where a paragraph would make the
-reviewer rebuild a picture in their head. Two to four diagrams in a substantial PR; zero in a
-small one. Each must answer a question the text does not.
+Draw only once the facts from Step 1 are collected — a diagram invented before the numbers is
+a diagram that will contradict them.
 
-The form follows what you are showing — a broken interaction over time is a `sequenceDiagram`,
-a decision that used to live in prose is a `flowchart TD`, a population going somewhere is a
-`flowchart LR` with the counts in the labels. **`references/diagrams.md` picks the form and
-shows the syntax**; read it before drawing.
+**`references/diagrams.md` picks the form, sets how many, and shows the syntax.** Read it
+before drawing.
 
 ## Step 4 — check the body against these before posting
 
@@ -76,8 +73,8 @@ shows the syntax**; read it before drawing.
 
 ## Step 5 — post it
 
-New PR — write the body to a file, never inline in the shell (mermaid and quotes do not
-survive an argument list):
+New PR — write the body to a file, never inline in the shell (the ```` ``` ```` fences are
+backticks, and a double-quoted shell argument runs them as command substitution):
 
 ```bash
 gh pr create --title "<outcome claim>" --body-file <file>
