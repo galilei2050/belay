@@ -1,6 +1,6 @@
 {
   "name": "review-panel",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A panel of eight read-only reviewer subagents, dispatched over every commit by a PreToolUse hook on `git commit`.",
   "author": {
     "name": "galilei2050"

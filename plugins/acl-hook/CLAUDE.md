@@ -224,27 +224,39 @@ Keep the conversion where it is — one place, after `_decide` — so the rule t
 stays a single source of truth and every rule's own actionable reason is preserved.
 Don't add per-rule "autonomous" variants.
 
-## Hanging: never DENIED, silently BOUNDED
+## Hanging: the poll loop is DENIED, the detached command is BOUNDED
 
-We do **not deny or ask** on a wait loop — that's the bug that dropped the old
-`until_loop_with_sleep` / `chained_sleep` detectors: denying made acl-hook a
-*second, contradicting voice* (the harness recommends an until-loop, acl-hook
-denied it, the agent dead-ended bouncing between them).
+Two different shapes, two different answers. Don't collapse them.
 
-But an *unbounded* command is a real leak, and a leak IS this plugin's scope. So
-`main()` **transparently rewrites** it to run under `timeout` via `updatedInput`
-(`_bound`). This is **not a gate**: `permissionDecision` stays `allow`, no prompt
-fires, the agent never sees it, and it doesn't contradict the harness — the
-command still runs, just with an upper bound. `updatedInput` does not re-trigger
-the hook, so the emitted `bash -c` is never re-evaluated against the `bash` deny.
+**A poll loop with no `timeout` of its own is `deny`** (`matched=wait_loop_unbounded`,
+`_WAIT_LOOP_REASON`, gated in `_judge` before `_bound`). This reverses the older
+"never deny a wait loop" rule, and the reason it's safe now is that the deny hands
+back three concrete routes instead of dead-ending:
 
-Two rules, checked in that order:
+1. don't wait — run the slow command itself with `run_in_background: true`, and the
+   harness re-invokes the agent when it exits;
+2. wait on a condition with the **Monitor** tool, which is what the harness itself
+   points at;
+3. poll from Bash anyway, but say how long: an explicit `timeout -v N …` prefix is
+   always accepted (`_has_timeout_prefix`, checked inside `unbounded_wait_loop`).
 
-- **`matched=wait_loop_unbounded` → 600s** (`WAIT_TIMEOUT_SECONDS`). A loop body
-  containing `sleep`: `until COND; do sleep N; done` whose condition never trips
-  (failed deploy, wrong target) runs forever.
-- **`matched=background_unbounded` → 1800s** (`BACKGROUND_TIMEOUT_SECONDS`). Any
-  command with `run_in_background: true`, whatever its shape. See below.
+That's what makes this *not* the contradicting-voice bug that dropped the original
+`until_loop_with_sleep` / `chained_sleep` detectors. The old rule was voiceless — it
+denied and offered nothing, so the agent bounced between acl-hook and the harness.
+A deny with a named alternative is a redirect, not a dead end. The silent 600s wrap
+that replaced it was worse than useless in practice: the observed loops ran 1–8
+minutes, well under the cap, so the bound never fired and the waiting the user was
+paying for went unaddressed. **If you weaken this back to a bound, you have to
+explain what stops a 7-minute poll.**
+
+**A detached command is bounded, never denied** (`matched=background_unbounded` →
+1800s, `BACKGROUND_TIMEOUT_SECONDS`). `main()` rewrites it to run under `timeout`
+via `updatedInput` (`_bound`): `permissionDecision` stays `allow`, no prompt fires,
+the agent never sees it. `updatedInput` does not re-trigger the hook, so the emitted
+`bash -c` is never re-evaluated against the `bash` deny.
+
+The deny is checked first, so a *detached poll loop* — the shape with no bound at
+all — is denied rather than quietly wrapped.
 
 **Why the background rule is shape-blind.** A *detached* call is the one with no
 cap at all: it runs until it exits on its own, i.e. for the rest of the session.
@@ -265,12 +277,12 @@ foreground across this machine's transcripts (measured 2026-08-16).
 (A command reading stdin is *not* on that list: the harness gives Bash
 `/dev/null` on fd 0, so a bare `cat` gets EOF and exits at once.)
 
-**Foreground is the harness's job, and the loop rule still covers it.** A
-foreground Bash call dies at its own tool timeout (120s default, 600s max), so
-the 600s loop wrap can never bind tighter there — it's retained because a
-payload that omits `run_in_background` is indistinguishable from a foreground
-one, and because the shape is worth catching wherever it appears. The bound that
-actually does work no one else does is the detached one.
+**The loop deny is shape-specific on purpose, and applies in both modes.** A
+foreground Bash call already dies at its own tool timeout (120s default, 600s
+max), so the loop rule isn't there to stop an infinite hang — it's there to stop
+the agent spending minutes waiting when it did not have to wait at all. That cost
+is identical foreground and detached, which is why the deny doesn't check
+`run_in_background`.
 
 **The escape hatch is explicit.** A leading `timeout …` the agent wrote itself
 is left alone (`_has_timeout_prefix`), so a job that genuinely needs hours says
@@ -291,11 +303,12 @@ signal TERM to command` on stderr and exits 124. Without `-v`, a killed
 `until … done` ends in exactly the same silence as one whose condition tripped,
 and the agent reads the truncated log as a completed wait — a silent bound that
 manufactures a wrong conclusion is worse than no bound. `-v` needs coreutils
-≥8.29; the wrap already assumed GNU `timeout`.
+≥8.29; the wrap already assumed GNU `timeout`. Same reason the loop deny
+recommends `timeout -v` rather than bare `timeout`.
 
-The line to hold: **bound, don't block.** Never turn this back into a `deny`/`ask`
-on waiting — that's the contradicting-voice bug. A silent `timeout` wrap is the
-only acceptable shape.
+The line to hold: **the deny must always name the route out.** A wait rule that
+only says "no" is the contradicting-voice bug all over again — the reason text is
+the load-bearing part, not the matcher.
 
 ## `bash -c '<literal>'` is recursed, not blanket-denied
 

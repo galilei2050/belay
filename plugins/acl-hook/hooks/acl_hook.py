@@ -249,13 +249,10 @@ SED_INLINE_EXPR_MAX = 300
 # A standalone `python3 -c` is allowed up to this length on a single line (the import/version
 # introspection one-liners the agent needs); longer/multiline scripts go to a file (reviewability).
 PYTHON_C_INLINE_MAX = 200
-# Cap an unbounded poll loop so a condition that never trips can't hang forever (foreground tool
-# timeout maxes at 600s; a background loop has no such cap, so this is the real guard). Tunable.
-WAIT_TIMEOUT_SECONDS = 600
 # Cap every detached command, whatever its shape: `run_in_background: true` is the one case the
 # harness does not bound at all (a foreground call dies at its tool timeout, a detached one runs
-# until it exits on its own). Shape-blind on purpose — see CLAUDE.md, "Hanging". Longer than
-# WAIT_TIMEOUT_SECONDS because backgrounding is what you do for slow work.
+# until it exits on its own). Shape-blind on purpose — see CLAUDE.md, "Hanging". Generous, because
+# backgrounding is what you do for slow work.
 BACKGROUND_TIMEOUT_SECONDS = 1800
 
 
@@ -1260,22 +1257,44 @@ class BoundedCommand(NamedTuple):
     matched: str
 
 
-def _bound(command: str, *, background: bool) -> BoundedCommand | None:
-    """The bounded rewrite of `command`, or None when it already carries a bound — or can't hang.
+def unbounded_wait_loop(command: str) -> bool:
+    """True iff `command` polls in a loop without ever saying how long it is willing to wait.
 
-    Reached only for an otherwise-`allow` command, so bashlex already parsed it cleanly. An explicit
-    leading `timeout …` wins over both rules: it's the agent's hatch for a job that genuinely needs
-    hours, and it's what makes the wrap idempotent. The tighter poll-loop cap is checked first, so a
-    detached wait loop keeps its 600s bound instead of inheriting the looser one.
+    An explicit leading `timeout …` is the hatch: it turns the poll into a bounded wait, which is
+    the shape the deny asks for. `bash -c '<literal>'` is unwrapped first so smuggling the loop
+    through a shell doesn't dodge the check — the same recursion `check_command` does.
     """
     if _has_timeout_prefix(command):
-        return None
+        return False
     script = _extract_shell_c(command)
-    if wait_loop_unbounded(bashlex.parse(script if script is not None else command)):
-        return BoundedCommand(_wrap_timeout(WAIT_TIMEOUT_SECONDS, command), "wait_loop_unbounded")
-    if background:
-        return BoundedCommand(_wrap_timeout(BACKGROUND_TIMEOUT_SECONDS, command), "background_unbounded")
-    return None
+    return wait_loop_unbounded(bashlex.parse(script if script is not None else command))
+
+
+def _bound(command: str, *, background: bool) -> BoundedCommand | None:
+    """The bounded rewrite of a detached `command`, or None when it already carries a bound.
+
+    Reached only for an otherwise-`allow` command, so bashlex already parsed it cleanly. An explicit
+    leading `timeout …` wins: it's the agent's hatch for a job that genuinely needs hours, and it's
+    what makes the wrap idempotent.
+    """
+    if not background or _has_timeout_prefix(command):
+        return None
+    return BoundedCommand(_wrap_timeout(BACKGROUND_TIMEOUT_SECONDS, command), "background_unbounded")
+
+
+_WAIT_LOOP_REASON = (
+    "A poll loop that never says how long it will wait is denied — `until <cond>; do sleep N; done` "
+    "keeps going until the condition trips, and when it never does (the job already exited, the "
+    "deploy failed, the path is wrong) it spends the whole tool timeout and fills your context with "
+    "`tail` output. Three ways out, best first:\n"
+    "1. Don't wait at all: run the slow command itself with `run_in_background: true` — it keeps "
+    "running across turns and re-invokes you when it exits.\n"
+    "2. Waiting on a condition is what the Monitor tool is for; use it instead of a shell loop.\n"
+    "3. If you truly must poll from Bash, decide up front how long you are willing to wait and put "
+    "that in the command: `timeout -v 300 bash -c 'until <cond>; do sleep 10; done'`. An explicit "
+    "`timeout` prefix is always accepted, and `-v` makes a wait that was cut short say so instead of "
+    "ending in the same silence as one that succeeded."
+)
 
 
 # ── Autonomous mode: `ask` becomes `deny` ────────────────────────────────────
@@ -1301,6 +1320,9 @@ def _judge(command: str, tool_input: dict[str, object], agent_type: str, logger:
     """Decide `command` and emit the verdict (or a bounded rewrite), logging one `final=` line."""
     ensure_scratch_dir()
     decision, reason = _decide(command, logger, agent_type)
+    if decision == "allow" and unbounded_wait_loop(command):
+        decision, reason = "deny", _WAIT_LOOP_REASON
+        logger.info('decision=deny command="%s" matched=wait_loop_unbounded agent=%s', for_log(command), agent_type)
     if decision == "allow":
         bounded = _bound(command, background=bool(tool_input.get("run_in_background")))
         if bounded is not None:
