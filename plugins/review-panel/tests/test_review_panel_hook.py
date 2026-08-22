@@ -55,6 +55,17 @@ def test_prompt_demands_the_clean_verdict(prompt):
         "git commit -am 'wip'",
         "git commit --amend --no-edit",
         "make lint && git commit -F .scratch/COMMIT_MSG",
+        # A newline separates two commands exactly like `;` does, and the agent writes them this way.
+        "git add -A\ngit commit -m x",
+        "make lint\nmake test\ngit commit -m x",
+        # The flag is prose here, not a flag — the commit is real.
+        'git commit -m "stop passing --dry-run to this"',
+        # `--dry-run` belongs to the segment it was written on, not to the commit beside it.
+        "git commit -m x && git push --dry-run",
+        "git commit --dry-run && git commit -m x",
+        # git's own `-C` names another repo; `commit`'s `-C` reuses a message and commits here.
+        "git commit -C HEAD~1",
+        "git -C /elsewhere commit -m x && git commit -m y",
     ],
 )
 def test_a_commit_puts_the_panel_on_the_agents_desk(run_hook, repo, command):
@@ -70,6 +81,12 @@ def test_a_commit_puts_the_panel_on_the_agents_desk(run_hook, repo, command):
         "git add -A",
         "git show HEAD",
         "grep -r commit .",
+        # Another repository's commit: the diff this hook can measure is the session's own,
+        # so reviewing it against that commit would be reviewing the wrong code.
+        "git -C /somewhere/else commit -m x",
+        "git --git-dir=/elsewhere/.git commit -m x",
+        # The command is quoted prose, not a command.
+        "echo 'run git commit next'",
     ],
 )
 def test_anything_that_does_not_create_a_commit_is_left_alone(run_hook, repo, command):
@@ -95,6 +112,13 @@ def test_commit_all_is_reviewed_from_the_worktree(run_hook, repo, git, big_file)
     (repo / "base.py").write_text(big_file("w"))
     assert run_hook("git commit -m x", repo) is None
     assert run_hook("git commit -am x", repo) is not None
+
+
+def test_a_flag_on_an_earlier_command_does_not_widen_the_review_scope(run_hook, repo, git, big_file):
+    """`ls -la` carries an `-a`; reading it as `git commit -a` would review unstaged noise."""
+    git(repo, "reset", "-q")
+    (repo / "base.py").write_text(big_file("w"))
+    assert run_hook("ls -la && git commit -m x", repo) is None
 
 
 # ── a commit too small to be worth eight subagents ───────────────────────────

@@ -163,7 +163,7 @@ uv run mypy plugins/review-panel/hooks/review_panel_hook.py
 boundary Claude Code uses — the real script, a JSON payload on stdin, JSON on stdout — via
 the `run_hook` fixture. Nothing imports `review_panel_hook` or calls its functions.
 
-That is deliberate, not incidental. `is_reviewable_commit()`, `review_scope_digest()`, and
+That is deliberate, not incidental. `committing_segment()`, `review_scope_digest()`, and
 the state helpers are implementation; asserting on them directly would freeze the internals
 and still tell you nothing about what the agent receives. Going through the script also
 covers what a unit test cannot: that the file is executable, imports cleanly, resolves `git`,

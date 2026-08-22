@@ -307,6 +307,47 @@ def all_paths_under_scratch(args: list[str]) -> bool:
     return has_path
 
 
+# The two places outside the project a write may still land. `/dev/*` are sinks, and the job
+# dir is where the harness itself tells the agent to put scratch output. `/tmp` is deliberately
+# NOT here: fs-acl-hook denies the Write tool there ("throwaways go in `.scratch/`"), and a
+# redirect that went where the file tool refuses to would be the documented way around it.
+_WRITABLE_OUTSIDE = ("/dev/", str(Path.home() / ".claude" / "jobs") + "/")
+
+
+def write_escapes_project(target: str) -> bool:
+    """True iff writing to `target` leaves the project — bar `_WRITABLE_OUTSIDE` — or enters `.git`.
+
+    One boundary, shared by every way a Bash call writes a file: a `>` redirect, or a program
+    like `tee` that takes the path as an argument.
+
+    The shell expands `~` and `$HOME` before the write happens, so both are expanded here — a
+    boundary that only recognises one spelling of a path is not a boundary. Anything still
+    unresolved (`$LOG`, `~nosuchuser`) names a file we cannot vet, and an unvettable write
+    target counts as escaping rather than as absent.
+    """
+    expanded = os.path.expandvars(target)
+    if "$" in expanded:
+        return True
+    try:
+        candidate = Path(expanded).expanduser()
+    except RuntimeError:  # `~someone` with no such account — unresolvable, so not vettable
+        return True
+    project_root = Path(PROJECT_DIR).resolve()
+    # Resolve before comparing: `/tmp/../etc/hosts` starts with an allowed prefix as a string
+    # and lands on the user's machine as a path.
+    real = (project_root / candidate).resolve()
+    if str(real).startswith(_WRITABLE_OUTSIDE):
+        return False
+    if project_root not in real.parents:
+        return True
+    return ".git" in real.relative_to(project_root).parts
+
+
+def tee_writes_outside_project(args: list[str]) -> bool:
+    """True iff `tee` writes past the project boundary — the same write, spelled as a program."""
+    return any(write_escapes_project(arg) for arg in args if not arg.startswith("-"))
+
+
 def ensure_scratch_dir() -> None:
     """Guarantee `<project>/.scratch/` exists and is gitignored — the one dir where `rm` is allowed.
 
@@ -797,6 +838,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "git_write_on_merged_branch": git_write_on_merged_branch,
     "git_discards_worktree_changes": git_discards_worktree_changes,
     "any_path_under_git": any_path_under_git,
+    "tee_writes_outside_project": tee_writes_outside_project,
 }
 
 
@@ -854,6 +896,34 @@ def has_function_def(trees: Iterable[BashNode]) -> bool:
             if getattr(node, "kind", None) == "function":
                 return True
     return False
+
+
+def _redirect_targets(trees: Iterable[BashNode]) -> Iterator[str]:
+    """Every filename a `>` / `>>` in these trees writes to.
+
+    Write types only — bashlex gives `< file` the same node shape, and denying a read with a
+    message about writes sends the agent to fix something it was not doing. `2>&1` carries an
+    int rather than a word on `output` and names no file at all.
+    """
+    for tree in trees:
+        for node, _parent, _pos in _walk_with_parent(tree):
+            if getattr(node, "kind", None) != "redirect":
+                continue
+            if not str(getattr(node, "type", "")).startswith(">"):
+                continue
+            word = getattr(getattr(node, "output", None), "word", None)
+            if isinstance(word, str):
+                yield word
+
+
+def redirect_escapes_project(trees: Iterable[BashNode]) -> bool:
+    """True iff a redirect writes past the project boundary, or into its `.git`.
+
+    Every rule in `acl.json` judges the command word, so nothing read the destination of a
+    `>`: `echo x > ~/.ssh/authorized_keys` and `echo ref > .git/HEAD` were allowed by a hook
+    that denies `cat` on the same files. A redirect is a write, and gets a write's boundary.
+    """
+    return any(write_escapes_project(target) for target in _redirect_targets(trees))
 
 
 def _c_arg(words: list[str]) -> str | None:
@@ -1147,9 +1217,18 @@ _PYTHON_C_REASON = (
     "hidden in one arg it bypasses the size gate and isn't reviewable. Options: (1) pipe data in; "
     "(2) Write the script to a file and run it; (3) split into simple Bash builtins or `jq`."
 )
+_REDIRECT_REASON = (
+    "This writes past the project boundary — a `>`/`>>` or a `tee` outside the project is a "
+    "write to the user's machine, and it gets the same boundary the Write tool has. Throwaway "
+    "output goes in `.scratch/`; anything else belongs inside the project. `.git/` is "
+    "off-limits: use git commands. A target built from a variable (`> $LOG`) cannot be vetted "
+    "— write a literal path. If a file on the user's machine genuinely has to change, hand "
+    "them the line to run."
+)
 _AST_DETECTORS: list[tuple[Callable[[Iterable[BashNode]], bool], str, str]] = [
     (has_function_def, _FUNCTION_DEF_REASON, "function_def"),
     (python_c_not_after_pipe, _PYTHON_C_REASON, "python_c_standalone"),
+    (redirect_escapes_project, _REDIRECT_REASON, "redirect_outside_project"),
 ]
 
 

@@ -154,6 +154,16 @@ def test_a_non_ascii_filename_is_still_a_user_facing_file(hook, repo, stage):
         "make lint && git commit -F .scratch/COMMIT_MSG",
         "git --no-pager commit -m x",
         "git commit --amend --no-edit",
+        # A newline separates two commands exactly like `;` does, and the agent writes commits this way.
+        "git add -A\ngit commit -m x",
+        "make lint\nmake test\ngit commit -m x",
+        # The dry run belongs to the push, not to the commit standing beside it.
+        "git commit -m x && git push --dry-run",
+        # The cases that made this hook and review-panel disagree: the real commit is the
+        # second segment, and `commit -C` reuses a message rather than naming another repo.
+        "git commit --dry-run && git commit -m x",
+        "git -C /elsewhere commit -m x && git commit -m y",
+        "git commit -C HEAD~1",
     ],
 )
 def test_every_commit_form_the_agent_writes_dispatches_the_panel(hook, repo, stage, command):
