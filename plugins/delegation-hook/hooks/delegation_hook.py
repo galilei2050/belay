@@ -126,9 +126,9 @@ def record_call(agent_id: str) -> Spend:
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     counter = _counter_path(agent_id)
-    now = time.time()
+    record = _record(time.time())
     with counter.open("ab") as handle:
-        handle.write(_record(now))
+        handle.write(record)
     with counter.open("rb") as handle:
         first = handle.read(_RECORD_SIZE)
     try:
@@ -141,7 +141,9 @@ def record_call(agent_id: str) -> Spend:
     used = counter.stat().st_size // _RECORD_SIZE
     if used == 1:
         _sweep_stale()  # first call of a fresh agent: the cheapest moment to pay for the cleanup
-    return Spend(used, now - started)
+    # Elapsed is stored-minus-stored, not raw-minus-stored: %017.6f rounds to the microsecond, so
+    # a raw `now` can land just below its own record and make a first call's elapsed negative.
+    return Spend(used, float(record.decode("ascii")) - started)
 
 
 class Verdict(NamedTuple):
