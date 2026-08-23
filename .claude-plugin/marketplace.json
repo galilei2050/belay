@@ -28,7 +28,7 @@
     {
       "name": "delegation-hook",
       "source": "./plugins/delegation-hook",
-      "description": "PreToolUse delegation gate: subagents run in the background so the session is never frozen waiting for one, and each gets a 30 tool-call budget before its tools are cut off."
+      "description": "PreToolUse delegation gate: subagents run in the background so the session is never frozen waiting for one, and each gets a 30 tool-call / 7-minute budget before its tools are cut off."
     },
     {
       "name": "review-panel",

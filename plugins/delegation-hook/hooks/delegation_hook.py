@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Delegation gate for Claude Code subagents — background only, under a hard tool-call budget.
+"""Delegation gate for Claude Code subagents — background only, under hard tool-call and time budgets.
 
 Two ways handing work to a subagent goes wrong, one plugin:
 
@@ -9,10 +9,11 @@ Two ways handing work to a subagent goes wrong, one plugin:
   without anyone waiting for it, and several agents can run at once. Denied at the `Agent` call,
   where dropping `run_in_background: false` fixes it.
 * **Oversized.** An open-ended slice makes the subagent grind: it keeps exploring, its window fills
-  with its own tool output, and it answers from that. Bounded by counting its tool calls and cutting
-  them off at `BUDGET`, which forces an answer from what it already has and names what it missed.
+  with its own tool output, and it answers from that. Bounded on both axes — `BUDGET` tool calls and
+  `TIME_BUDGET_SECONDS` of wall-clock — with tools cut off at either limit, which forces an answer
+  from what it already has and names what it missed.
 
-The spawning agent is handed the budget at spawn time, so it can size the slice to fit rather than
+The spawning agent is handed the budgets at spawn time, so it can size the slice to fit rather than
 discover the ceiling by hitting it.
 
 Only ever emits `deny` or a bare `additionalContext` — never `allow`, so this hook can't override a
@@ -37,6 +38,16 @@ BUDGET = 30
 # context; later leaves no room to converge.
 WARN_FROM = 20
 
+# 7 minutes comes from the user. Measured against 727 real subagent runs on this machine
+# (2026-08-22): median 3.7 min, p90 14.2 min — so it cuts the slowest ~23%, the same population the
+# call budget targets from the other axis: few slow calls instead of many fast ones. Wall-clock, so
+# a machine suspend mid-run spends it; an agent resumed hours later is told to wrap up, not to
+# resume grinding.
+TIME_BUDGET_MINUTES = 7
+TIME_BUDGET_SECONDS = TIME_BUDGET_MINUTES * 60
+
+TIME_WARN_FROM_SECONDS = 5 * 60
+
 STATE_DIR = Path.home() / ".claude" / "state" / "delegation-hook"
 
 # Counters outlive the agent that wrote them (there is no end-of-agent hook to clean up), so a run
@@ -55,8 +66,9 @@ _FOREGROUND_DENIED = (
 )
 
 _SLICE_THE_TASK = (
-    f"This subagent gets {BUDGET} tool calls. At {BUDGET} its tools are blocked and it has to answer "
-    "from whatever it has by then, so the slice has to fit the budget:\n"
+    f"This subagent gets {BUDGET} tool calls and {TIME_BUDGET_MINUTES} minutes. At either "
+    "limit its tools are blocked and it has to answer from whatever it has by then, so the slice "
+    "has to fit the budget:\n"
     '- One named deliverable per agent. "Investigate X" has no end; "read A, B and C, answer Q" does.\n'
     "- Hand over what you already know — exact paths, symbols, commands — so its budget goes on "
     "reading, not on re-discovering what you could have told it.\n"
@@ -66,12 +78,15 @@ _SLICE_THE_TASK = (
     "to hurry."
 )
 
-_BUDGET_SPENT = (
-    f"Your tool-call budget is spent ({BUDGET} calls) — every further tool call is blocked, and "
-    "retrying will not unblock it. Write your final message now: give the answer from what you already "
-    "have, and state plainly which parts you did not get to, so the caller can send a follow-up agent "
-    "for exactly those."
+_WRAP_UP = (
+    "every further tool call is blocked, and retrying will not unblock it. Write your final message "
+    "now: give the answer from what you already have, and state plainly which parts you did not get "
+    "to, so the caller can send a follow-up agent for exactly those."
 )
+
+_BUDGET_SPENT = f"Your tool-call budget is spent ({BUDGET} calls) — {_WRAP_UP}"
+
+_TIME_SPENT = f"Your wall-clock budget is spent ({TIME_BUDGET_MINUTES} minutes) — {_WRAP_UP}"
 
 
 def _counter_path(agent_id: str) -> Path:
@@ -86,21 +101,49 @@ def _sweep_stale() -> None:
             counter.unlink(missing_ok=True)  # another agent sweeping the same dir may have won
 
 
-def record_call(agent_id: str) -> int:
-    """Count one tool call for `agent_id` and return its running total, 1 for the first.
+def _record(timestamp: float) -> bytes:
+    """One counter record — fixed width, so file size // _RECORD_SIZE is the call count."""
+    return b"%017.6f\n" % timestamp
 
-    One byte appended per call rather than a read-modify-write of a number: parallel tool calls in a
-    single turn run as concurrent hook processes, and an O_APPEND write is the only shape that can't
-    lose one of them to a lost update.
+
+_RECORD_SIZE = len(_record(0.0))
+
+
+class Spend(NamedTuple):
+    """One agent's spend so far: tool calls made, and seconds since its first."""
+
+    used: int
+    elapsed_seconds: float
+
+
+def record_call(agent_id: str) -> Spend:
+    """Count one tool call for `agent_id`; returns its running spend, `used == 1` for the first.
+
+    One fixed-width timestamp appended per call rather than a read-modify-write: parallel tool
+    calls in a single turn run as concurrent hook processes, and an O_APPEND write is the only
+    shape that can't lose one of them to a lost update. The first record doubles as the agent's
+    start time — that is what the wall-clock budget measures against.
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     counter = _counter_path(agent_id)
+    record = _record(time.time())
     with counter.open("ab") as handle:
-        handle.write(b".")
-    used = counter.stat().st_size
+        handle.write(record)
+    with counter.open("rb") as handle:
+        first = handle.read(_RECORD_SIZE)
+    try:
+        started = float(first.decode("ascii"))
+    except ValueError:
+        # A counter written by v1 of this hook (one bare "." per call) — restart it. Costs one
+        # running agent one budget reset during the migration; v1 files sweep out within 24h.
+        counter.unlink(missing_ok=True)
+        return record_call(agent_id)
+    used = counter.stat().st_size // _RECORD_SIZE
     if used == 1:
         _sweep_stale()  # first call of a fresh agent: the cheapest moment to pay for the cleanup
-    return used
+    # Elapsed is stored-minus-stored, not raw-minus-stored: %017.6f rounds to the microsecond, so
+    # a raw `now` can land just below its own record and make a first call's elapsed negative.
+    return Spend(used, float(record.decode("ascii")) - started)
 
 
 class Verdict(NamedTuple):
@@ -129,14 +172,17 @@ def judge(data: dict[str, object]) -> Verdict:
             context.append(_SLICE_THE_TASK)
 
     agent_id = data.get("agent_id")
-    if isinstance(agent_id, str):  # absent in the main thread — the budget is a subagent rule
-        used = record_call(agent_id)
+    if isinstance(agent_id, str):  # absent in the main thread — the budgets are a subagent rule
+        used, elapsed = record_call(agent_id)
         if used > BUDGET:
             deny = _BUDGET_SPENT
-        elif used >= WARN_FROM:
+        elif elapsed > TIME_BUDGET_SECONDS:
+            deny = _TIME_SPENT
+        elif used >= WARN_FROM or elapsed >= TIME_WARN_FROM_SECONDS:
             context.append(
-                f"Tool-call budget: {used}/{BUDGET} used, {BUDGET - used} left. At {BUDGET} every tool "
-                "is blocked and you answer from what you have — stop widening the search, start writing."
+                f"Budget: {used}/{BUDGET} tool calls and {elapsed / 60:.1f}/{TIME_BUDGET_MINUTES} "
+                "minutes used. At either limit every tool is blocked and you answer from what you "
+                "have — stop widening the search, start writing."
             )
     return Verdict(deny, context)
 
