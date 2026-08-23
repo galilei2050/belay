@@ -1,0 +1,8 @@
+{
+  "name": "second-opinion",
+  "version": "0.1.0",
+  "description": "A skill and a script that put a question to Gemini through Vertex AI — a model that has not read this session — and bring the answer back as an argument to check, not an authority to follow.",
+  "author": {
+    "name": "galilei2050"
+  }
+}

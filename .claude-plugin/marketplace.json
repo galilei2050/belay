@@ -46,6 +46,11 @@
       "description": "Skill deciding UI wording, control, placement and states, plus five read-only UI reviewers, supplied by a PreToolUse hook while UI is written and once it is committed."
     },
     {
+      "name": "second-opinion",
+      "source": "./plugins/second-opinion",
+      "description": "Skill and script that put a question to Gemini through Vertex AI — a model that has not read this session — and bring the answer back as an argument to check, not an authority to follow."
+    },
+    {
       "name": "pr-flow",
       "source": "./plugins/pr-flow",
       "description": "Skill that writes PR descriptions a reviewer can act on, a CI script that blocks to a verdict and prints only the failing log, plus a PostToolUse hook that says what the branch still owes — a push, a PR, a refreshed body, a green CI — right after each commit and push."
