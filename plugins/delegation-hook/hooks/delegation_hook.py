@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Delegation gate for Claude Code subagents — background only, under a hard tool-call budget.
+"""Delegation gate for Claude Code subagents — background only, under hard tool-call and time budgets.
 
 Two ways handing work to a subagent goes wrong, one plugin:
 
@@ -9,10 +9,11 @@ Two ways handing work to a subagent goes wrong, one plugin:
   without anyone waiting for it, and several agents can run at once. Denied at the `Agent` call,
   where dropping `run_in_background: false` fixes it.
 * **Oversized.** An open-ended slice makes the subagent grind: it keeps exploring, its window fills
-  with its own tool output, and it answers from that. Bounded by counting its tool calls and cutting
-  them off at `BUDGET`, which forces an answer from what it already has and names what it missed.
+  with its own tool output, and it answers from that. Bounded on both axes — `BUDGET` tool calls and
+  `TIME_BUDGET_SECONDS` of wall-clock — with tools cut off at either limit, which forces an answer
+  from what it already has and names what it missed.
 
-The spawning agent is handed the budget at spawn time, so it can size the slice to fit rather than
+The spawning agent is handed the budgets at spawn time, so it can size the slice to fit rather than
 discover the ceiling by hitting it.
 
 Only ever emits `deny` or a bare `additionalContext` — never `allow`, so this hook can't override a
@@ -38,11 +39,12 @@ BUDGET = 30
 WARN_FROM = 20
 
 # 7 minutes comes from the user. Measured against 727 real subagent runs on this machine
-# (2026-08-26): median 3.7 min, p90 14.2 min — so it cuts the slowest ~23%, the same population the
+# (2026-08-22): median 3.7 min, p90 14.2 min — so it cuts the slowest ~23%, the same population the
 # call budget targets from the other axis: few slow calls instead of many fast ones. Wall-clock, so
 # a machine suspend mid-run spends it; an agent resumed hours later is told to wrap up, not to
 # resume grinding.
-TIME_BUDGET_SECONDS = 7 * 60
+TIME_BUDGET_MINUTES = 7
+TIME_BUDGET_SECONDS = TIME_BUDGET_MINUTES * 60
 
 TIME_WARN_FROM_SECONDS = 5 * 60
 
@@ -64,7 +66,7 @@ _FOREGROUND_DENIED = (
 )
 
 _SLICE_THE_TASK = (
-    f"This subagent gets {BUDGET} tool calls and {TIME_BUDGET_SECONDS // 60} minutes. At either "
+    f"This subagent gets {BUDGET} tool calls and {TIME_BUDGET_MINUTES} minutes. At either "
     "limit its tools are blocked and it has to answer from whatever it has by then, so the slice "
     "has to fit the budget:\n"
     '- One named deliverable per agent. "Investigate X" has no end; "read A, B and C, answer Q" does.\n'
@@ -84,7 +86,7 @@ _WRAP_UP = (
 
 _BUDGET_SPENT = f"Your tool-call budget is spent ({BUDGET} calls) — {_WRAP_UP}"
 
-_TIME_SPENT = f"Your wall-clock budget is spent ({TIME_BUDGET_SECONDS // 60} minutes) — {_WRAP_UP}"
+_TIME_SPENT = f"Your wall-clock budget is spent ({TIME_BUDGET_MINUTES} minutes) — {_WRAP_UP}"
 
 
 def _counter_path(agent_id: str) -> Path:
@@ -99,7 +101,12 @@ def _sweep_stale() -> None:
             counter.unlink(missing_ok=True)  # another agent sweeping the same dir may have won
 
 
-_RECORD_SIZE = 18  # b"%017.6f\n" — fixed width, so file size // _RECORD_SIZE is the call count
+def _record(timestamp: float) -> bytes:
+    """One counter record — fixed width, so file size // _RECORD_SIZE is the call count."""
+    return b"%017.6f\n" % timestamp
+
+
+_RECORD_SIZE = len(_record(0.0))
 
 
 class Spend(NamedTuple):
@@ -121,7 +128,7 @@ def record_call(agent_id: str) -> Spend:
     counter = _counter_path(agent_id)
     now = time.time()
     with counter.open("ab") as handle:
-        handle.write(b"%017.6f\n" % now)
+        handle.write(_record(now))
     with counter.open("rb") as handle:
         first = handle.read(_RECORD_SIZE)
     try:
@@ -171,7 +178,7 @@ def judge(data: dict[str, object]) -> Verdict:
             deny = _TIME_SPENT
         elif used >= WARN_FROM or elapsed >= TIME_WARN_FROM_SECONDS:
             context.append(
-                f"Budget: {used}/{BUDGET} tool calls and {elapsed / 60:.1f}/{TIME_BUDGET_SECONDS // 60} "
+                f"Budget: {used}/{BUDGET} tool calls and {elapsed / 60:.1f}/{TIME_BUDGET_MINUTES} "
                 "minutes used. At either limit every tool is blocked and you answer from what you "
                 "have — stop widening the search, start writing."
             )

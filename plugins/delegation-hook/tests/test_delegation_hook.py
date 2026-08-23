@@ -15,9 +15,11 @@ import pytest
 from delegation_hook import (
     _RECORD_SIZE,
     BUDGET,
+    TIME_BUDGET_MINUTES,
     TIME_BUDGET_SECONDS,
     TIME_WARN_FROM_SECONDS,
     WARN_FROM,
+    _record,
     record_call,
 )
 
@@ -49,7 +51,7 @@ def burn(agent_id, calls):
 def backdate(agent_id, seconds):
     """Rewrite `agent_id`'s first record so its run started `seconds` ago."""
     counter = delegation_hook._counter_path(agent_id)
-    started = b"%017.6f\n" % (time.time() - seconds)
+    started = _record(time.time() - seconds)
     counter.write_bytes(started + counter.read_bytes()[_RECORD_SIZE:])
 
 
@@ -145,7 +147,7 @@ def test_time_warning_starts_at_the_threshold(monkeypatch, capsys):
     backdate(SUBAGENT, TIME_WARN_FROM_SECONDS)
     out = via_main(monkeypatch, capsys, tool_name="Read", tool_input={}, agent_id=SUBAGENT)
     assert "permissionDecision" not in out
-    assert f"/{TIME_BUDGET_SECONDS // 60} minutes used" in out["additionalContext"]
+    assert f"5.0/{TIME_BUDGET_MINUTES} minutes used" in out["additionalContext"]
 
 
 def test_call_past_the_time_budget_is_denied(monkeypatch, capsys):
@@ -186,7 +188,7 @@ def test_v1_counter_restarts_the_count():
     delegation_hook._counter_path(SUBAGENT).write_bytes(b"." * 20)
     used, elapsed = record_call(SUBAGENT)
     assert used == 1
-    assert elapsed < 5
+    assert 0 <= elapsed < 5
 
 
 def test_agent_id_cannot_escape_the_state_dir(state_dir):

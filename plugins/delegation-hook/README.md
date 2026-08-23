@@ -1,7 +1,7 @@
 # delegation-hook
 
 A `PreToolUse` gate over **how work is handed to a subagent**: it runs in the background, and it
-gets a fixed tool-call budget before its tools are cut off.
+gets a fixed tool-call and wall-clock budget before its tools are cut off.
 
 ## What it does
 
@@ -19,7 +19,7 @@ notification is the signal.
 
 **Oversized slices.** An open-ended task makes a subagent grind: it keeps exploring, its window
 fills with its own tool output, and it answers from that. Each subagent gets **30 tool calls and
-7 minutes of wall-clock**; from call 20 or minute 5 it is told what's left, and past either limit
+7 minutes of wall-clock**; from call 20 or minute 5 it is told its spend so far, and past either limit
 every tool is denied, which forces it to answer from what it has and name what it didn't reach.
 The spawning agent is handed the same budget as a rule at spawn time, so it can size the slice
 instead of discovering the ceiling by hitting it.
@@ -44,7 +44,7 @@ slowest ~19% — which is exactly the population that bogs down. Note this also 
 longest [`review-panel`](../review-panel) reviewers (`integration-reviewer` medians 31.5), by
 design: a reviewer that reports at 30 is more useful than one still reading at 58.
 
-Time, measured over 727 runs (2026-08-26): median **3.7 min**, p90 **14.2 min**. A 7-minute
+Time, measured over 727 runs (2026-08-22): median **3.7 min**, p90 **14.2 min**. A 7-minute
 budget cuts the slowest ~23% — the same population from the other axis: few slow calls instead
 of many fast ones. It is wall-clock, so a machine suspend mid-run spends it; an agent resumed
 hours later is told to wrap up, not to resume grinding. What neither budget can catch is an
