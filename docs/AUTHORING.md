@@ -71,6 +71,19 @@ Hook events available: `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
 `Stop`, `SubagentStop`, `Notification`, `SessionStart`, `SessionEnd`,
 `PreCompact`. Pick the narrowest one that does the job.
 
+## agents/
+
+Every agent `.md` sets `model:` in its frontmatter — an agent without one
+inherits the session model, which on this machine is Fable with 1M context,
+the most expensive tier there is. Route by task shape:
+
+- `opus` — review, hypothesis falsification, hard debugging, cross-file synthesis
+- `sonnet` — writing code and tests, ordinary analysis (~half the opus cost)
+- `haiku` — search, file discovery, mechanical checks
+
+The spawner can still override per call via the Agent tool's `model` param;
+the frontmatter is the default, not a cap.
+
 ## Python conventions
 
 - Target Python ≥ 3.10

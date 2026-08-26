@@ -1,5 +1,6 @@
 ---
 name: web-researcher
+model: opus
 description: Establishes facts that live outside this system for exactly one investigation hypothesis — known mechanisms, published benchmarks, vendor and provider incidents, status-page history, policy or platform changes, upstream release notes. Every fact returns with a source URL and a publication date, and "not found, here is what I searched" counts as a result. Use when an investigation needs external ground truth; not for anything readable from the codebase or the org's own data (use evidence-collector).
 disallowedTools: Write, Edit, NotebookEdit
 ---

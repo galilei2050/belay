@@ -1,5 +1,6 @@
 ---
 name: hypothesis-falsifier
+model: opus
 description: Adversary for a single investigation hypothesis that already has supporting evidence — verified or partial. Attacks it seven ways (alternative cause for the same evidence, direction and timing, effect size, circularity, counter-case, selection bias, overlap with other verified leaves), gathering its own evidence rather than trusting what it was handed, and returns SURVIVES / WEAKENED / KILLED. Use on every hypothesis before an investigation reports it as a finding.
 disallowedTools: Write, Edit, NotebookEdit
 ---

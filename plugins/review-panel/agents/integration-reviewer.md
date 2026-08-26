@@ -1,5 +1,6 @@
 ---
 name: integration-reviewer
+model: opus
 description: Reviews a commit for what it broke or left unfinished outside the files it touched — callers never updated, schemas and configs out of sync, stubs and TODOs, non-existent or deprecated APIs and packages. Use when reviewing a diff for cross-file coherence and completeness.
 disallowedTools: Write, Edit, NotebookEdit
 ---

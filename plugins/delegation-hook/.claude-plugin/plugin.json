@@ -1,6 +1,6 @@
 {
   "name": "delegation-hook",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "PreToolUse delegation gate: subagents run in the background so the session is never frozen waiting for one, and each gets a 30 tool-call / 7-minute budget before its tools are cut off.",
   "author": {
     "name": "galilei2050"

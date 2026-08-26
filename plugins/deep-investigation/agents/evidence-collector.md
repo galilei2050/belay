@@ -1,5 +1,6 @@
 ---
 name: evidence-collector
+model: opus
 description: Retrieves one narrow slice of fact for exactly one investigation hypothesis from sources reachable from this machine — code, files, logs, git history, databases, internal services and CLIs. Returns the exact command and its raw output, never an interpretation. Use when an investigation needs a fact fetched; not for facts published on the public web (use web-researcher), and not for attacking a hypothesis that already has evidence (use hypothesis-falsifier).
 disallowedTools: Edit, NotebookEdit
 ---

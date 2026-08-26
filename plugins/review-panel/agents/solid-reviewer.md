@@ -1,5 +1,6 @@
 ---
 name: solid-reviewer
+model: opus
 description: Reviews a commit for responsibility placement — SOLID violations, god classes, wrong-layer fixes, leaky abstractions, free functions that should be a type with methods, and changes that patch a symptom where the invariant does not live. Use when reviewing a diff for architecture or separation of concerns.
 disallowedTools: Write, Edit, NotebookEdit
 ---

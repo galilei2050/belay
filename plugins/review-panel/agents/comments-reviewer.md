@@ -1,5 +1,6 @@
 ---
 name: comments-reviewer
+model: opus
 description: Reviews a commit's comments, docstrings, and prose documentation — checks each one describes the entity it is attached to (not something beside it), says why rather than what, is actually true, and links to the source instead of copying it. Use when reviewing a diff for comment or documentation quality.
 disallowedTools: Write, Edit, NotebookEdit
 ---

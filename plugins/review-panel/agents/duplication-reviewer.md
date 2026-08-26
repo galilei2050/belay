@@ -1,5 +1,6 @@
 ---
 name: duplication-reviewer
+model: opus
 description: Reviews a commit for DRY violations — code that builds a second tower beside an existing one instead of modifying it. Use when reviewing a diff for duplication, copy-paste, parallel implementations, or reinvented utilities.
 disallowedTools: Write, Edit, NotebookEdit
 ---

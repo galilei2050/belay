@@ -1,5 +1,6 @@
 ---
 name: ui-state-reviewer
+model: opus
 description: Reviews a diff for the states a screen owes beyond the happy path — a fetch with no loading, empty, or error rendering; an empty state that cannot be told apart from a failed one; no feedback on a long action; a destructive action with neither undo nor confirmation; validation that fires while the user is still typing; a form that discards what was typed on error; optimistic updates that never roll back. Use when reviewing a diff that fetches data, mutates data, or submits a form.
 disallowedTools: Write, Edit, NotebookEdit
 ---
