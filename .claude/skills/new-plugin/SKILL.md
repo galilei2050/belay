@@ -34,6 +34,10 @@ If the user is vague on any of these, ask once. Don't invent.
    ```
    (Drop `hooks/` and add `commands/`, `agents/`, `skills/` instead if the
    plugin isn't a hook. See `docs/AUTHORING.md`.)
+   Every agent `.md` sets `model:` in its frontmatter — `opus` for
+   review/judgment, `sonnet` for writing code/tests, `haiku` for search and
+   mechanical checks. Never omit it: a bare agent inherits the session model
+   (Fable), the most expensive tier. See `docs/AUTHORING.md` → agents/.
 
 2. **`plugin.json`** — version starts at `"0.1.0"`. Include `name`,
    `description`, `author: { "name": "galilei2050" }`.
