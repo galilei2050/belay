@@ -1,5 +1,6 @@
 ---
 name: correctness-reviewer
+model: opus
 description: Reviews a commit for whether the code actually computes the right answer — algorithm and business-logic errors, inverted conditions, off-by-one and boundary mistakes, unhandled edge cases, wrong ordering, concurrency and state errors. Use when reviewing a diff for functional correctness.
 disallowedTools: Write, Edit, NotebookEdit
 ---

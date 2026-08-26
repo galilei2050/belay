@@ -1,5 +1,6 @@
 ---
 name: explicitness-reviewer
+model: opus
 description: Reviews a commit for misplaced error handling and implicit contracts — guards against impossible states, swallowed exceptions and silent fallbacks, escape-hatch types, bare domain literals with no enum behind them, naive datetimes and dates compared as text, code that guesses at the shape of its input, and failure paths that were left unhandled entirely. Use when reviewing a diff for defensive programming, error handling, or implicit behavior.
 disallowedTools: Write, Edit, NotebookEdit
 ---

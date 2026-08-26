@@ -1,5 +1,6 @@
 ---
 name: bloat-reviewer
+model: opus
 description: Reviews a commit for code that is bigger than the problem — long methods, deep nesting, speculative abstraction, unused parameters, dead code. Use when reviewing a diff for bloat, complexity, or over-engineering.
 disallowedTools: Write, Edit, NotebookEdit
 ---

@@ -78,6 +78,16 @@ _SLICE_THE_TASK = (
     "to hurry."
 )
 
+# Grounded in Anthropic's model guidance and subagent-routing consensus (2026-08): route by task
+# shape, don't default upward. Marketplace agents pin `model: opus`; the spawner overrides per call.
+_PICK_THE_MODEL = (
+    "Pick the model for the slice (`model` param overrides the agent's default): `opus` — review, "
+    "falsification, hard debugging, cross-file synthesis; weak spot: overkill for routine work. "
+    "`sonnet` — writing code/tests, ordinary analysis, at ~half opus cost; weak spot: misses subtle "
+    "cross-cutting bugs. `haiku` — search, file discovery, mechanical checks, ~5x cheaper than "
+    "opus; weak spot: shallow on anything needing judgment."
+)
+
 _WRAP_UP = (
     "every further tool call is blocked, and retrying will not unblock it. Write your final message "
     "now: give the answer from what you already have, and state plainly which parts you did not get "
@@ -170,6 +180,7 @@ def judge(data: dict[str, object]) -> Verdict:
             deny = _FOREGROUND_DENIED
         else:
             context.append(_SLICE_THE_TASK)
+            context.append(_PICK_THE_MODEL)
 
     agent_id = data.get("agent_id")
     if isinstance(agent_id, str):  # absent in the main thread — the budgets are a subagent rule

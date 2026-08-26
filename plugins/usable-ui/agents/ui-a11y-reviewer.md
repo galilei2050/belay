@@ -1,5 +1,6 @@
 ---
 name: ui-a11y-reviewer
+model: opus
 description: Reviews a diff against the hard accessibility floor — controls with no accessible name, icon-only buttons without aria-label, placeholders used as labels, an accessible name that does not contain the visible label, targets under 24x24 CSS px (44pt Apple / 48dp Material), contrast under 4.5:1 or 3:1, colour as the only signal, keyboard paths and focus order, modals that do not trap or restore focus. Use when reviewing a diff that adds or changes UI.
 disallowedTools: Write, Edit, NotebookEdit
 ---

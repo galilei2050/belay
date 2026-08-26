@@ -1,5 +1,6 @@
 ---
 name: ui-layout-reviewer
+model: opus
 description: Reviews a diff for where elements sit and how they group — dialog button order against the host platform, a form's submit in the wrong place, a destructive action pressed up against a safe one, a divider between every row (or none between unrelated groups), timeline and list events with no boundary, labels beside instead of above fields, required/optional marked by colour or by two conventions at once, DOM order that does not match visual order. Use when reviewing a diff that lays out UI.
 disallowedTools: Write, Edit, NotebookEdit
 ---

@@ -1,5 +1,6 @@
 ---
 name: ui-copy-reviewer
+model: opus
 description: Reviews a diff for the wording of everything a user reads — button and menu labels that should be a verb but are a noun (or the reverse), generic OK/Yes/Submit on a decision, unnatural word order, inconsistent terminology for one action, list and timeline rows worded as commands, error and empty-state text that does not say what to do next. Use when reviewing a diff that adds or changes user-facing strings.
 disallowedTools: Write, Edit, NotebookEdit
 ---

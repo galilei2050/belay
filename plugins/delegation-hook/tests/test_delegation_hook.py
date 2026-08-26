@@ -73,6 +73,14 @@ def test_background_spawn_allowed_with_slicing_rule(monkeypatch, capsys, backgro
     assert f"{BUDGET} tool calls" in out["additionalContext"]
 
 
+@pytest.mark.parametrize("background", [True, None])
+def test_background_spawn_includes_model_routing_guide(monkeypatch, capsys, background):
+    """The spawner picks the model per slice; the guide names all three tiers it can route to."""
+    context = via_main(monkeypatch, capsys, **spawn(background))["additionalContext"]
+    for tier in ("`opus`", "`sonnet`", "`haiku`"):
+        assert tier in context
+
+
 def test_the_denial_does_not_send_the_agent_to_poll(monkeypatch, capsys):
     """Waiting in a loop is the failure this plugin exists to prevent, in either direction."""
     reason = via_main(monkeypatch, capsys, **spawn(background=False))["permissionDecisionReason"]

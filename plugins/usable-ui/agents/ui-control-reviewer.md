@@ -1,5 +1,6 @@
 ---
 name: ui-control-reviewer
+model: opus
 description: Reviews a diff for whether each interactive element is the right kind of control — clickable divs instead of buttons, links used for actions and buttons used for navigation, a switch where a checkbox belongs (or a switch that needs a Save button), radios vs select vs combobox at the wrong list length, a modal where inline or a page belongs, tabs vs accordion, two competing primary actions, a submit button disabled because the form is incomplete. Use when reviewing a diff that adds or changes interactive UI.
 disallowedTools: Write, Edit, NotebookEdit
 ---

@@ -36,6 +36,12 @@ instead of discovering the ceiling by hitting it.
 Only `deny` or a bare `additionalContext` is ever emitted, never `allow`, so this hook can't
 override a sibling hook's verdict on the same call.
 
+**Model routing.** The spawn-time context also carries a one-liner on picking the model per
+slice, because the marketplace agents pin `model: opus` and the spawner can override it with the
+`model` param. The routing follows Anthropic's guidance and 2026 subagent-routing consensus:
+route by task shape, don't default upward — `opus` for review/falsification/hard debugging,
+`sonnet` for writing code and tests at ~half the cost, `haiku` for search and mechanical checks.
+
 ## Why 30, and why 7 minutes
 
 Calls, measured over 59 real subagent runs on this machine (2026-08-22): median **18** tool
