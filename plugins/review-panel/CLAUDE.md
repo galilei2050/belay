@@ -77,6 +77,11 @@ commit it replaced) and why the sentence says *staging* rather than *committing*
 pathspec commits less than the index holds, and the hook does not parse pathspecs. If you add
 another number, work out which revision it describes before you add it.
 
+The `--amend` branch is not dead code even though `_PROMPT` tells the agent never to amend and
+belay's own `acl-hook` denies the command. This plugin installs on its own, into repos with
+neither, and a user amending by hand still gets a nudge — which has to carry the size of the
+commit they will actually have.
+
 ## The size threshold, and the cost it accepts
 
 `MIN_CHANGED_LINES = 64` is the second bound on the spend, and it is the one the hook *can*

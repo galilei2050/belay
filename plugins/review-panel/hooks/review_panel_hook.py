@@ -78,8 +78,8 @@ that just landed (`git show HEAD`) — plus whatever surrounding files it needs 
 
 Then:
 - Merge their findings. Drop anything a reviewer could not point at a concrete line.
-- Fix what survives, and commit the fixes. Do not amend unless the commit is unpushed
-  and the fix is trivial.
+- Fix what survives, and commit the fixes forward — a new commit, never an amend. The commit
+  the panel read is the one the findings are about; rewriting it loses that pairing.
 - If nothing survives, say so in one line and move on.
 
 **Dispatch unless this commit is nothing but the panel's own corrections.** A round costs
