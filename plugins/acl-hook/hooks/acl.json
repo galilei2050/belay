@@ -7,7 +7,7 @@
           "--amend"
         ],
         "decision": "deny",
-        "reason": "Never amend commits"
+        "reason": "Agent never amends — the commit is already made, so commit forward: put the fix in its own commit. Amending rewrites HEAD, and whatever the old commit held that is not staged now leaves only a reflog entry behind. On an unpushed branch a second commit costs nothing (squash at merge time); on a pushed one, rewriting is the user's call."
       },
       {
         "args": [
