@@ -59,6 +59,15 @@ def test_git_reset_is_denied(logger):
     assert "reset" in reason.lower()
 
 
+@pytest.mark.parametrize("command", ["git commit --amend", "git commit -m fix --amend", "git commit --amend --no-edit"])
+def test_git_amend_is_denied_and_points_at_committing_forward(logger, command):
+    """A deny that only says no is where an agent starts inventing a way around it, and the
+    way around an amend is `reset --soft` or a force push — both worse than the amend."""
+    decision, reason = decide(command, logger)
+    assert decision == "deny"
+    assert "commit forward" in reason.lower()
+
+
 def test_git_force_push_is_denied(logger):
     assert decide("git push --force", logger)[0] == "deny"
 
