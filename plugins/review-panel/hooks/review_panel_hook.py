@@ -59,10 +59,15 @@ _DRY_RUN_RE = re.compile(r"(?<![\w-])--dry-run(?![\w-])")
 # `-a` / `-am` stage tracked files at commit time, so the index is empty until then and
 # the review scope has to come from the worktree instead. `(?!-)` keeps `--amend` out.
 _STAGE_ALL_RE = re.compile(r"(?<![\w-])(?:-(?!-)\w*a\w*|--all)(?![\w-])")
+# An amend replaces HEAD instead of adding to it, so the commit the panel will read spans
+# HEAD~1 to the index — measuring against HEAD would report only the fix on top and hand the
+# agent a small number for a large review. Amending a root commit has no HEAD~1 to measure
+# from and falls back to HEAD: an understated size still dispatches the panel, silence does not.
+_AMEND_RE = re.compile(r"(?<![\w-])--amend(?![\w-])")
 
 _PROMPT = """\
-You just ran `git commit` — {lines} changed lines across {files} file(s). Before moving on, put
-that commit through the review panel.
+You just ran `git commit`, staging {lines} changed lines across {files} file(s). Before moving
+on, put that commit through the review panel.
 
 Dispatch all {count} reviewers **in a single message** so they run in parallel. They run in the
 background and each report arrives as a notification — carry on with something else meanwhile,
@@ -79,13 +84,12 @@ Then:
 
 **Dispatch unless this commit is nothing but the panel's own corrections.** A round costs
 {count} subagents of the user's money, and exactly one kind of commit skips it: one where every
-hunk is traceable to a finding from the round you just ran. That is a test on the content, not
-on the order — a commit that introduces a type, a branch, a file, an interface or a behavior
-the panel has not read fails it, however recently the panel ran, and {lines} changed lines
-across {files} file(s) is the size you are weighing against that bar. Say in one line which of
-the two this commit is before you decide, and if it is the corrections one, dispatch nobody.
-A panel handed its own corrections finds fresh wording to object to indefinitely, and a finding
-you already rejected does not get a second opinion.
+hunk is traceable to a finding from the round you just ran. That is a test on the content — a
+commit that introduces a type, a branch, a file, an interface or a behavior the panel has not
+read fails it however recently the panel ran. Say in one line which of the two this commit is
+before you decide, and if it is the corrections one, dispatch nobody. A panel handed its own
+corrections finds fresh wording to object to indefinitely, and a finding you already rejected
+does not get a second opinion.
 
 The panel is advisory — none of this blocks the commit that already happened."""
 
@@ -124,17 +128,16 @@ def changed_lines(diff: str) -> int:
 
 
 def changed_files(diff: str) -> int:
-    """Files touched by a unified diff, counted from the `diff --git` header of each one."""
+    """Files touched by a unified diff, counted from `diff --git`.
+
+    That header, not the `+++` line: a pure rename carries no `+++` at all, and a delete
+    points its own at `/dev/null`.
+    """
     return sum(1 for line in diff.splitlines() if line.startswith("diff --git "))
 
 
 class Scope(NamedTuple):
-    """The code about to be committed: what the digest is over, and how big it measures.
-
-    The size travels with the digest because the prompt quotes it back. An agent deciding
-    whether a commit is "only the last round's fixes" is talking itself out of the whole
-    panel, and the one fact that settles it is how much code is actually in front of it.
-    """
+    """The code about to be committed: the digest, plus the two counts the prompt quotes back."""
 
     digest: str
     lines: int
@@ -150,8 +153,17 @@ def review_scope(cwd: str, segment: str) -> Scope | None:
     The digest is what makes the hook idempotent: a commit rejected by pre-commit and
     retried carries the same content, and re-dispatching the whole panel over it is pure
     waste. Once the agent fixes something the content changes and the panel runs again.
+
+    The counts ride along, so the diff measured here is the one the roster points at. That
+    is why `--amend` moves the base: the prompt quotes the size as a claim about the commit,
+    and a claim measured against a different revision than the panel reads is just wrong.
+    A trailing pathspec still overstates — the prompt says "staging" rather than "committing"
+    for that reason, since the index is what this actually measures.
     """
-    diff = _git(cwd, "diff", "HEAD" if _STAGE_ALL_RE.search(segment) else "--cached")
+    amending_onto = _AMEND_RE.search(segment) and _git(cwd, "rev-parse", "--verify", "-q", "HEAD~1")
+    base = "HEAD~1" if amending_onto else "HEAD"
+    against = (base,) if _STAGE_ALL_RE.search(segment) else ("--cached", base)
+    diff = _git(cwd, "diff", *against)
     if not diff:
         return None
     lines = changed_lines(diff)

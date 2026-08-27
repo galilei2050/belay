@@ -150,11 +150,25 @@ def test_the_panel_is_pointed_at_the_commit_that_just_landed(run_hook, repo):
     assert "git show HEAD" in context
 
 
+EXEMPTION = """\
+**Dispatch unless this commit is nothing but the panel's own corrections.** A round costs
+8 subagents of the user's money, and exactly one kind of commit skips it: one where every
+hunk is traceable to a finding from the round you just ran. That is a test on the content — a
+commit that introduces a type, a branch, a file, an interface or a behavior the panel has not
+read fails it however recently the panel ran. Say in one line which of the two this commit is
+before you decide, and if it is the corrections one, dispatch nobody. A panel handed its own
+corrections finds fresh wording to object to indefinitely, and a finding you already rejected
+does not get a second opinion."""
+
+
 def test_the_agent_is_told_to_spend_a_round_unless_the_commit_is_the_panels_own_fixes(run_hook, repo):
-    """A fix commit is new content, so only this instruction stops a second round of eight."""
+    """Pinned whole, not by substring: this paragraph is the only thing that stops a second round
+    of eight, so every clause in it is load-bearing. Asserting on a headline phrase leaves the
+    content test free to be reworded back into an order test — "the commit right after a round
+    skips" — which is the exact failure the paragraph exists to prevent, with nothing going red.
+    """
     context = run_hook("git commit -m x", repo)["hookSpecificOutput"]["additionalContext"]
-    assert "nothing but the panel's own corrections" in context
-    assert "dispatch nobody" in context
+    assert EXEMPTION in context
 
 
 def test_the_agent_is_told_how_big_the_commit_is(run_hook, repo, git, big_file):
@@ -164,7 +178,33 @@ def test_the_agent_is_told_how_big_the_commit_is(run_hook, repo, git, big_file):
     (repo / "second.py").write_text(big_file("q"))
     git(repo, "add", "second.py")
     context = run_hook("git commit -m x", repo)["hookSpecificOutput"]["additionalContext"]
-    assert "160 changed lines across 2 file(s)" in context
+    assert "staging 160 changed lines across 2 file(s)" in context
+
+
+def test_the_size_counts_the_lines_a_rewrite_removed(run_hook, repo, git):
+    """A rewrite replacing 80 lines with 3 is an 83-line review. Counting only additions would
+    report 3 — a number that actively supports "these are just the last round's fixes"."""
+    git(repo, "commit", "-qm", "staged")
+    (repo / "staged.py").write_text("a = 1\nb = 2\nc = 3\n")
+    git(repo, "add", "staged.py")
+    context = run_hook("git commit -m x", repo)["hookSpecificOutput"]["additionalContext"]
+    assert "staging 83 changed lines across 1 file(s)" in context
+
+
+def test_an_amend_is_measured_against_the_commit_it_replaces(run_hook, repo, git, big_file):
+    """`git show HEAD` after an amend spans HEAD~1, so measuring against HEAD would report only
+    the fix on top and hand the agent a small number for a large review."""
+    git(repo, "commit", "-qm", "staged")
+    (repo / "fix.py").write_text(big_file("f"))
+    git(repo, "add", "fix.py")
+    emitted = run_hook("git commit --amend --no-edit", repo)
+    assert "staging 160 changed lines across 2 file(s)" in emitted["hookSpecificOutput"]["additionalContext"]
+
+
+def test_amending_the_root_commit_still_dispatches_the_panel(run_hook, repo):
+    """There is no HEAD~1 to measure from. An understated size still gets the panel onto the
+    commit; going silent would leave the only commit in the repo unreviewed."""
+    assert run_hook("git commit --amend --no-edit", repo) is not None
 
 
 def test_the_commit_is_neither_blocked_nor_auto_approved(run_hook, repo):

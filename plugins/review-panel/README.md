@@ -22,7 +22,7 @@ reaches the model *after*. That split is the whole design:
 6. agent  →  dispatches all 8 reviewers in ONE message → they run in parallel over
              `git show HEAD`
 7. agent  ·  merges the eight reports, drops unsupported findings, fixes what survives
-8. agent  →  commits the fixes — findings the panel already made, so no second round
+8. agent  →  commits the fixes — every hunk traceable to a finding, so no second round
 ```
 
 The nudge lands **at the top of the turn right after the commit**, not before it — the
@@ -38,11 +38,8 @@ applied or genuine new work. Eight subagents is real money, and a panel handed i
 corrections finds fresh wording to object to indefinitely. A clean panel ends it a step earlier:
 `NO FINDINGS` means nothing to fix, no further commit, and no further nudge.
 
-The exemption is written as a test on the **content** — every hunk traceable to a finding from
-the last round — and never on the order, because an agent that reads it as "the commit after a
-round" will skip a rewrite that merely happened to follow one. The nudge quotes the measured
-size back (`N changed lines across M file(s)`) for the same reason: the number is what refutes
-"these are just the fixes" without the user having to.
+The exemption is a test on content, not on order, and the nudge quotes the commit's measured
+size back so the claim is refutable — why, in [CLAUDE.md](CLAUDE.md).
 
 **A round has a floor: 64 changed lines** (added plus removed, file headers excluded).
 `git commit` is the one moment the size of a change is known for free, and eight subagents

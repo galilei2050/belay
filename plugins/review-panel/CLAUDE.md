@@ -9,8 +9,9 @@ enough to be worth a round? It does NOT review code, call an LLM, read the trans
 know anything about the reviewers beyond their names. All the judgment lives in
 `agents/*.md`, which are prompts, not code.
 
-It touches the diff twice, and both are blind to what the diff *says*: a hash of it, and a
-count of its changed lines. If a change would make the hook read the diff for meaning —
+It touches the diff three times, and all three are blind to what the diff *says*: a hash of
+it, a count of its changed lines, and a count of its files. If a change would make the hook
+read the diff for meaning —
 which files, which language, whether a change looks risky — it belongs in a reviewer prompt
 instead.
 
@@ -55,15 +56,26 @@ most likely to be *misapplied* — it is the only one that saves eight subagents
 looking for a reason to skip a round will find it there. Two things in the wording exist to
 stop that, and neither is decoration:
 
-- It is a test on **content** (every hunk traceable to a finding from the last round), stated
-  explicitly as *not* a test on order. Read as "the commit after a round", it swallows any
-  rewrite that happens to follow one — which is exactly the failure it was observed producing.
+- It is a test on **content** — every hunk traceable to a finding from the last round, and a
+  commit introducing anything the panel has not read fails it *however recently the panel ran*.
+  Read as a test on order ("the commit after a round"), it swallows any rewrite that happens to
+  follow one, which is exactly the failure it was observed producing. The whole paragraph is
+  pinned verbatim in the tests, so rewording it back is a deliberate edit, not a silent one.
 - The prompt quotes the **measured size** back at the agent (`Scope.lines` / `Scope.files`).
-  The hook counts both anyway to clear `MIN_CHANGED_LINES`; passing the numbers through costs
-  nothing and is what makes "these are just the fixes" refutable on a 900-line commit.
+  The line count is already there to clear `MIN_CHANGED_LINES`; the file count is one extra
+  pass over the same string, bought because it is what makes "these are just the fixes"
+  refutable on a 900-line commit. Once, in the opening sentence — the prompt is short enough
+  that repeating it at the decision point only teaches the agent to skim.
 
-Keep both if you rewrite the paragraph. The hook still judges nothing — it reports two counts
-it already has.
+Keep both if you rewrite the paragraph. The hook still judges nothing — it reports two counts.
+
+**A number quoted at the agent is a claim, and it has to be about the diff the roster names.**
+Before this the staged diff only had to be *stable*, because a dedup key is compared against
+itself; quoting it turned it into an outward statement about the commit under review. That is
+why `--amend` measures from `HEAD~1` (an amend replaces HEAD, so `git show HEAD` spans the
+commit it replaced) and why the sentence says *staging* rather than *committing* — a trailing
+pathspec commits less than the index holds, and the hook does not parse pathspecs. If you add
+another number, work out which revision it describes before you add it.
 
 ## The size threshold, and the cost it accepts
 
@@ -178,7 +190,7 @@ uv run mypy plugins/review-panel/hooks/review_panel_hook.py
 boundary Claude Code uses — the real script, a JSON payload on stdin, JSON on stdout — via
 the `run_hook` fixture. Nothing imports `review_panel_hook` or calls its functions.
 
-That is deliberate, not incidental. `committing_segment()`, `review_scope_digest()`, and
+That is deliberate, not incidental. `committing_segment()`, `review_scope()`, and
 the state helpers are implementation; asserting on them directly would freeze the internals
 and still tell you nothing about what the agent receives. Going through the script also
 covers what a unit test cannot: that the file is executable, imports cleanly, resolves `git`,
