@@ -31,12 +31,18 @@ cannot commit-and-move-on. Reviewing `HEAD` rather than the index is a consequen
 preference: `additionalContext` is delivered on the next model request, by which point the
 index is empty and the commit exists.
 
-**A round is owed to changes the panel has not seen, and nothing else.** The fix commit is
-new content, so the hook does fire over it — the nudge itself is what tells the agent to
-skip it, because only the agent knows whether what it just committed is the panel's own
-findings applied or genuine new work. Eight subagents is real money, and a panel handed its
-own corrections finds fresh wording to object to indefinitely. A clean panel ends it a step
-earlier: `NO FINDINGS` means nothing to fix, no further commit, and no further nudge.
+**One commit skips a round: the one that is nothing but the panel's own corrections.** The fix
+commit is new content, so the hook does fire over it — the nudge itself is what tells the agent
+to skip it, because only the agent knows whether what it just committed is the panel's findings
+applied or genuine new work. Eight subagents is real money, and a panel handed its own
+corrections finds fresh wording to object to indefinitely. A clean panel ends it a step earlier:
+`NO FINDINGS` means nothing to fix, no further commit, and no further nudge.
+
+The exemption is written as a test on the **content** — every hunk traceable to a finding from
+the last round — and never on the order, because an agent that reads it as "the commit after a
+round" will skip a rewrite that merely happened to follow one. The nudge quotes the measured
+size back (`N changed lines across M file(s)`) for the same reason: the number is what refutes
+"these are just the fixes" without the user having to.
 
 **A round has a floor: 64 changed lines** (added plus removed, file headers excluded).
 `git commit` is the one moment the size of a change is known for free, and eight subagents

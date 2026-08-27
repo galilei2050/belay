@@ -150,11 +150,21 @@ def test_the_panel_is_pointed_at_the_commit_that_just_landed(run_hook, repo):
     assert "git show HEAD" in context
 
 
-def test_the_agent_is_told_to_spend_a_round_only_on_unseen_changes(run_hook, repo):
+def test_the_agent_is_told_to_spend_a_round_unless_the_commit_is_the_panels_own_fixes(run_hook, repo):
     """A fix commit is new content, so only this instruction stops a second round of eight."""
     context = run_hook("git commit -m x", repo)["hookSpecificOutput"]["additionalContext"]
-    assert "changes the panel has not seen" in context
+    assert "nothing but the panel's own corrections" in context
     assert "dispatch nobody" in context
+
+
+def test_the_agent_is_told_how_big_the_commit_is(run_hook, repo, git, big_file):
+    """The exemption is the sentence an agent reaches for to skip a round; the size is what
+    refutes it. Without the number in the nudge, a 900-line commit reads exactly like a 65-line
+    one, and 'these are just the last round's fixes' goes unchallenged."""
+    (repo / "second.py").write_text(big_file("q"))
+    git(repo, "add", "second.py")
+    context = run_hook("git commit -m x", repo)["hookSpecificOutput"]["additionalContext"]
+    assert "160 changed lines across 2 file(s)" in context
 
 
 def test_the_commit_is_neither_blocked_nor_auto_approved(run_hook, repo):

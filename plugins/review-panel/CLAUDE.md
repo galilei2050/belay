@@ -50,6 +50,21 @@ every mechanical measure, and telling it apart from genuine new work needs to kn
 commit was for. Only the agent knows that, so the rule is in `_PROMPT` and the hook keeps
 guessing nothing (see Scope).
 
+Because the agent is the one applying it, the exemption is the sentence in the whole prompt
+most likely to be *misapplied* — it is the only one that saves eight subagents, so a model
+looking for a reason to skip a round will find it there. Two things in the wording exist to
+stop that, and neither is decoration:
+
+- It is a test on **content** (every hunk traceable to a finding from the last round), stated
+  explicitly as *not* a test on order. Read as "the commit after a round", it swallows any
+  rewrite that happens to follow one — which is exactly the failure it was observed producing.
+- The prompt quotes the **measured size** back at the agent (`Scope.lines` / `Scope.files`).
+  The hook counts both anyway to clear `MIN_CHANGED_LINES`; passing the numbers through costs
+  nothing and is what makes "these are just the fixes" refutable on a 900-line commit.
+
+Keep both if you rewrite the paragraph. The hook still judges nothing — it reports two counts
+it already has.
+
 ## The size threshold, and the cost it accepts
 
 `MIN_CHANGED_LINES = 64` is the second bound on the spend, and it is the one the hook *can*

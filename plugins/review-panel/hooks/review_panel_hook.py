@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
 STATE_PATH = Path.home() / ".claude" / "review-panel" / "reviewed.json"
 GIT = shutil.which("git")
@@ -60,7 +61,8 @@ _DRY_RUN_RE = re.compile(r"(?<![\w-])--dry-run(?![\w-])")
 _STAGE_ALL_RE = re.compile(r"(?<![\w-])(?:-(?!-)\w*a\w*|--all)(?![\w-])")
 
 _PROMPT = """\
-You just ran `git commit`. Before moving on, put that commit through the review panel.
+You just ran `git commit` — {lines} changed lines across {files} file(s). Before moving on, put
+that commit through the review panel.
 
 Dispatch all {count} reviewers **in a single message** so they run in parallel. They run in the
 background and each report arrives as a notification — carry on with something else meanwhile,
@@ -75,12 +77,15 @@ Then:
   and the fix is trivial.
 - If nothing survives, say so in one line and move on.
 
-**Dispatch only over changes the panel has not seen.** A round costs {count} subagents of
-the user's money, so spend it on substantial new work — new code, a behavior change, a file
-the panel has not read. A commit that only applies the findings from the round you just ran
-is not that: say so in one line and dispatch nobody. A panel handed its own corrections
-finds fresh wording to object to indefinitely, and a finding you already rejected does not
-get a second opinion.
+**Dispatch unless this commit is nothing but the panel's own corrections.** A round costs
+{count} subagents of the user's money, and exactly one kind of commit skips it: one where every
+hunk is traceable to a finding from the round you just ran. That is a test on the content, not
+on the order — a commit that introduces a type, a branch, a file, an interface or a behavior
+the panel has not read fails it, however recently the panel ran, and {lines} changed lines
+across {files} file(s) is the size you are weighing against that bar. Say in one line which of
+the two this commit is before you decide, and if it is the corrections one, dispatch nobody.
+A panel handed its own corrections finds fresh wording to object to indefinitely, and a finding
+you already rejected does not get a second opinion.
 
 The panel is advisory — none of this blocks the commit that already happened."""
 
@@ -118,8 +123,26 @@ def changed_lines(diff: str) -> int:
     return sum(1 for line in body if line.startswith(("+", "-")))
 
 
-def review_scope_digest(cwd: str, segment: str) -> str | None:
-    """Digest of the code about to be committed, or None if it is not worth a round.
+def changed_files(diff: str) -> int:
+    """Files touched by a unified diff, counted from the `diff --git` header of each one."""
+    return sum(1 for line in diff.splitlines() if line.startswith("diff --git "))
+
+
+class Scope(NamedTuple):
+    """The code about to be committed: what the digest is over, and how big it measures.
+
+    The size travels with the digest because the prompt quotes it back. An agent deciding
+    whether a commit is "only the last round's fixes" is talking itself out of the whole
+    panel, and the one fact that settles it is how much code is actually in front of it.
+    """
+
+    digest: str
+    lines: int
+    files: int
+
+
+def review_scope(cwd: str, segment: str) -> Scope | None:
+    """The code about to be committed, or None if it is not worth a round.
 
     Takes the committing segment rather than the whole Bash call: `-a` in an earlier command
     (`git stash -a && git commit -m x`) says nothing about what this commit stages.
@@ -129,9 +152,12 @@ def review_scope_digest(cwd: str, segment: str) -> str | None:
     waste. Once the agent fixes something the content changes and the panel runs again.
     """
     diff = _git(cwd, "diff", "HEAD" if _STAGE_ALL_RE.search(segment) else "--cached")
-    if not diff or changed_lines(diff) < MIN_CHANGED_LINES:
+    if not diff:
         return None
-    return hashlib.sha256(diff.encode()).hexdigest()
+    lines = changed_lines(diff)
+    if lines < MIN_CHANGED_LINES:
+        return None
+    return Scope(hashlib.sha256(diff.encode()).hexdigest(), lines, changed_files(diff))
 
 
 def already_reviewed(repo: str, digest: str) -> bool:
@@ -149,10 +175,10 @@ def record_reviewed(repo: str, digest: str) -> None:
     STATE_PATH.write_text(json.dumps(state))
 
 
-def build_prompt() -> str:
+def build_prompt(scope: Scope) -> str:
     """The advisory text handed to the agent: the roster plus what to do with its findings."""
     roster = "\n".join(f"- `review-panel:{name}`" for name in REVIEWERS)
-    return _PROMPT.format(count=len(REVIEWERS), roster=roster)
+    return _PROMPT.format(count=len(REVIEWERS), roster=roster, lines=scope.lines, files=scope.files)
 
 
 def main() -> None:
@@ -169,20 +195,20 @@ def main() -> None:
     toplevel = _git(cwd, "rev-parse", "--show-toplevel")
     if toplevel is None:
         return  # not a git repo — the commit will fail on its own
-    digest = review_scope_digest(cwd, segment)
-    if digest is None:
+    scope = review_scope(cwd, segment)
+    if scope is None:
         return
     repo = toplevel.strip()
-    if already_reviewed(repo, digest):
+    if already_reviewed(repo, scope.digest):
         return
-    record_reviewed(repo, digest)
+    record_reviewed(repo, scope.digest)
 
     sys.stdout.write(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "PreToolUse",
-                    "additionalContext": build_prompt(),
+                    "additionalContext": build_prompt(scope),
                 }
             }
         )
