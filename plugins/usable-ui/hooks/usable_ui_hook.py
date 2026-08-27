@@ -125,9 +125,12 @@ Then:
   the fix is trivial.
 - If nothing survives, say so in one line and move on.
 
-**Dispatch only over UI the panel has not seen.** A round costs {count} subagents of the
-user's money. A commit that only applies the findings from the round you just ran is not new
-work: say so in one line and dispatch nobody.
+**Dispatch unless this commit is nothing but the panel's own corrections.** A round costs
+{count} subagents of the user's money, and exactly one kind of commit skips it: one where every
+hunk is traceable to a finding from the round you just ran. That is a test on the content — a
+commit that adds a control, a state, a string or a screen the panel has not read fails it
+however recently the panel ran. Say in one line which of the two this commit is before you
+decide, and if it is the corrections one, dispatch nobody.
 
 The panel is advisory — none of this blocks the commit that already happened."""
 

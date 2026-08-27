@@ -147,6 +147,25 @@ def test_a_non_ascii_filename_is_still_a_user_facing_file(hook, repo, stage):
     assert "Кнопка.tsx" in context_of(hook.bash("git commit -m x", repo))
 
 
+EXEMPTION = """\
+**Dispatch unless this commit is nothing but the panel's own corrections.** A round costs
+5 subagents of the user's money, and exactly one kind of commit skips it: one where every
+hunk is traceable to a finding from the round you just ran. That is a test on the content — a
+commit that adds a control, a state, a string or a screen the panel has not read fails it
+however recently the panel ran. Say in one line which of the two this commit is before you
+decide, and if it is the corrections one, dispatch nobody."""
+
+
+def test_the_only_commit_that_skips_a_round_is_the_panels_own_fixes(hook, repo, stage):
+    """Pinned whole: this paragraph is the only thing that stops a second round of five, and
+    worded as a test on order ("the commit after a round") it swallows any UI rewrite that
+    happens to follow one. Kept in step with review-panel's — the two panels answer the same
+    question about the same commit, and a divergence shows up as one skipping where the other
+    dispatches."""
+    stage(repo, "src/Button.tsx")
+    assert EXEMPTION in context_of(hook.bash("git commit -m x", repo))
+
+
 @pytest.mark.parametrize(
     "command",
     [

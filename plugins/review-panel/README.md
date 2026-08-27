@@ -22,7 +22,7 @@ reaches the model *after*. That split is the whole design:
 6. agent  →  dispatches all 8 reviewers in ONE message → they run in parallel over
              `git show HEAD`
 7. agent  ·  merges the eight reports, drops unsupported findings, fixes what survives
-8. agent  →  commits the fixes — findings the panel already made, so no second round
+8. agent  →  commits the fixes — every hunk traceable to a finding, so no second round
 ```
 
 The nudge lands **at the top of the turn right after the commit**, not before it — the
@@ -31,12 +31,15 @@ cannot commit-and-move-on. Reviewing `HEAD` rather than the index is a consequen
 preference: `additionalContext` is delivered on the next model request, by which point the
 index is empty and the commit exists.
 
-**A round is owed to changes the panel has not seen, and nothing else.** The fix commit is
-new content, so the hook does fire over it — the nudge itself is what tells the agent to
-skip it, because only the agent knows whether what it just committed is the panel's own
-findings applied or genuine new work. Eight subagents is real money, and a panel handed its
-own corrections finds fresh wording to object to indefinitely. A clean panel ends it a step
-earlier: `NO FINDINGS` means nothing to fix, no further commit, and no further nudge.
+**One commit skips a round: the one that is nothing but the panel's own corrections.** The fix
+commit is new content, so the hook does fire over it — the nudge itself is what tells the agent
+to skip it, because only the agent knows whether what it just committed is the panel's findings
+applied or genuine new work. Eight subagents is real money, and a panel handed its own
+corrections finds fresh wording to object to indefinitely. A clean panel ends it a step earlier:
+`NO FINDINGS` means nothing to fix, no further commit, and no further nudge.
+
+The exemption is a test on content, not on order, and the nudge quotes the commit's measured
+size back so the claim is refutable — why, in [CLAUDE.md](CLAUDE.md).
 
 **A round has a floor: 64 changed lines** (added plus removed, file headers excluded).
 `git commit` is the one moment the size of a change is known for free, and eight subagents
