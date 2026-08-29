@@ -1,7 +1,7 @@
 {
   "name": "pr-flow",
-  "version": "0.2.1",
-  "description": "A skill that writes PR descriptions a reviewer can act on, a CI script that blocks to a verdict and prints only the failing log, and a PostToolUse hook that carries every commit through to a pushed branch, an open PR and a green CI by saying what the branch still owes, right after each commit and push.",
+  "version": "0.3.0",
+  "description": "A skill that writes PR descriptions a reviewer can act on, a CI script that takes a branch from a verdict through the merge and the deploy that follows it while printing only the failing log, and a PostToolUse hook that carries every commit through to a pushed branch, an open PR, a green CI and a change that is actually live by saying what the branch still owes, right after each commit and push.",
   "author": {
     "name": "galilei2050"
   }

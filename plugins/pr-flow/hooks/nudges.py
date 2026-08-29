@@ -17,6 +17,16 @@ SKILL = "pr-flow:pr-description"
 # from a subdirectory. The agent must be able to paste the line as-is.
 CI = f"python3 {Path(__file__).resolve().parent.parent / 'scripts' / 'ci.py'}"
 
+# The half of the flow that starts after the part agents treat as the finish line. Named in both
+# PR nudges because green CI is exactly where a branch gets reported as done while the change is
+# still sitting in an unmerged PR.
+CHAIN = (
+    f"`{CI} merged` blocks until the PR leaves OPEN, re-checking every 5 minutes; once it is in, "
+    f"`{CI} deploy` blocks on the workflow runs of the merge commit; and once those are out, read "
+    "the service's own logs and metrics for real traffic — a green workflow says the deploy ran, "
+    "not that the change works. Do not stop before that last one."
+)
+
 NUDGES = {
     "push": (
         "`{branch}` has {unpushed} commit(s) that exist only on this machine. Push it — "
@@ -30,7 +40,8 @@ NUDGES = {
         "the numbers you measured), a mermaid diagram of the mechanism, what changed, what you "
         "verified, the risk and the rollback. A bullet list of commit subjects is not a PR "
         "description; the diff already says that. Then find out what CI does with it: `" + CI + " "
-        "wait` blocks until the checks conclude and prints the failing log and nothing else."
+        "wait` blocks until the checks conclude and prints the failing log and nothing else. Green "
+        "CI is not the end of it: " + CHAIN
     ),
     "update": (
         "PR #{number} already covers `{branch}` ({url}), and you just pushed to it. Re-read its "
@@ -39,7 +50,7 @@ NUDGES = {
         "skill has the shape. A description that describes the first commit of a five-commit "
         "branch is worse than none. If nothing material changed, say so in one line and move on. "
         "Either way this push started a CI run you have not seen: `" + CI + " wait` blocks until "
-        "the checks conclude and prints the failing log and nothing else. A branch is finished "
-        "when CI is green, not when the push succeeded."
+        "the checks conclude and prints the failing log and nothing else. A branch is not finished "
+        "when the push succeeded, and not when CI went green either: " + CHAIN
     ),
 }

@@ -26,7 +26,7 @@ a climber when they fall. These plugins are the belay for the agent.
 | [deep-investigation](plugins/deep-investigation) | Skill + agents | Answers a why-question by building the whole hypothesis tree first, then falsifying branches until the verified mechanisms add up to the observed effect |
 | [usable-ui](plugins/usable-ui) | Skill + agents + PreToolUse | Decides UI wording, control, placement and states while UI is written, then dispatches five read-only UI reviewers (copy, control, layout, state, a11y) over the commit |
 | [second-opinion](plugins/second-opinion) | Skill + script | Puts a question to Gemini through Vertex AI — a model that has not read this session — and brings back an argument to check rather than an authority to follow |
-| [pr-flow](plugins/pr-flow) | Skill + PostToolUse | Nudges after every commit/push toward a pushed branch, an open PR and a green CI; writes the PR description (measured failure, mermaid mechanism, checks, risk) and ships a CI script that waits to a verdict and prints only the failing log |
+| [pr-flow](plugins/pr-flow) | Skill + PostToolUse | Nudges after every commit/push toward a pushed branch, an open PR, a green CI and a change that is actually live; writes the PR description (measured failure, mermaid mechanism, checks, risk) and ships a CI script that waits to a verdict, then to the merge, then to the deploy |
 
 More plugins will land here as the harness is decomposed.
 
