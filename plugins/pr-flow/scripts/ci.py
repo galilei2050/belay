@@ -82,6 +82,9 @@ _RUN_CONCLUSIONS = {
 
 EXIT_GREEN, EXIT_RED, EXIT_PENDING, EXIT_UNKNOWN = 0, 1, 2, 3
 
+# How this script was invoked, so every "run this next" sentence is a line the agent can paste.
+ME = f"python3 {sys.argv[0]}"
+
 
 class Check(NamedTuple):
     """One check run on the PR, as `gh pr checks --json` reports it."""
@@ -147,12 +150,16 @@ class Advice(NamedTuple):
 
     red: str
     pending: str
+    nothing_passed: str
     green: str
 
 
 CHECK_ADVICE = Advice(
     red="Read the failure: `{me} logs`, fix it, push again.",
     pending="Block on it: `{me} wait`.",
+    nothing_passed=(
+        "Nothing actually ran. Find out why every check was skipped or cancelled before trusting this branch."
+    ),
     # The whole point of the verb: green CI is the middle of the flow, and this is where an agent
     # otherwise reports the work as finished.
     green=(
@@ -164,6 +171,10 @@ CHECK_ADVICE = Advice(
 DEPLOY_ADVICE = Advice(
     red="The deploy failed — the merge never reached production. Read the log below, fix it, ship again.",
     pending="Still rolling out: `{me} deploy` again to keep blocking on it.",
+    nothing_passed=(
+        "Every run was cancelled or skipped, so nothing was deployed — a superseded concurrency group "
+        "or a path filter. The merge is in; the change is not live. Ship it."
+    ),
     green=(
         "The deploy workflow finished. That is not proof the service is healthy — read its own logs "
         "and metrics for real traffic (error rate, latency, the code path you changed) before "
@@ -176,12 +187,16 @@ def verdict(checks: list[Check], advice: Advice = CHECK_ADVICE) -> Verdict:
     """Judge the checks: red beats pending beats green, because that is what has to be acted on."""
     counted = {bucket: sum(1 for check in checks if check.bucket == bucket) for bucket in _BUCKET_ORDER}
     tally = ", ".join(f"{count} {bucket}" for bucket, count in counted.items() if count)
-    me = f"python3 {sys.argv[0]}"
     if counted["fail"]:
-        return Verdict(EXIT_RED, f"RED — {tally}. " + advice.red.format(me=me))
+        return Verdict(EXIT_RED, f"RED — {tally}. " + advice.red.format(me=ME))
     if counted["pending"]:
-        return Verdict(EXIT_PENDING, f"PENDING — {tally}. " + advice.pending.format(me=me))
-    return Verdict(EXIT_GREEN, f"GREEN — {tally}. " + advice.green.format(me=me))
+        return Verdict(EXIT_PENDING, f"PENDING — {tally}. " + advice.pending.format(me=ME))
+    # A run set that is entirely cancelled or skipped has no failure to report and nothing left to
+    # wait for, and green is exactly the wrong word for it: for a deploy it means the change never
+    # left the merge commit.
+    if not counted["pass"]:
+        return Verdict(EXIT_RED, f"NOT GREEN — {tally}. " + advice.nothing_passed.format(me=ME))
+    return Verdict(EXIT_GREEN, f"GREEN — {tally}. " + advice.green.format(me=ME))
 
 
 def report(checks: list[Check], advice: Advice = CHECK_ADVICE) -> int:
@@ -245,23 +260,23 @@ def fetch_pr(branch: str) -> PullRequest:
         raise SystemExit(EXIT_UNKNOWN)
     data = json.loads(result.stdout)
     return PullRequest(
-        number=data.get("number", 0),
-        state=data.get("state", ""),
-        url=data.get("url", ""),
-        merged_at=data.get("mergedAt") or "",
-        merge_commit=(data.get("mergeCommit") or {}).get("oid", ""),
+        number=data["number"],
+        state=data["state"],
+        url=data["url"],
+        # Null on an open PR — the only two fields here that GitHub legitimately leaves empty.
+        merged_at=data["mergedAt"] or "",
+        merge_commit=(data["mergeCommit"] or {}).get("oid", ""),
     )
 
 
 def report_merge(pr: PullRequest) -> int:
     """Say what happened to the PR, and what the merge has left to prove."""
-    me = f"python3 {sys.argv[0]}"
     if pr.state != "MERGED":
         sys.stdout.write(f"CLOSED — PR #{pr.number} was closed without merging ({pr.url}). Nothing shipped.\n")
         return EXIT_RED
     sys.stdout.write(
         f"MERGED — PR #{pr.number} at {pr.merged_at}, merge commit {pr.merge_commit[:12]} ({pr.url}).\n"
-        f"Merged is not deployed: `{me} deploy` blocks on the workflows that run for that commit, "
+        f"Merged is not deployed: `{ME} deploy` blocks on the workflows that run for that commit, "
         "and only after they are out do the service's own logs and metrics say whether the change "
         "works in production.\n"
     )
@@ -277,6 +292,9 @@ def fetch_runs(commit: str) -> list[Check]:
     """
     fields = "name,workflowName,status,conclusion,url"
     result = run_gh("run", "list", "--commit", commit, "--json", fields, "--limit", "20", timeout=GH_TIMEOUT_S)
+    if result.returncode != 0:
+        sys.stdout.write((result.stderr.strip() or "gh could not list the runs for this commit") + "\n")
+        raise SystemExit(EXIT_UNKNOWN)
     items = json.loads(result.stdout) if result.stdout.strip() else []
     if not items:
         sys.stdout.write(
@@ -302,13 +320,17 @@ def cmd_status(args: argparse.Namespace) -> int:
     return report(fetch_checks(args.branch))
 
 
+def report_with_logs(checks: list[Check], lines: int, advice: Advice = CHECK_ADVICE) -> int:
+    """Report a run set, and print the failing steps' log when something in it failed."""
+    code = report(checks, advice)
+    if any(check.bucket == "fail" for check in checks):
+        sys.stdout.write("\n" + failing_logs(checks, lines) + "\n")
+    return code
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """`logs`: the failing steps, without the thousands of lines that passed."""
-    checks = fetch_checks(args.branch)
-    code = report(checks)
-    if code == EXIT_RED:
-        sys.stdout.write("\n" + failing_logs(checks, args.lines) + "\n")
-    return code
+    return report_with_logs(fetch_checks(args.branch), args.lines)
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
@@ -337,25 +359,23 @@ def cmd_merged(args: argparse.Namespace) -> int:
 
 def cmd_deploy(args: argparse.Namespace) -> int:
     """`deploy`: block on the Actions runs of the merge commit, then judge them like checks."""
-    commit = args.commit or fetch_pr(args.branch).merge_commit
+    commit = fetch_pr(args.branch).merge_commit
     if not commit:
         sys.stdout.write("This PR has no merge commit — it is not merged yet. Run `merged` first.\n")
-        return EXIT_UNKNOWN
+        return EXIT_PENDING
     deadline = time.monotonic() + args.timeout
     for run_id in dict.fromkeys(run.run_id for run in fetch_runs(commit) if run.bucket == "pending"):
         left = deadline - time.monotonic()
-        if run_id is None or left <= 0:
+        if left <= 0:
             break
+        if run_id is None:
+            continue  # a run whose URL carries no id cannot be watched; the others still can
         try:
             run_gh("run", "watch", run_id, "--interval", str(WATCH_INTERVAL_S), timeout=left)
         except subprocess.TimeoutExpired:
-            sys.stdout.write(f"Deploy run {run_id} still going after {args.timeout:.0f}s — reporting as it stands.\n")
+            sys.stdout.write(f"Deploy run {run_id} still going after {left:.0f}s — reporting as it stands.\n")
             break
-    runs = fetch_runs(commit)
-    code = report(runs, DEPLOY_ADVICE)
-    if code == EXIT_RED:
-        sys.stdout.write("\n" + failing_logs(runs, args.lines) + "\n")
-    return code
+    return report_with_logs(fetch_runs(commit), args.lines, DEPLOY_ADVICE)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -381,7 +401,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     merged.add_argument("--interval", type=float, default=MERGE_POLL_S, help="seconds between merge checks")
     deploy = sub.add_parser("deploy", parents=[common], help="block on the merge commit's workflow runs")
     deploy.add_argument("--timeout", type=float, default=DEFAULT_DEPLOY_WAIT_S, help="seconds to wait before reporting")
-    deploy.add_argument("--commit", default="", help="commit to watch (default: the PR's merge commit)")
     return parser.parse_args(argv or ["status"])
 
 

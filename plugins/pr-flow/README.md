@@ -49,15 +49,15 @@ Green CI is where an agent reports the work as done, and at that moment nothing 
 the green verdict itself names `merged`, `merged` names `deploy`, and `deploy` ends by pointing
 at the one thing this script cannot read: the service's own logs and metrics for real traffic.
 
-`merged` is the only verb here that polls — GitHub has no watch for a merge — and it polls on a
-reviewer's clock (`--interval`, 300s) up to `--timeout` (3600s), so the sleep lives inside the
-script instead of in an agent's loop. Exit codes: `0` merged, `1` closed unmerged, `2` still open
-at the timeout, `3` `gh` could not read the PR. It prints the merge commit.
+`merged` is the only verb here that polls — GitHub has no watch for a merge — so the sleep lives
+inside the script instead of in an agent's loop, on a reviewer's clock rather than a machine's.
+`deploy` looks up the Actions runs of the merge commit, blocks in `gh run watch` on the ones
+still going, and judges them with the same code that judges checks: same buckets, same verdict,
+same trimmed log on red. A run set that is entirely cancelled or skipped is not green — nothing
+was deployed — and a `gh` that could not answer is never reported as a repo without Actions.
 
-`deploy` looks up the Actions runs for that commit, blocks in `gh run watch` on the ones still
-going, and reports them exactly like checks — same buckets, same verdict, same trimmed log on
-red. `3` means there was no Actions run for the commit: the repo ships some other way, and
-saying so beats reporting an undeployed change as green.
+The flags and the exit codes are in `commands/ci.md`; the reasoning behind each default is
+beside it in `scripts/ci.py`.
 
 ### When it stays silent
 

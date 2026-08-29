@@ -5,6 +5,7 @@ exit code and the printed verdict are the product here, and both come out of `gh
 as much as its JSON.
 """
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -25,7 +26,7 @@ echo "$*" >> "$FAKE_GH_LOG"
 case "$1 $2" in
   "run view") printf '%s' "$FAKE_GH_RUN_LOG"; exit 0 ;;
   "run watch") exit 0 ;;
-  "run list") printf '%s' "$FAKE_GH_RUNS_JSON"; exit 0 ;;
+  "run list") printf '%s' "$FAKE_GH_RUNS_JSON"; exit "${FAKE_GH_RUNS_EXIT:-0}" ;;
   "pr view")
     if [ "$(grep -c '^pr view' "$FAKE_GH_LOG")" -gt 1 ] && [ -n "$FAKE_GH_PR_JSON2" ]; then
       printf '%s' "$FAKE_GH_PR_JSON2"
@@ -44,7 +45,7 @@ def check(name, bucket, link="https://github.test/o/r/actions/runs/77/job/9"):
     return {"name": name, "bucket": bucket, "state": bucket, "workflow": "ci.yml", "link": link}
 
 
-def pr(state="OPEN", merge_commit="abcdef1234567890"):
+def pr(state="OPEN", merge_commit="abcdef123456ffffffffffffffffffffffffffff"):
     """One `gh pr view --json` answer."""
     return json.dumps(
         {
@@ -86,7 +87,18 @@ def ci(tmp_path):
     stub.chmod(0o755)
     log = tmp_path / "gh.log"
 
-    def run(*args: str, checks=(), exit_code=0, run_log="", pull="", pull_then="", runs=(), pr_exit=0) -> Ran:
+    # One keyword per shape `gh` can answer in; the stub reads them all out of the environment.
+    def run(
+        *args: str,
+        checks=(),
+        exit_code=0,
+        run_log="",
+        pull="",
+        pull_then="",
+        runs=(),
+        pr_exit=0,
+        runs_exit=0,
+    ) -> Ran:
         env = {
             **os.environ,
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
@@ -98,6 +110,7 @@ def ci(tmp_path):
             "FAKE_GH_PR_JSON2": pull_then,
             "FAKE_GH_PR_EXIT": str(pr_exit),
             "FAKE_GH_RUNS_JSON": json.dumps(list(runs)),
+            "FAKE_GH_RUNS_EXIT": str(runs_exit),
         }
         result = subprocess.run(  # noqa: S603
             (sys.executable, str(SCRIPT), *args), capture_output=True, text=True, env=env, check=False
@@ -175,7 +188,7 @@ def test_merged_reports_the_merge_commit_and_the_deploy_as_the_next_step(ci):
     code, out, _ = ci("merged", pull=pr("MERGED"))
     assert code == 0
     assert "MERGED" in out
-    assert "abcdef123456" in out
+    assert "abcdef123456 " in out  # trimmed to 12 chars, not the whole 40-char oid
     assert "deploy" in out
 
 
@@ -212,12 +225,23 @@ def test_deploy_watches_the_merge_commits_runs_and_judges_them(ci):
     assert code == 0
     assert "GREEN" in out
     assert "metrics" in out
-    assert any("run list --commit abcdef1234567890" in call for call in calls)
+    assert any("run list --commit abcdef123456ffffffffffffffffffffffffffff" in call for call in calls)
 
 
 def test_deploy_blocks_on_a_run_that_has_not_concluded(ci):
-    _, _, calls = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("deploy", None, status="in_progress")])
+    """A run with no conclusion is pending, never shipped — the stub's watch returns but the run has not."""
+    code, out, calls = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("deploy", None, status="in_progress")])
     assert any("run watch 88" in call for call in calls)
+    assert code == 2
+    assert "PENDING" in out
+
+
+def test_a_deploy_that_was_only_cancelled_or_skipped_is_not_reported_as_shipped(ci):
+    """Nothing succeeded, so nothing is live — the one input where a bucket tally would read green."""
+    code, out, _ = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("deploy", "cancelled")])
+    assert code == 1
+    assert "NOT GREEN" in out
+    assert "the change is not live" in out
 
 
 def test_a_failed_deploy_is_red_and_carries_its_log(ci):
@@ -226,6 +250,14 @@ def test_a_failed_deploy_is_red_and_carries_its_log(ci):
     assert code == 1
     assert "RED" in out
     assert "line 79" in out
+    assert "line 76" not in out
+
+
+def test_gh_unable_to_list_the_runs_is_not_reported_as_a_repo_without_actions(ci):
+    """An `gh` that failed says nothing about how the repo deploys, and its own error must survive."""
+    code, out, _ = ci("deploy", pull=pr("MERGED"), runs=(), runs_exit=1)
+    assert code == 3
+    assert "ships some other way" not in out
 
 
 def test_a_repo_that_deploys_outside_actions_is_not_reported_as_shipped(ci):
@@ -235,6 +267,17 @@ def test_a_repo_that_deploys_outside_actions_is_not_reported_as_shipped(ci):
 
 
 def test_deploy_refuses_to_guess_a_commit_for_an_unmerged_pr(ci):
+    """Not merged yet is "not ready", not "I could not look" — the codes have to tell them apart."""
     code, out, _ = ci("deploy", pull=pr("OPEN"))
-    assert code == 3
+    assert code == 2
     assert "not merged" in out
+
+
+def test_every_run_conclusion_maps_onto_a_bucket_the_verdict_knows():
+    """A conclusion mapped to a bucket nobody counts would report a broken deploy as green."""
+    spec = importlib.util.spec_from_file_location("ci_module", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert set(module._RUN_CONCLUSIONS.values()) <= set(module._BUCKET_ORDER)

@@ -34,13 +34,16 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py merged    # blocks until the PR leav
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py deploy    # blocks on the merge commit's workflow runs
 ```
 
-`merged` exits `0` merged, `1` closed unmerged, `2` still open at `--timeout` (3600s), `3` if
-`gh` could not read the PR. It polls every `--interval` (300s) because GitHub has no watch for a
-merge — that sleep belongs inside the script, never in your own loop. It prints the merge commit.
+`merged` exits `0` merged, `1` closed unmerged, `2` still open at the timeout, `3` if `gh` could
+not read the PR. It re-checks on a reviewer's clock (`--interval`) because GitHub has no watch
+for a merge — that sleep belongs inside the script, never in your own loop. It prints the merge
+commit.
 
 `deploy` then finds the Actions runs for that commit, blocks until they conclude, and reports
-them like checks — failing steps' log included. `3` means no Actions run for the commit: this
-repo ships some other way, so find out how and watch that instead.
+them like checks — failing steps' log included. `2` means there is nothing to watch yet (the PR
+is not merged); `3` means `gh` could not answer, or it answered with no runs at all, in which
+case this repo ships some other way and you have to find out how. A run set that is entirely
+cancelled or skipped is `1`, not green: nothing was deployed.
 
 Then read the service itself — its runtime logs and metrics for real traffic on the path you
 changed. A green deploy workflow says the deploy ran; only the metrics say the change works.
