@@ -5,6 +5,7 @@ exit code and the printed verdict are the product here, and both come out of `gh
 as much as its JSON.
 """
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -18,10 +19,21 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "ci.py"
 
 # `gh` answers from FAKE_GH_JSON / FAKE_GH_EXIT, and appends its argv to FAKE_GH_LOG so a test can
 # assert which gh call the script actually made (a `wait` that never watches would pass otherwise).
+# `pr view` answers FAKE_GH_PR_JSON, then FAKE_GH_PR_JSON2 on every later call, so a merge that
+# lands mid-poll can be played back without a test that sleeps.
 GH_STUB = """#!/bin/sh
 echo "$*" >> "$FAKE_GH_LOG"
-case "$2" in
-  view) printf '%s' "$FAKE_GH_RUN_LOG"; exit 0 ;;
+case "$1 $2" in
+  "run view") printf '%s' "$FAKE_GH_RUN_LOG"; exit 0 ;;
+  "run watch") exit 0 ;;
+  "run list") printf '%s' "$FAKE_GH_RUNS_JSON"; exit "${FAKE_GH_RUNS_EXIT:-0}" ;;
+  "pr view")
+    if [ "$(grep -c '^pr view' "$FAKE_GH_LOG")" -gt 1 ] && [ -n "$FAKE_GH_PR_JSON2" ]; then
+      printf '%s' "$FAKE_GH_PR_JSON2"
+    else
+      printf '%s' "$FAKE_GH_PR_JSON"
+    fi
+    exit "${FAKE_GH_PR_EXIT:-0}" ;;
 esac
 printf '%s' "$FAKE_GH_JSON"
 exit "${FAKE_GH_EXIT:-0}"
@@ -31,6 +43,30 @@ exit "${FAKE_GH_EXIT:-0}"
 def check(name, bucket, link="https://github.test/o/r/actions/runs/77/job/9"):
     """One `gh pr checks --json` item."""
     return {"name": name, "bucket": bucket, "state": bucket, "workflow": "ci.yml", "link": link}
+
+
+def pr(state="OPEN", merge_commit="abcdef123456ffffffffffffffffffffffffffff"):
+    """One `gh pr view --json` answer."""
+    return json.dumps(
+        {
+            "number": 370,
+            "state": state,
+            "url": "https://github.test/o/r/pull/370",
+            "mergedAt": "2026-08-29T10:00:00Z" if state == "MERGED" else None,
+            "mergeCommit": {"oid": merge_commit} if state == "MERGED" else None,
+        }
+    )
+
+
+def deploy_run(name, conclusion, status="completed", run_id=88):
+    """One `gh run list --json` item."""
+    return {
+        "name": name,
+        "workflowName": name,
+        "status": status,
+        "conclusion": conclusion,
+        "url": f"https://github.test/o/r/actions/runs/{run_id}",
+    }
 
 
 class Ran(NamedTuple):
@@ -51,7 +87,18 @@ def ci(tmp_path):
     stub.chmod(0o755)
     log = tmp_path / "gh.log"
 
-    def run(*args: str, checks=(), exit_code=0, run_log="") -> Ran:
+    # One keyword per shape `gh` can answer in; the stub reads them all out of the environment.
+    def run(
+        *args: str,
+        checks=(),
+        exit_code=0,
+        run_log="",
+        pull="",
+        pull_then="",
+        runs=(),
+        pr_exit=0,
+        runs_exit=0,
+    ) -> Ran:
         env = {
             **os.environ,
             "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
@@ -59,6 +106,11 @@ def ci(tmp_path):
             "FAKE_GH_EXIT": str(exit_code),
             "FAKE_GH_RUN_LOG": run_log,
             "FAKE_GH_LOG": str(log),
+            "FAKE_GH_PR_JSON": pull,
+            "FAKE_GH_PR_JSON2": pull_then,
+            "FAKE_GH_PR_EXIT": str(pr_exit),
+            "FAKE_GH_RUNS_JSON": json.dumps(list(runs)),
+            "FAKE_GH_RUNS_EXIT": str(runs_exit),
         }
         result = subprocess.run(  # noqa: S603
             (sys.executable, str(SCRIPT), *args), capture_output=True, text=True, env=env, check=False
@@ -124,3 +176,108 @@ def test_wait_blocks_in_gh_rather_than_polling(ci):
 def test_a_named_branch_is_passed_through_to_gh(ci):
     _, _, calls = ci("status", "--branch", "feature-x", checks=[check("test", "pass")])
     assert any("feature-x" in call for call in calls)
+
+
+def test_green_checks_point_at_the_merge_watch(ci):
+    """Green CI is where an agent stops, so the green verdict itself has to name the next link."""
+    _, out, _ = ci("status", checks=[check("test", "pass")])
+    assert "merged" in out
+
+
+def test_merged_reports_the_merge_commit_and_the_deploy_as_the_next_step(ci):
+    code, out, _ = ci("merged", pull=pr("MERGED"))
+    assert code == 0
+    assert "MERGED" in out
+    assert "abcdef123456 " in out  # trimmed to 12 chars, not the whole 40-char oid
+    assert "deploy" in out
+
+
+def test_merged_keeps_asking_until_the_pr_leaves_open(ci):
+    """The one verb that really polls: an open PR is re-read, not reported as a verdict."""
+    code, out, calls = ci("merged", "--interval", "0", pull=pr("OPEN"), pull_then=pr("MERGED"))
+    assert code == 0
+    assert "MERGED" in out
+    assert sum(1 for call in calls if call.startswith("pr view")) == 2
+
+
+def test_a_pr_still_open_at_the_timeout_is_pending_not_shipped(ci):
+    code, out, _ = ci("merged", "--timeout", "0", pull=pr("OPEN"))
+    assert code == 2
+    assert "OPEN" in out
+    assert "MERGED" not in out
+
+
+def test_a_closed_pr_is_red(ci):
+    code, out, _ = ci("merged", "--timeout", "0", pull=pr("CLOSED"))
+    assert code == 1
+    assert "CLOSED" in out
+
+
+def test_gh_unable_to_read_the_pr_is_not_reported_as_unmerged(ci):
+    code, out, _ = ci("merged", "--timeout", "0", pull="", pr_exit=1)
+    assert code == 3
+    assert "MERGED" not in out
+    assert "OPEN" not in out
+
+
+def test_deploy_watches_the_merge_commits_runs_and_judges_them(ci):
+    code, out, calls = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("deploy", "success")])
+    assert code == 0
+    assert "GREEN" in out
+    assert "metrics" in out
+    assert any("run list --commit abcdef123456ffffffffffffffffffffffffffff" in call for call in calls)
+
+
+def test_deploy_blocks_on_a_run_that_has_not_concluded(ci):
+    """A run with no conclusion is pending, never shipped — the stub's watch returns but the run has not."""
+    code, out, calls = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("deploy", None, status="in_progress")])
+    assert any("run watch 88" in call for call in calls)
+    assert code == 2
+    assert "PENDING" in out
+
+
+def test_a_deploy_that_was_only_cancelled_or_skipped_is_not_reported_as_shipped(ci):
+    """Nothing succeeded, so nothing is live — the one input where a bucket tally would read green."""
+    code, out, _ = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("deploy", "cancelled")])
+    assert code == 1
+    assert "NOT GREEN" in out
+    assert "the change is not live" in out
+
+
+def test_a_failed_deploy_is_red_and_carries_its_log(ci):
+    log = "\n".join(f"line {n}" for n in range(80))
+    code, out, _ = ci("deploy", "--lines", "3", pull=pr("MERGED"), runs=[deploy_run("deploy", "failure")], run_log=log)
+    assert code == 1
+    assert "RED" in out
+    assert "line 79" in out
+    assert "line 76" not in out
+
+
+def test_gh_unable_to_list_the_runs_is_not_reported_as_a_repo_without_actions(ci):
+    """An `gh` that failed says nothing about how the repo deploys, and its own error must survive."""
+    code, out, _ = ci("deploy", pull=pr("MERGED"), runs=(), runs_exit=1)
+    assert code == 3
+    assert "ships some other way" not in out
+
+
+def test_a_repo_that_deploys_outside_actions_is_not_reported_as_shipped(ci):
+    code, out, _ = ci("deploy", pull=pr("MERGED"), runs=())
+    assert code == 3
+    assert "GREEN" not in out
+
+
+def test_deploy_refuses_to_guess_a_commit_for_an_unmerged_pr(ci):
+    """Not merged yet is "not ready", not "I could not look" — the codes have to tell them apart."""
+    code, out, _ = ci("deploy", pull=pr("OPEN"))
+    assert code == 2
+    assert "not merged" in out
+
+
+def test_every_run_conclusion_maps_onto_a_bucket_the_verdict_knows():
+    """A conclusion mapped to a bucket nobody counts would report a broken deploy as green."""
+    spec = importlib.util.spec_from_file_location("ci_module", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert set(module._RUN_CONCLUSIONS.values()) <= set(module._BUCKET_ORDER)

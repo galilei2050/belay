@@ -112,12 +112,18 @@ def test_push_without_a_pr_points_at_the_skill(bash, repo):
     nudge = context(bash("git push", repo, gh_mode="none"))
     assert "pr-flow:pr-description" in nudge
     assert "no open PR" in nudge
+    assert "merged" in nudge
+    assert "deploy" in nudge
+    assert "metrics" in nudge
 
 
 def test_push_with_an_open_pr_asks_to_refresh_the_body(bash, repo):
     nudge = context(bash("git push", repo, gh_mode="open"))
     assert "PR #12" in nudge
     assert "gh pr edit 12" in nudge
+    assert "merged" in nudge
+    assert "deploy" in nudge
+    assert "metrics" in nudge
 
 
 def test_unauthenticated_gh_stays_silent(bash, repo):

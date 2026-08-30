@@ -1,7 +1,8 @@
 # pr-flow
 
-Carries every commit through to a pushed branch and an open PR with a description a reviewer
-can act on.
+Carries every commit through to a pushed branch, an open PR with a description a reviewer can
+act on, and — past the green CI where agents stop — a merge, a deploy and the metrics that say
+whether the change actually works.
 
 ## What it does
 
@@ -9,7 +10,7 @@ can act on.
 |---|---|---|
 | `hooks/nudge_after_git.py` | `PostToolUse` on Bash | After a real `git commit` / `git push`, states what the branch still owes: push it, open a PR, or refresh the PR body this push just made stale. |
 | `skills/pr-description` | Skill | Writes the body: the failure with its measured numbers, a mermaid diagram of the mechanism, what changed, what was verified, risk and rollback. `/pr-flow:pr` runs the whole sequence by hand. |
-| `scripts/ci.py` | Script | Takes the branch's CI to a verdict: every check on one line, a bounded blocking wait, and only the failing steps' log. `/pr-flow:ci` runs it; the push nudge points at it. |
+| `scripts/ci.py` | Script | Takes the branch's CI to a verdict — every check on one line, a bounded blocking wait, only the failing steps' log — then the PR to merged and the merge commit to deployed. `/pr-flow:ci` runs it; the push nudge points at it. |
 
 The nudge fires when the branch is already what the agent is thinking about — the commit just
 landed, the push just went out — which is the moment the next step is cheapest to take. It is
@@ -36,6 +37,27 @@ changes — not a `sleep` loop, and not a table redrawn into the agent's context
 It stops at `--timeout` (900s) and reports the state as it stands rather than waiting forever.
 `logs` resolves each failing check's Actions run out of its URL and prints only the failed steps,
 last 60 lines per run, because that is where the traceback is.
+
+## Past the green
+
+```
+python3 scripts/ci.py merged    # block until the PR leaves OPEN, re-checking every 5 minutes
+python3 scripts/ci.py deploy    # block on the merge commit's workflow runs, then judge them
+```
+
+Green CI is where an agent reports the work as done, and at that moment nothing has shipped. So
+the green verdict itself names `merged`, `merged` names `deploy`, and `deploy` ends by pointing
+at the one thing this script cannot read: the service's own logs and metrics for real traffic.
+
+`merged` is the only verb here that polls — GitHub has no watch for a merge — so the sleep lives
+inside the script instead of in an agent's loop, on a reviewer's clock rather than a machine's.
+`deploy` looks up the Actions runs of the merge commit, blocks in `gh run watch` on the ones
+still going, and judges them with the same code that judges checks: same buckets, same verdict,
+same trimmed log on red. A run set that is entirely cancelled or skipped is not green — nothing
+was deployed — and a `gh` that could not answer is never reported as a repo without Actions.
+
+The flags and the exit codes are in `commands/ci.md`; the reasoning behind each default is
+beside it in `scripts/ci.py`.
 
 ### When it stays silent
 
