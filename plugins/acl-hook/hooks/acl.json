@@ -569,7 +569,7 @@
           "merge"
         ],
         "decision": "deny",
-        "reason": "Never merge PRs from the agent — merging is the user's decision after review. Open the PR (`gh pr create`) and leave it for the user to merge. If the work is ready, say so to the user."
+        "reason": "Never merge PRs from the agent — merging is the user's decision after review. This deny ends the merge, not your task: a branch is finished when the change is live, not when the PR is open, so waiting for that click is work you still owe. INSTEAD: tell the user the PR is ready, then wait for the merge — the `pr-flow:ci` skill's `merged` verb blocks until the PR leaves OPEN, re-checking on a reviewer's clock (don't write that poll loop yourself). Once it lands, its `deploy` verb blocks on the merge commit's workflow runs, and then the service's own logs and metrics say whether the change actually works. Only after that is the branch done: delete the merged branch and remove the worktree it lived in. Do not clean up, and do not report done, while the PR is still OPEN."
       },
       {
         "args": [
