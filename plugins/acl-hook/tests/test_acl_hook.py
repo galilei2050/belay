@@ -550,10 +550,15 @@ def test_cat_normal_file_is_allowed(logger):
 # ── gh ───────────────────────────────────────────────────────────────────────
 
 
-def test_gh_pr_merge_is_denied(logger):
+def test_gh_pr_merge_is_denied_and_points_past_the_merge(logger):
+    """An agent that reads "merging is the user's decision" as "your work ends here" reports done on
+    an open PR and leaves the branch undeployed and its worktree behind — so the deny has to name
+    what is still owed: the wait, the deploy, and the cleanup that follows the merge."""
     decision, reason = decide("gh pr merge 123", logger)
     assert decision == "deny"
-    assert "merge" in reason.lower()
+    assert "merged" in reason.lower()
+    assert "deploy" in reason.lower()
+    assert "worktree" in reason.lower()
 
 
 def test_gh_pr_create_is_allowed(logger):
