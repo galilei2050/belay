@@ -81,6 +81,13 @@ def test_background_spawn_includes_model_routing_guide(monkeypatch, capsys, back
         assert tier in context
 
 
+@pytest.mark.parametrize("background", [True, None])
+def test_background_spawn_puts_a_short_answer_on_the_caller(monkeypatch, capsys, background):
+    """The caller sized the slice knowing the budget, so a half-done agent is its miss to fix."""
+    context = via_main(monkeypatch, capsys, **spawn(background))["additionalContext"]
+    assert "your slicing, not the agent falling short" in context
+
+
 def test_the_denial_does_not_send_the_agent_to_poll(monkeypatch, capsys):
     """Waiting in a loop is the failure this plugin exists to prevent, in either direction."""
     reason = via_main(monkeypatch, capsys, **spawn(background=False))["permissionDecisionReason"]

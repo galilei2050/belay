@@ -14,7 +14,9 @@ Two ways handing work to a subagent goes wrong, one plugin:
   from what it already has and names what it missed.
 
 The spawning agent is handed the budgets at spawn time, so it can size the slice to fit rather than
-discover the ceiling by hitting it.
+discover the ceiling by hitting it — and with them, who owns a truncated result. The caller knew the
+ceiling before it chose the slice, so an agent that comes back half-done is a slicing miss; a caller
+that files it as the agent's failure cuts the next slice the same size.
 
 Only ever emits `deny` or a bare `additionalContext` — never `allow`, so this hook can't override a
 sibling hook's verdict on the same call (same discipline as branch-guard-hook).
@@ -75,7 +77,11 @@ _SLICE_THE_TASK = (
     "- Scout yourself, delegate the reading: locating the files costs you a few calls and costs it "
     "most of its budget.\n"
     f"- Work worth more than ~{BUDGET} calls is several agents with one slice each, not one agent told "
-    "to hurry."
+    "to hurry.\n"
+    "You own what comes back. An agent that answers only part of its slice hit a budget you were "
+    "handed before you sized the work, so a short answer is your slicing, not the agent falling "
+    "short — never report it as the agent's. Name the remainder, dispatch a right-sized agent for "
+    "exactly that, and don't call the task done until the remainder lands."
 )
 
 # Grounded in Anthropic's model guidance and subagent-routing consensus (2026-08): route by task

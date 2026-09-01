@@ -24,10 +24,16 @@ every tool is denied, which forces it to answer from what it has and name what i
 The spawning agent is handed the same budget as a rule at spawn time, so it can size the slice
 instead of discovering the ceiling by hitting it.
 
+**A truncated result belongs to the caller.** The budget reaches the spawner before it chooses the
+slice, so an agent that answers half of one hit a ceiling the caller already knew about — the
+slicing missed, the agent didn't. The spawn-time rule says so, because a caller that reports it as
+the agent's failure ("the agent didn't get to the smoke test") learns nothing and cuts the next
+slice the same size, instead of naming the remainder and dispatching a right-sized agent for it.
+
 | Situation | Decision |
 |-----------|----------|
 | `Agent` with `run_in_background: false` | **deny** — let it detach; the harness will notify you |
-| `Agent` in the background (explicit or default) | *context* — how to slice a task to fit the budget |
+| `Agent` in the background (explicit or default) | *context* — how to slice a task to fit the budget, and who owns a short answer |
 | any tool inside a subagent, calls 1–19 within 5 min | *silent* |
 | calls 20–30, or past 5 min | *context* — `N/30 tool calls and M/7 minutes used` |
 | call 31 and beyond, or past 7 min | **deny** — answer now from what you have |
