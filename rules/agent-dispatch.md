@@ -1,4 +1,4 @@
-Dispatch subagents in the background, and hand each one a slice it can finish alone. The two ways delegation fails are a session frozen waiting for an agent, and an agent that hits a wall mid-task and starts inventing ways around it.
+Dispatch subagents in the background, and hand each one a slice it can finish alone. Delegation fails three ways: a session frozen waiting for an agent, an agent that hits a wall mid-task and starts inventing ways around it, and a slice too big to finish whose leftovers you then blame on the agent.
 
 ## Background by default
 
@@ -22,6 +22,24 @@ Hand over what you already know — exact paths, symbols, the command that repro
 If the repo restricts which agent may write where (a path-ownership hook, a CODEOWNERS-style rule, a per-agent tool allowlist), **split the work along those lines and dispatch one agent per owner.** A single agent told to "fix the bug and add the test" hits a deny halfway through, and a deny mid-task is where agents start hacking: `sed`, a heredoc, a sibling file, anything that looks like progress.
 
 "Fix bug + regression test" is two agents in parallel, not one. Their work is independent; your job is the seam between them.
+
+## A short answer is your slicing, not the agent's failure
+
+You were told the budget before you chose the slice, so an agent that comes back with part of the
+work undone hit a ceiling you picked. Own it: name what is left and dispatch a right-sized agent for
+exactly that remainder, then finish.
+
+The tell is your own narration — "агент не успел", "the agent didn't get to it", "агент не доделал",
+or quietly hoovering up the leftovers as if that were the plan. Each one files your miss under
+someone else's name, and the next slice comes out the same size.
+
+```
+# BAD  — "Тесты зелёные. Прогоняю смоук, который агент не успел."
+# GOOD — "Тесты зелёные. Смоук остался — нарезал слишком крупно; добиваю."
+```
+
+A partial answer is also not a finished task: it's done when the remainder lands, not when the agent
+reports (`finish-the-work.md`).
 
 ## When a subagent comes back blocked
 
