@@ -11,9 +11,9 @@ push.
 So: six verbs, each ending in a statement the agent can act on.
 
 * `status` — every check, one line each, plus a verdict. One `gh` call.
-* `wait`   — blocks in `gh`'s own watch until the run concludes (hard cap: `--timeout`), then
-             prints the verdict and, when red, the failing log. Not a poll loop: one call that
-             returns when there is something to say.
+* `wait`   — waits for the run to register, then blocks in `gh`'s own watch until it concludes
+             (hard cap: `--timeout`), then prints the verdict and, when red, the failing log. Not
+             a poll loop: one call that returns when there is something to say.
 * `logs`   — the failing steps only, tail-trimmed, per run.
 * `merged` — blocks until the PR leaves OPEN, then says what shipped and what to watch next.
 * `deploy` — blocks on everything the merge commit set off — GitHub Actions runs and Cloud Build
@@ -72,11 +72,14 @@ MERGE_POLL_S = 300
 DEFAULT_MERGE_WAIT_S = 3600
 # A deploy workflow that has not concluded in this long is an incident, not a slow build.
 DEFAULT_DEPLOY_WAIT_S = 1800
-# A trigger takes seconds to turn a merge into a build, and `deploy` normally runs the instant
-# `merged` returns. Without a grace window the usual case — asking before the build exists — would
-# report the commit as deployed by nothing at all. Read from the environment so the window can be
-# exercised without a two-minute test, the way `branch_state.py` takes its `gh` timeout.
-BUILD_APPEAR_S = float(os.environ.get("PR_FLOW_BUILD_APPEAR_S", "120"))
+# How long to keep asking for something a push or a merge just set off before believing it does
+# not exist. Both ends of the flow need it, and both were observed failing without it: `gh pr
+# checks` answers "no checks reported on this branch" for the first seconds after a push, and a
+# Cloud Build trigger takes seconds to create the build for a merge — while `wait` and `deploy`
+# are launched the instant the push and the merge land. Without the window the first reports a
+# branch nothing runs on, the second a commit nothing deploys. Read from the environment so it
+# can be exercised without a two-minute test, the way `branch_state.py` takes its `gh` timeout.
+APPEAR_S = float(os.environ.get("PR_FLOW_APPEAR_S", "120"))
 
 # The run id lives only in the check's URL: .../actions/runs/<run>/job/<job>. A check from outside
 # Actions (a status posted by an external service) has no run and no log to fetch.
@@ -292,21 +295,44 @@ def fetch_builds(commit: str, region: str) -> list[Check]:
     ]
 
 
+# What an empty check list means, said in the one place both callers can reach it. Never a verdict:
+# a caller that read zero checks as green would call an unbuilt branch verified.
+NO_CHECKS = (
+    "gh reported no checks for this branch{waited}. Either this repo runs nothing on a PR, or the "
+    "run has not registered yet — neither one is a green branch, so this is exit 3, not exit 0."
+)
+
+
 def fetch_checks(branch: str) -> list[Check]:
     """Every check on `branch`'s PR (current branch when empty), worst bucket first.
 
-    Exits 3 when the answer is an empty one — no PR, no checks configured, an unauthenticated `gh`.
-    "I cannot tell you" is not "nothing failed", and a caller that treats zero checks as green
-    would call an unbuilt branch verified.
+    An empty list is what `gh` answered, not a verdict — no PR, no checks configured, a run that
+    has not registered, an unauthenticated `gh` all land here. The callers decide: `status` and
+    `logs` report it immediately, `wait` keeps asking for `APPEAR_S` first.
     """
     target = (branch,) if branch else ()
     result = run_gh("pr", "checks", *target, "--json", "name,bucket,state,workflow,link", timeout=GH_TIMEOUT_S)
     items = json.loads(result.stdout) if result.stdout.strip() else []
-    if not items:
-        sys.stdout.write((result.stderr.strip() or "gh reported no checks for this branch") + "\n")
-        raise SystemExit(EXIT_UNKNOWN)
     checks = [Check(**{field: item.get(field, "") for field in Check._fields}) for item in items]
     return sorted(checks, key=lambda check: (_BUCKET_ORDER.get(check.bucket, 9), check.name))
+
+
+def await_checks(branch: str) -> list[Check]:
+    """The branch's checks, re-asked until they show up or `APPEAR_S` runs out.
+
+    `wait` is launched the moment a push lands — that is what the nudge and the command file both
+    say to do — and for the first seconds after a push `gh pr checks` reports none, because the
+    run has not registered yet. Observed on this repo: a `wait` fired right after `git push` exits
+    3 with "no checks reported on this branch" while the run it was waiting for was about to
+    start. So an empty answer is re-asked before it is believed.
+    """
+    deadline = time.monotonic() + APPEAR_S
+    while True:
+        checks = fetch_checks(branch)
+        left = deadline - time.monotonic()
+        if checks or left <= 0:
+            return checks
+        time.sleep(min(WATCH_INTERVAL_S, left))
 
 
 class Verdict(NamedTuple):
@@ -515,13 +541,13 @@ def await_deploy(commit: str, region: str, *, timeout: float, interval: float) -
     Build has no watch at all, and one loop over both is simpler than two waits spliced together.
 
     One rule decides when to answer: a failure is final immediately, and anything else waits out
-    `BUILD_APPEAR_S` first. That window is what stops the false green this verb exists for — a
+    `APPEAR_S` first. That window is what stops the false green this verb exists for — a
     merge commit's Actions runs go green seconds after the merge, while the Cloud Build trigger
     has yet to create the build that ships the change, and a repo can have more than one build
     per commit — so no green verdict is handed back until a build has had time to show up.
     """
     deadline = time.monotonic() + timeout
-    appear_by = time.monotonic() + BUILD_APPEAR_S
+    appear_by = time.monotonic() + APPEAR_S
     deployment = Deployment(targets=[], answered=False)
     while True:
         try:
@@ -548,8 +574,12 @@ def await_deploy(commit: str, region: str, *, timeout: float, interval: float) -
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    """`status`: what CI says right now."""
-    return report(fetch_checks(args.branch))
+    """`status`: what CI says right now — including "nothing", which is not "nothing failed"."""
+    checks = fetch_checks(args.branch)
+    if not checks:
+        sys.stdout.write(NO_CHECKS.format(waited="") + "\n")
+        return EXIT_UNKNOWN
+    return report(checks)
 
 
 def report_with_logs(checks: list[Check], lines: int, advice: Advice = CHECK_ADVICE) -> int:
@@ -562,11 +592,18 @@ def report_with_logs(checks: list[Check], lines: int, advice: Advice = CHECK_ADV
 
 def cmd_logs(args: argparse.Namespace) -> int:
     """`logs`: the failing steps, without the thousands of lines that passed."""
-    return report_with_logs(fetch_checks(args.branch), args.lines)
+    checks = fetch_checks(args.branch)
+    if not checks:
+        sys.stdout.write(NO_CHECKS.format(waited="") + "\n")
+        return EXIT_UNKNOWN
+    return report_with_logs(checks, args.lines)
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
     """`wait`: block until the run concludes, then report it — and its log when it went red."""
+    if not await_checks(args.branch):
+        sys.stdout.write(NO_CHECKS.format(waited=f" after {APPEAR_S:.0f}s of asking") + "\n")
+        return EXIT_UNKNOWN
     if not watch(args.branch, args.timeout):
         sys.stdout.write(f"Still running after {args.timeout:.0f}s — reporting the state as it stands.\n")
     return cmd_logs(args)

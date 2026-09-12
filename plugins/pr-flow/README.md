@@ -61,9 +61,11 @@ PR, no checks, `gh` could not answer — never reported as green).
 
 `wait` blocks inside `gh pr checks --watch`, so it is one call that returns when the answer
 changes — not a table redrawn into the agent's context on every refresh. It stops at `--timeout`
-(900s) and reports the state as it stands rather than waiting forever. `logs` resolves each
-failing check's Actions run out of its URL and prints only the failed steps, last 60 lines per
-run, because that is where the traceback is.
+(900s) and reports the state as it stands rather than waiting forever. Before the watch it waits
+for the run to register: for the first seconds after a push `gh` reports no checks at all, and
+`wait` is launched exactly then, so an empty answer is re-asked for `PR_FLOW_APPEAR_S` (120s)
+before it is believed. `logs` resolves each failing check's Actions run out of its URL and prints
+only the failed steps, last 60 lines per run, because that is where the traceback is.
 
 ## Past the green
 

@@ -24,6 +24,13 @@ SCRIPT = Path(__file__).parent.parent / "scripts" / "ci.py"
 GH_STUB = """#!/bin/sh
 echo "$*" >> "$FAKE_GH_LOG"
 case "$1 $2" in
+  "pr checks")
+    if [ "$(grep -c '^pr checks' "$FAKE_GH_LOG")" -gt 1 ] && [ -n "$FAKE_GH_JSON2" ]; then
+      printf '%s' "$FAKE_GH_JSON2"
+    else
+      printf '%s' "$FAKE_GH_JSON"
+    fi
+    exit "${FAKE_GH_EXIT:-0}" ;;
   "run view") printf '%s' "$FAKE_GH_RUN_LOG"; exit 0 ;;
   "run watch") exit 0 ;;
   "run list")
@@ -141,6 +148,7 @@ def ci(tmp_path):
         *args: str,
         gcloud=True,
         checks=(),
+        checks_then=(),
         exit_code=0,
         run_log="",
         pull="",
@@ -163,6 +171,7 @@ def ci(tmp_path):
             **os.environ,
             "PATH": path(with_gcloud=gcloud),
             "FAKE_GH_JSON": json.dumps(list(checks)),
+            "FAKE_GH_JSON2": json.dumps(list(checks_then)) if checks_then else "",
             "FAKE_GH_EXIT": str(exit_code),
             "FAKE_GH_RUN_LOG": run_log,
             "FAKE_GH_LOG": str(log),
@@ -178,9 +187,9 @@ def ci(tmp_path):
             "FAKE_GCLOUD_BUILD_LOG": build_log,
             "FAKE_GCLOUD_BUILDS_REGION": builds_region,
             "FAKE_GCLOUD_COMPUTE_REGION": compute_region,
-            # Off unless a test is about the window itself: every other deploy test would
-            # otherwise spend two minutes waiting for a Cloud Build build it never stubbed.
-            "PR_FLOW_BUILD_APPEAR_S": str(appear),
+            # Off unless a test is about the window itself: every other test would otherwise
+            # spend two minutes waiting for a check or a build it never stubbed.
+            "PR_FLOW_APPEAR_S": str(appear),
         }
         result = subprocess.run(  # noqa: S603
             (sys.executable, str(SCRIPT), *args), capture_output=True, text=True, env=env, check=False
@@ -237,10 +246,29 @@ def test_logs_stays_quiet_about_logs_when_nothing_failed(ci):
 
 
 def test_wait_blocks_in_gh_rather_than_polling(ci):
-    """The watch is one `gh` call; the state is read back once afterwards — never a re-poll loop."""
+    """The watch is one `gh` call. Around it: one read to confirm the checks exist, one after to
+    report them — never a poll loop standing in for the watch."""
     _, _, calls = ci("wait", checks=[check("test", "pass")])
     assert any("--watch" in call for call in calls)
-    assert sum(1 for call in calls if call.startswith("pr checks") and "--watch" not in call) == 1
+    assert sum(1 for call in calls if call.startswith("pr checks") and "--watch" not in call) == 2
+
+
+def test_wait_keeps_asking_while_the_run_has_not_registered_yet(ci):
+    """Observed for real: `wait` fired the moment a push lands gets "no checks reported on this
+    branch" from `gh`, seconds before the run it is waiting for appears. Exiting 3 there reports a
+    branch nothing runs on."""
+    code, out, calls = ci("wait", checks=(), checks_then=[check("test", "pass")], appear=1)
+    assert code == 0
+    assert "GREEN" in out
+    assert sum(1 for call in calls if call.startswith("pr checks") and "--watch" not in call) >= 2
+
+
+def test_a_branch_that_really_has_no_checks_is_still_not_green(ci):
+    """The window makes the answer slower, not softer: nothing after it is exit 3, never exit 0."""
+    code, out, _ = ci("wait", checks=(), appear=0)
+    assert code == 3
+    assert "GREEN" not in out
+    assert "no checks" in out
 
 
 def test_a_named_branch_is_passed_through_to_gh(ci):
