@@ -8,7 +8,7 @@ failure. Left to improvise, an agent either polls `gh pr checks` in a wait loop 
 log into its context — and usually skips the step entirely and calls a branch done on a green
 push.
 
-So: five verbs, each ending in a statement the agent can act on.
+So: six verbs, each ending in a statement the agent can act on.
 
 * `status` — every check, one line each, plus a verdict. One `gh` call.
 * `wait`   — blocks in `gh`'s own watch until the run concludes (hard cap: `--timeout`), then
@@ -16,12 +16,20 @@ So: five verbs, each ending in a statement the agent can act on.
              returns when there is something to say.
 * `logs`   — the failing steps only, tail-trimmed, per run.
 * `merged` — blocks until the PR leaves OPEN, then says what shipped and what to watch next.
-* `deploy` — blocks on the Actions runs of the merge commit — the workflows that put the change
-             in production — judged and log-trimmed exactly like the PR's checks.
+* `deploy` — blocks on everything the merge commit set off — GitHub Actions runs and Cloud Build
+             builds alike — judged and log-trimmed exactly like the PR's checks.
+* `ship`   — those three in order in one process: CI, then the merge, then the deploy.
 
-The last two exist because green CI is where an agent stops, and a green branch is not a shipped
+The last three exist because green CI is where an agent stops, and a green branch is not a shipped
 change. The chain is CI → merge → deploy → the service's own metrics, and each verb ends by
 naming the next link so the agent does not mistake a passing signal for a working system.
+
+Every waiting verb is meant to be launched in the background — Claude Code's Bash
+`run_in_background: true` — and `ship` exists for exactly that. A branch takes tens of minutes to
+reach production and the session must not be frozen for any of them: one backgrounded `ship`
+after a push carries the branch from a pushed commit to a live change and re-invokes the agent
+once, with the whole story. A foreground wait buys nothing, and a hand-rolled `sleep` loop around
+`status` costs the user the conversation as well as the API quota.
 
 Exit codes are the summary, so a caller can branch without parsing prose: 0 green, 1 red,
 2 still pending, 3 nothing to report on (no PR, no checks, no `gh`).
@@ -39,6 +47,10 @@ import time
 from typing import NamedTuple
 
 GH = shutil.which("gh")
+# Optional, unlike `gh`: a repo whose deploy runs in Actions never needs it, so its absence is an
+# empty string to be checked rather than a reason to exit — and a string keeps the argv it goes
+# into typed without a guard for a call that cannot happen.
+GCLOUD = shutil.which("gcloud") or ""
 
 # Long enough for a normal run to finish inside one call, short enough that a queue stuck behind a
 # busy runner ends as a report rather than an agent that never comes back.
@@ -58,6 +70,10 @@ MERGE_POLL_S = 300
 DEFAULT_MERGE_WAIT_S = 3600
 # A deploy workflow that has not concluded in this long is an incident, not a slow build.
 DEFAULT_DEPLOY_WAIT_S = 1800
+# A trigger takes seconds to turn a merge into a build, and `deploy` normally runs the instant
+# `merged` returns. Without a grace window the usual case — asking before the build exists — would
+# report the commit as deployed by nothing at all.
+BUILD_APPEAR_S = 120
 
 # The run id lives only in the check's URL: .../actions/runs/<run>/job/<job>. A check from outside
 # Actions (a status posted by an external service) has no run and no log to fetch.
@@ -80,6 +96,22 @@ _RUN_CONCLUSIONS = {
     "skipped": "skipping",
 }
 
+# The same mapping for Cloud Build, whose builds are judged by the code that judges checks. An
+# unlisted status falls through to `pending` — a deploy this script cannot name is one it keeps
+# waiting on, never one it calls green.
+_BUILD_STATUSES = {
+    "SUCCESS": "pass",
+    "FAILURE": "fail",
+    "INTERNAL_ERROR": "fail",
+    "TIMEOUT": "fail",
+    "EXPIRED": "fail",
+    "CANCELLED": "cancel",
+    "QUEUED": "pending",
+    "WORKING": "pending",
+    "PENDING": "pending",
+    "STATUS_UNKNOWN": "pending",
+}
+
 EXIT_GREEN, EXIT_RED, EXIT_PENDING, EXIT_UNKNOWN = 0, 1, 2, 3
 
 # How this script was invoked, so every "run this next" sentence is a line the agent can paste.
@@ -87,13 +119,20 @@ ME = f"python3 {sys.argv[0]}"
 
 
 class Check(NamedTuple):
-    """One check run on the PR, as `gh pr checks --json` reports it."""
+    """One thing that ran and can pass or fail: a PR check, an Actions run, a Cloud Build build.
+
+    Named for the shape `gh pr checks --json` reports, because that is the majority case and the
+    display, the sort and the verdict are all written against it. A deploy is judged by the same
+    code, so a Cloud Build build arrives here too and carries its id in `build` — the one field
+    that says which system to ask for the log.
+    """
 
     name: str
     bucket: str
     state: str
     workflow: str
     link: str
+    build: str = ""  # Cloud Build id; empty for anything that came from GitHub
 
     @property
     def run_id(self) -> str | None:
@@ -107,6 +146,18 @@ class Check(NamedTuple):
         link = f"  {self.link}" if self.bucket == "fail" and self.link else ""
         return f"  {self.bucket:<8} {self.name}{where}{link}"
 
+    def log(self, lines: int) -> str:
+        """This run's failure text, tail-trimmed, from whichever system ran it."""
+        if self.build:
+            body = build_log(self.build, lines)
+        elif self.run_id:
+            result = run_gh("run", "view", self.run_id, "--log-failed", timeout=GH_TIMEOUT_S)
+            body = result.stdout.strip() or result.stderr.strip() or "gh returned no log for this run"
+        else:
+            return f"{self.name} reported no run to fetch a log from — open its link above."
+        tail = body.splitlines()[-lines:]
+        return f"── {self.name}, last {len(tail)} log line(s) ──\n" + "\n".join(tail)
+
 
 def run_gh(*args: str, timeout: float) -> subprocess.CompletedProcess[str]:
     """Run `gh` and capture it. A non-zero exit is data here (8 = pending, 1 = failing), not an error."""
@@ -114,6 +165,96 @@ def run_gh(*args: str, timeout: float) -> subprocess.CompletedProcess[str]:
         sys.exit("gh is not installed — a PR's CI state can only come from GitHub.")
     # S603: fixed argv from this module plus the branch/run id the caller passed; no shell.
     return subprocess.run((GH, *args), capture_output=True, text=True, check=False, timeout=timeout)  # noqa: S603
+
+
+def run_gcloud(*args: str, timeout: float) -> subprocess.CompletedProcess[str]:
+    """Run `gcloud` and capture it. Every call site checks `GCLOUD` first — no gcloud, no builds."""
+    # S603: fixed argv from this module plus the region/commit/build id the caller passed; no shell.
+    return subprocess.run((GCLOUD, *args), capture_output=True, text=True, check=False, timeout=timeout)  # noqa: S603
+
+
+def builds_region(flag: str) -> str:
+    """Which Cloud Build region to search, and the answer is never a guess the report hides.
+
+    Builds are regional and `gcloud builds list` defaults to `global`, so a repo that builds in
+    `us-central1` answers an empty list to the default call — the one failure shape that reads as
+    "nothing deployed". `gcloud config list --all` resolves `builds/region` through gcloud's own
+    property chain (so `CLOUDSDK_BUILDS_REGION` and a configured value both land here); when that
+    is unset, `compute/region` is what a machine that deploys to one region actually has set. The
+    region this returns is printed with the result, so an empty answer says where it looked.
+    """
+    if flag:
+        return flag
+    if not GCLOUD:
+        return ""
+    result = run_gcloud("config", "list", "--all", "--format=value(builds.region,compute.region)", timeout=GH_TIMEOUT_S)
+    configured, _, compute = result.stdout.strip().partition("\t")
+    return configured or compute or "global"
+
+
+def build_log(build_id: str, lines: int) -> str:
+    """The tail of a Cloud Build's log, read out of Cloud Logging.
+
+    Not `gcloud builds log`: that rebuilds the stream through the logging client and crashes on
+    some SDK installs (`KeyError: log_severity.proto`), while reading the build's own log resource
+    is the same text on every install. `--order desc` asks for the newest entries — the tail the
+    failure is in — so they come back newest-first and are flipped for reading.
+    """
+    query = f'resource.type="build" AND resource.labels.build_id="{build_id}"'
+    result = run_gcloud(
+        "logging",
+        "read",
+        query,
+        "--order",
+        "desc",
+        "--limit",
+        str(lines),
+        "--format=value(textPayload)",
+        timeout=GH_TIMEOUT_S,
+    )
+    body = result.stdout.strip() or result.stderr.strip() or "gcloud returned no log for this build"
+    return "\n".join(reversed(body.splitlines()))
+
+
+def fetch_builds(commit: str, region: str) -> list[Check]:
+    """The Cloud Build builds triggered by `commit`, shaped like checks so the same code judges them.
+
+    No builds is a real answer here — most repos deploy from Actions — so a machine without
+    `gcloud`, a project without the API and a commit nothing built all return an empty list
+    instead of a verdict. `deploy_targets` is the single place that decides what "nothing
+    anywhere" means.
+    """
+    if not GCLOUD or not region:
+        return []
+    result = run_gcloud(
+        "builds",
+        "list",
+        "--region",
+        region,
+        "--filter",
+        f"substitutions.COMMIT_SHA={commit}",
+        "--format=json",
+        "--limit",
+        "20",
+        timeout=GH_TIMEOUT_S,
+    )
+    if result.returncode != 0:
+        # Said out loud rather than swallowed: an unauthenticated gcloud or a disabled API is why
+        # a Cloud Build deploy would otherwise go unreported, and the agent has to see that.
+        sys.stdout.write(f"gcloud could not list Cloud Build builds in {region}: {result.stderr.strip()[:200]}\n")
+        return []
+    items = json.loads(result.stdout) if result.stdout.strip() else []
+    return [
+        Check(
+            name=item.get("substitutions", {}).get("TRIGGER_NAME") or f"build {item['id'][:8]}",
+            bucket=_BUILD_STATUSES.get(item.get("status", ""), "pending"),
+            state=item.get("status", ""),
+            workflow=f"Cloud Build {region}",
+            link=item.get("logUrl", ""),
+            build=item["id"],
+        )
+        for item in items
+    ]
 
 
 def fetch_checks(branch: str) -> list[Check]:
@@ -164,16 +305,18 @@ CHECK_ADVICE = Advice(
     # otherwise reports the work as finished.
     green=(
         "Green CI is a reviewable branch, not a shipped change: `{me} merged` blocks until the PR "
-        "leaves OPEN, re-checking every 5 minutes, and says what to watch next."
+        "leaves OPEN and `{me} deploy` blocks on what ships the merge. Launch them in the "
+        "background (Bash `run_in_background: true`) — or launch `{me} ship`, which is all three "
+        "stages in one backgroundable call."
     ),
 )
 
 DEPLOY_ADVICE = Advice(
     red="The deploy failed — the merge never reached production. Read the log below, fix it, ship again.",
-    pending="Still rolling out: `{me} deploy` again to keep blocking on it.",
+    pending="Still rolling out: `{me} deploy` again to keep blocking on it, in the background.",
     nothing_passed=(
-        "Every run was cancelled or skipped, so nothing was deployed — a superseded concurrency group "
-        "or a path filter. The merge is in; the change is not live. Ship it."
+        "Every run or build was cancelled or skipped, so nothing was deployed — a superseded "
+        "concurrency group or a path filter. The merge is in; the change is not live. Ship it."
     ),
     green=(
         "The deploy workflow finished. That is not proof the service is healthy — read its own logs "
@@ -208,17 +351,15 @@ def report(checks: list[Check], advice: Advice = CHECK_ADVICE) -> int:
 
 
 def failing_logs(checks: list[Check], lines: int) -> str:
-    """The failed steps of every red check, tail-trimmed, one block per Actions run."""
-    blocks: list[str] = []
-    for run_id in dict.fromkeys(check.run_id for check in checks if check.bucket == "fail"):
-        if run_id is None:
-            blocks.append("A failing check reported no Actions run — open its link above for the log.")
-            continue
-        result = run_gh("run", "view", run_id, "--log-failed", timeout=GH_TIMEOUT_S)
-        body = result.stdout.strip() or result.stderr.strip() or "gh returned no log for this run"
-        tail = body.splitlines()[-lines:]
-        blocks.append(f"── run {run_id}, last {len(tail)} log line(s) ──\n" + "\n".join(tail))
-    return "\n\n".join(blocks)
+    """The failed steps of every red check, tail-trimmed, one block per run that failed.
+
+    Keyed by the run, not the check: several checks share one Actions run, and printing its log
+    once per check would fill the context with the same traceback.
+    """
+    failed: dict[str, Check] = {}
+    for check in (check for check in checks if check.bucket == "fail"):
+        failed.setdefault(check.build or check.run_id or check.name, check)
+    return "\n\n".join(check.log(lines) for check in failed.values())
 
 
 def watch(branch: str, seconds: float) -> bool:
@@ -286,9 +427,9 @@ def report_merge(pr: PullRequest) -> int:
 def fetch_runs(commit: str) -> list[Check]:
     """The Actions runs triggered by `commit`, shaped like checks so the same code can judge them.
 
-    Exits 3 when there are none: a repo that deploys from outside Actions is a repo this script
-    cannot watch, and saying so is the only honest answer — reporting zero runs as green would
-    call an undeployed change live.
+    An empty list is a legitimate answer — plenty of repos deploy from outside Actions — but a
+    `gh` that *failed* is not: it says nothing about how the repo ships, so it exits 3 rather than
+    letting a broken lookup read as a repo with no deploy.
     """
     fields = "name,workflowName,status,conclusion,url"
     result = run_gh("run", "list", "--commit", commit, "--json", fields, "--limit", "20", timeout=GH_TIMEOUT_S)
@@ -296,13 +437,7 @@ def fetch_runs(commit: str) -> list[Check]:
         sys.stdout.write((result.stderr.strip() or "gh could not list the runs for this commit") + "\n")
         raise SystemExit(EXIT_UNKNOWN)
     items = json.loads(result.stdout) if result.stdout.strip() else []
-    if not items:
-        sys.stdout.write(
-            f"No Actions run for {commit[:12]} — this repo ships some other way. Find how the merge "
-            "reaches production, watch that, then read the service's logs and metrics.\n"
-        )
-        raise SystemExit(EXIT_UNKNOWN)
-    runs = [
+    return [
         Check(
             name=item.get("name") or item.get("workflowName", ""),
             bucket=_RUN_CONCLUSIONS.get(item.get("conclusion") or "", "pending"),
@@ -312,7 +447,41 @@ def fetch_runs(commit: str) -> list[Check]:
         )
         for item in items
     ]
-    return sorted(runs, key=lambda run: (_BUCKET_ORDER.get(run.bucket, 9), run.name))
+
+
+def deploy_targets(commit: str, region: str) -> list[Check]:
+    """Everything that puts `commit` in production, from both systems this script can read.
+
+    Both, not one or the other: a repo whose CI is Actions and whose deploy is Cloud Build has
+    Actions runs for the merge commit that say nothing about whether the change is live, so
+    judging only those would report a branch as shipped while the build that ships it is still
+    queued. Worst bucket first, exactly like the PR's checks.
+    """
+    targets = fetch_runs(commit) + fetch_builds(commit, region)
+    return sorted(targets, key=lambda target: (_BUCKET_ORDER.get(target.bucket, 9), target.name))
+
+
+def await_deploy(commit: str, region: str, *, timeout: float, interval: float) -> list[Check]:
+    """Block until nothing the merge commit set off is still running, then return the final state.
+
+    A re-listing poll rather than a watch, deliberately: `gh run watch` only knows Actions, Cloud
+    Build has no watch at all, and one loop over both is simpler than two waits spliced together.
+    Re-listing is also the only thing that sees a build whose trigger had not fired yet when the
+    merge landed — the normal case when this runs the moment `merged` returns, hence the grace
+    window before "nothing ran" is reported as an answer.
+    """
+    deadline = time.monotonic() + timeout
+    appear_by = time.monotonic() + BUILD_APPEAR_S
+    while True:
+        targets = deploy_targets(commit, region)
+        if targets and not any(target.bucket == "pending" for target in targets):
+            return targets
+        if not targets and time.monotonic() >= appear_by:
+            return targets
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return targets
+        time.sleep(min(interval, left))
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -358,28 +527,72 @@ def cmd_merged(args: argparse.Namespace) -> int:
 
 
 def cmd_deploy(args: argparse.Namespace) -> int:
-    """`deploy`: block on the Actions runs of the merge commit, then judge them like checks."""
+    """`deploy`: block on everything the merge commit set off, then judge it like checks."""
     commit = fetch_pr(args.branch).merge_commit
     if not commit:
         sys.stdout.write("This PR has no merge commit — it is not merged yet. Run `merged` first.\n")
         return EXIT_PENDING
-    deadline = time.monotonic() + args.timeout
-    for run_id in dict.fromkeys(run.run_id for run in fetch_runs(commit) if run.bucket == "pending"):
-        left = deadline - time.monotonic()
-        if left <= 0:
-            break
-        if run_id is None:
-            continue  # a run whose URL carries no id cannot be watched; the others still can
-        try:
-            run_gh("run", "watch", run_id, "--interval", str(WATCH_INTERVAL_S), timeout=left)
-        except subprocess.TimeoutExpired:
-            sys.stdout.write(f"Deploy run {run_id} still going after {left:.0f}s — reporting as it stands.\n")
-            break
-    return report_with_logs(fetch_runs(commit), args.lines, DEPLOY_ADVICE)
+    region = builds_region(args.region)
+    targets = await_deploy(commit, region, timeout=args.timeout, interval=args.interval)
+    if not targets:
+        sys.stdout.write(
+            f"Nothing deploys {commit[:12]}: no Actions run, and no Cloud Build build in "
+            f"{region or 'any region (no gcloud here)'}. Either this repo ships some other way — find "
+            "out how, watch that — or the deploy is in a region this was not pointed at: `--region`.\n"
+        )
+        return EXIT_UNKNOWN
+    return report_with_logs(targets, args.lines, DEPLOY_ADVICE)
+
+
+def cmd_ship(args: argparse.Namespace) -> int:
+    """`ship`: CI, then the merge, then the deploy — the whole arc in one process.
+
+    The verb `run_in_background` was waiting for. An agent that has just pushed needs all three
+    answers and needs none of them this second, so one launched process carries the branch to a
+    live change and comes back once, instead of three foreground waits with the session frozen
+    behind each. It stops at the first stage that is not green: there is nothing to watch
+    downstream of a red CI or a PR nobody merged.
+    """
+    stages = (
+        ("CI", cmd_wait, {"timeout": args.ci_timeout}),
+        ("MERGE", cmd_merged, {"timeout": args.merge_timeout, "interval": MERGE_POLL_S}),
+        ("DEPLOY", cmd_deploy, {"timeout": args.deploy_timeout, "interval": WATCH_INTERVAL_S, "region": args.region}),
+    )
+    for label, stage, flags in stages:
+        sys.stdout.write(f"\n── {label} ──\n")
+        code = stage(argparse.Namespace(branch=args.branch, lines=args.lines, **flags))
+        if code != EXIT_GREEN:
+            sys.stdout.write(f"\nChain stopped at {label} — nothing after it has happened yet.\n")
+            return code
+    return EXIT_GREEN
+
+
+def add_waiting_verbs(
+    sub: argparse._SubParsersAction[argparse.ArgumentParser], common: argparse.ArgumentParser
+) -> None:
+    """The four verbs that block, each with the flags that bound its own wait.
+
+    Every one of these is meant to be launched with `run_in_background: true`, which is why each
+    carries a hard cap: a wait that cannot end is a background process nobody ever hears from.
+    """
+    waiting = sub.add_parser("wait", parents=[common], help="block until the checks conclude, then report")
+    waiting.add_argument("--timeout", type=float, default=DEFAULT_WAIT_S, help="seconds to wait before reporting")
+    merged = sub.add_parser("merged", parents=[common], help="block until the PR is merged or closed")
+    merged.add_argument("--timeout", type=float, default=DEFAULT_MERGE_WAIT_S, help="seconds to wait before reporting")
+    merged.add_argument("--interval", type=float, default=MERGE_POLL_S, help="seconds between merge checks")
+    deploy = sub.add_parser("deploy", parents=[common], help="block on whatever ships the merge commit")
+    deploy.add_argument("--timeout", type=float, default=DEFAULT_DEPLOY_WAIT_S, help="seconds to wait before reporting")
+    deploy.add_argument("--interval", type=float, default=WATCH_INTERVAL_S, help="seconds between deploy re-checks")
+    deploy.add_argument("--region", default="", help="Cloud Build region (default: gcloud's own)")
+    ship = sub.add_parser("ship", parents=[common], help="CI, then the merge, then the deploy, in one call")
+    ship.add_argument("--ci-timeout", type=float, default=DEFAULT_WAIT_S, help="seconds to wait on the checks")
+    ship.add_argument("--merge-timeout", type=float, default=DEFAULT_MERGE_WAIT_S, help="seconds to wait on the merge")
+    ship.add_argument("--deploy-timeout", type=float, default=DEFAULT_DEPLOY_WAIT_S, help="seconds to wait on deploy")
+    ship.add_argument("--region", default="", help="Cloud Build region (default: gcloud's own)")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    """The five verbs and their flags.
+    """The six verbs and their flags.
 
     The shared flags hang off each verb rather than off the top level, so `ci.py logs --lines 5`
     — the order anyone actually types — parses. A bare `ci.py` means `status`.
@@ -394,20 +607,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status", parents=[common], help="print every check and a verdict")
     sub.add_parser("logs", parents=[common], help="print the verdict plus the failing steps' log")
-    waiting = sub.add_parser("wait", parents=[common], help="block until the checks conclude, then report")
-    waiting.add_argument("--timeout", type=float, default=DEFAULT_WAIT_S, help="seconds to wait before reporting")
-    merged = sub.add_parser("merged", parents=[common], help="block until the PR is merged or closed")
-    merged.add_argument("--timeout", type=float, default=DEFAULT_MERGE_WAIT_S, help="seconds to wait before reporting")
-    merged.add_argument("--interval", type=float, default=MERGE_POLL_S, help="seconds between merge checks")
-    deploy = sub.add_parser("deploy", parents=[common], help="block on the merge commit's workflow runs")
-    deploy.add_argument("--timeout", type=float, default=DEFAULT_DEPLOY_WAIT_S, help="seconds to wait before reporting")
+    add_waiting_verbs(sub, common)
     return parser.parse_args(argv or ["status"])
 
 
 def main(argv: list[str]) -> int:
     """Entry point: dispatch the verb, return its exit code."""
     args = parse_args(argv)
-    verbs = {"status": cmd_status, "logs": cmd_logs, "wait": cmd_wait, "merged": cmd_merged, "deploy": cmd_deploy}
+    verbs = {
+        "status": cmd_status,
+        "logs": cmd_logs,
+        "wait": cmd_wait,
+        "merged": cmd_merged,
+        "deploy": cmd_deploy,
+        "ship": cmd_ship,
+    }
     return verbs[args.command](args)
 
 

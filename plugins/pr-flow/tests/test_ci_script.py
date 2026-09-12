@@ -26,7 +26,13 @@ echo "$*" >> "$FAKE_GH_LOG"
 case "$1 $2" in
   "run view") printf '%s' "$FAKE_GH_RUN_LOG"; exit 0 ;;
   "run watch") exit 0 ;;
-  "run list") printf '%s' "$FAKE_GH_RUNS_JSON"; exit "${FAKE_GH_RUNS_EXIT:-0}" ;;
+  "run list")
+    if [ "$(grep -c '^run list' "$FAKE_GH_LOG")" -gt 1 ] && [ -n "$FAKE_GH_RUNS_JSON2" ]; then
+      printf '%s' "$FAKE_GH_RUNS_JSON2"
+    else
+      printf '%s' "$FAKE_GH_RUNS_JSON"
+    fi
+    exit "${FAKE_GH_RUNS_EXIT:-0}" ;;
   "pr view")
     if [ "$(grep -c '^pr view' "$FAKE_GH_LOG")" -gt 1 ] && [ -n "$FAKE_GH_PR_JSON2" ]; then
       printf '%s' "$FAKE_GH_PR_JSON2"
@@ -37,6 +43,20 @@ case "$1 $2" in
 esac
 printf '%s' "$FAKE_GH_JSON"
 exit "${FAKE_GH_EXIT:-0}"
+"""
+
+# The Cloud Build half. It logs into the same file as the `gh` stub, prefixed with its own name,
+# so one `calls` list shows the order the script asked its two CLIs in — and an assertion about a
+# `gcloud` call cannot be satisfied by a `gh` one.
+GCLOUD_STUB = """#!/bin/sh
+echo "gcloud $*" >> "$FAKE_GH_LOG"
+case "$1 $2" in
+  "config list") printf '\\t%s' "$FAKE_GCLOUD_REGION"; exit 0 ;;
+  "builds list") printf '%s' "$FAKE_GCLOUD_BUILDS_JSON"; exit "${FAKE_GCLOUD_BUILDS_EXIT:-0}" ;;
+  "logging read") printf '%s' "$FAKE_GCLOUD_BUILD_LOG"; exit 0 ;;
+esac
+echo "unexpected gcloud call: $*" >&2
+exit 99
 """
 
 
@@ -69,8 +89,18 @@ def deploy_run(name, conclusion, status="completed", run_id=88):
     }
 
 
+def cloud_build(status, trigger="backend-deployment", build_id="c1f00931-e877-4a33-9333-f39e0da7edb9"):
+    """One `gcloud builds list --format=json` item."""
+    return {
+        "id": build_id,
+        "status": status,
+        "logUrl": f"https://console.cloud.test/cloud-build/builds/{build_id}",
+        "substitutions": {"TRIGGER_NAME": trigger, "COMMIT_SHA": "abcdef123456ffffffffffffffffffffffffffff"},
+    }
+
+
 class Ran(NamedTuple):
-    """One `ci.py` run: what it exited with, what it printed, and which gh calls it made."""
+    """One `ci.py` run: what it exited with, what it printed, and which CLI calls it made."""
 
     code: int
     out: str
@@ -79,15 +109,16 @@ class Ran(NamedTuple):
 
 @pytest.fixture
 def ci(tmp_path):
-    """Run `ci.py` against a stub `gh`."""
+    """Run `ci.py` against a stub `gh` and a stub `gcloud`."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    stub = bindir / "gh"
-    stub.write_text(GH_STUB)
-    stub.chmod(0o755)
-    log = tmp_path / "gh.log"
+    for name, body in (("gh", GH_STUB), ("gcloud", GCLOUD_STUB)):
+        stub = bindir / name
+        stub.write_text(body)
+        stub.chmod(0o755)
+    log = tmp_path / "cli.log"
 
-    # One keyword per shape `gh` can answer in; the stub reads them all out of the environment.
+    # One keyword per shape the CLIs can answer in; the stubs read them out of the environment.
     def run(
         *args: str,
         checks=(),
@@ -96,8 +127,13 @@ def ci(tmp_path):
         pull="",
         pull_then="",
         runs=(),
+        runs_then=(),
         pr_exit=0,
         runs_exit=0,
+        builds=(),
+        builds_exit=0,
+        build_log="",
+        region="us-central1",
     ) -> Ran:
         env = {
             **os.environ,
@@ -110,7 +146,12 @@ def ci(tmp_path):
             "FAKE_GH_PR_JSON2": pull_then,
             "FAKE_GH_PR_EXIT": str(pr_exit),
             "FAKE_GH_RUNS_JSON": json.dumps(list(runs)),
+            "FAKE_GH_RUNS_JSON2": json.dumps(list(runs_then)) if runs_then else "",
             "FAKE_GH_RUNS_EXIT": str(runs_exit),
+            "FAKE_GCLOUD_BUILDS_JSON": json.dumps(list(builds)),
+            "FAKE_GCLOUD_BUILDS_EXIT": str(builds_exit),
+            "FAKE_GCLOUD_BUILD_LOG": build_log,
+            "FAKE_GCLOUD_REGION": region,
         }
         result = subprocess.run(  # noqa: S603
             (sys.executable, str(SCRIPT), *args), capture_output=True, text=True, env=env, check=False
@@ -228,12 +269,26 @@ def test_deploy_watches_the_merge_commits_runs_and_judges_them(ci):
     assert any("run list --commit abcdef123456ffffffffffffffffffffffffffff" in call for call in calls)
 
 
-def test_deploy_blocks_on_a_run_that_has_not_concluded(ci):
-    """A run with no conclusion is pending, never shipped — the stub's watch returns but the run has not."""
-    code, out, calls = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("deploy", None, status="in_progress")])
-    assert any("run watch 88" in call for call in calls)
+def test_a_run_that_has_not_concluded_is_pending_not_shipped(ci):
+    """A run with no conclusion is pending — the one input a bucket tally would read as green."""
+    code, out, _ = ci("deploy", "--timeout", "0", pull=pr("MERGED"), runs=[deploy_run("d", None, status="queued")])
     assert code == 2
     assert "PENDING" in out
+
+
+def test_deploy_keeps_re_reading_until_the_run_concludes(ci):
+    """The wait is a re-listing poll, so the verdict has to come from the later answer, not the first."""
+    code, out, calls = ci(
+        "deploy",
+        "--interval",
+        "0",
+        pull=pr("MERGED"),
+        runs=[deploy_run("deploy", None, status="in_progress")],
+        runs_then=[deploy_run("deploy", "success")],
+    )
+    assert code == 0
+    assert "GREEN" in out
+    assert sum(1 for call in calls if call.startswith("run list")) == 2
 
 
 def test_a_deploy_that_was_only_cancelled_or_skipped_is_not_reported_as_shipped(ci):
@@ -260,10 +315,76 @@ def test_gh_unable_to_list_the_runs_is_not_reported_as_a_repo_without_actions(ci
     assert "ships some other way" not in out
 
 
-def test_a_repo_that_deploys_outside_actions_is_not_reported_as_shipped(ci):
-    code, out, _ = ci("deploy", pull=pr("MERGED"), runs=())
+def test_a_repo_that_deploys_outside_both_systems_is_not_reported_as_shipped(ci):
+    """And it says where it looked: an empty answer the reader cannot place is one they mis-trust."""
+    code, out, _ = ci("deploy", "--timeout", "0", pull=pr("MERGED"), runs=(), builds=())
     assert code == 3
     assert "GREEN" not in out
+    assert "us-central1" in out
+
+
+def test_a_cloud_build_deploy_is_judged_like_a_workflow_run(ci):
+    """A repo that ships from Cloud Build and nothing else still gets a verdict, not a shrug."""
+    code, out, calls = ci("deploy", pull=pr("MERGED"), runs=(), builds=[cloud_build("SUCCESS")])
+    assert code == 0
+    assert "GREEN" in out
+    assert "backend-deployment" in out
+    assert any("substitutions.COMMIT_SHA=abcdef123456" in call for call in calls if call.startswith("gcloud builds"))
+
+
+def test_a_running_cloud_build_keeps_the_deploy_pending_while_actions_is_already_green(ci):
+    """The false green this exists to stop: Actions ran the tests, Cloud Build is still shipping."""
+    code, out, _ = ci(
+        "deploy",
+        "--timeout",
+        "0",
+        pull=pr("MERGED"),
+        runs=[deploy_run("ci", "success")],
+        builds=[cloud_build("WORKING")],
+    )
+    assert code == 2
+    assert "PENDING" in out
+
+
+def test_a_failed_cloud_build_carries_its_log_from_cloud_logging(ci):
+    """`gcloud builds log` crashes on some SDK installs, so the log comes from the build's log resource."""
+    newest_first = "\n".join(f"line {n}" for n in reversed(range(80)))
+    code, out, calls = ci(
+        "deploy", "--lines", "3", pull=pr("MERGED"), runs=(), builds=[cloud_build("FAILURE")], build_log=newest_first
+    )
+    assert code == 1
+    assert "RED" in out
+    assert "line 79" in out
+    assert "line 76" not in out
+    assert any(call.startswith("gcloud logging read") for call in calls)
+    assert not any(call.startswith("gcloud builds log") for call in calls)
+
+
+def test_a_named_region_is_used_instead_of_asking_gcloud_for_one(ci):
+    _, _, calls = ci("deploy", "--region", "europe-west1", pull=pr("MERGED"), runs=(), builds=[cloud_build("SUCCESS")])
+    assert any("builds list --region europe-west1" in call for call in calls)
+    assert not any(call.startswith("gcloud config list") for call in calls)
+
+
+def test_a_gcloud_that_cannot_list_builds_says_so_instead_of_passing_in_silence(ci):
+    """Actions alone can be green while the Cloud Build half was never read — that has to be visible."""
+    code, out, _ = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("ci", "success")], builds=(), builds_exit=1)
+    assert code == 0
+    assert "could not list Cloud Build builds in us-central1" in out
+
+
+def test_ship_runs_the_whole_arc_in_one_call(ci):
+    code, out, _ = ci("ship", checks=[check("test", "pass")], pull=pr("MERGED"), runs=[deploy_run("deploy", "success")])
+    assert code == 0
+    assert [line.strip(" ─") for line in out.splitlines() if line.startswith("── ")] == ["CI", "MERGE", "DEPLOY"]
+
+
+def test_ship_stops_at_the_first_stage_that_is_not_green(ci):
+    """Nothing downstream of a red CI has happened, so nothing downstream of it may be reported."""
+    code, out, _ = ci("ship", checks=[check("test", "fail")], exit_code=1, pull=pr("MERGED"))
+    assert code == 1
+    assert "Chain stopped at CI" in out
+    assert "MERGE" not in out
 
 
 def test_deploy_refuses_to_guess_a_commit_for_an_unmerged_pr(ci):
@@ -273,11 +394,12 @@ def test_deploy_refuses_to_guess_a_commit_for_an_unmerged_pr(ci):
     assert "not merged" in out
 
 
-def test_every_run_conclusion_maps_onto_a_bucket_the_verdict_knows():
-    """A conclusion mapped to a bucket nobody counts would report a broken deploy as green."""
+def test_every_outcome_maps_onto_a_bucket_the_verdict_knows():
+    """An outcome mapped to a bucket nobody counts would report a broken deploy as green."""
     spec = importlib.util.spec_from_file_location("ci_module", SCRIPT)
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert set(module._RUN_CONCLUSIONS.values()) <= set(module._BUCKET_ORDER)
+    assert set(module._BUILD_STATUSES.values()) <= set(module._BUCKET_ORDER)
