@@ -14,6 +14,11 @@ gets the sentence at the moment it would otherwise stall the conversation.
 
 `status` and `logs` answer in one `gh` call and are deliberately not covered — a hook that made
 every reading of CI state asynchronous would just make the state harder to read.
+
+The verb list is duplicated from `scripts/ci.py`'s `BLOCKING_VERBS` rather than imported: this
+runs on every single Bash call, and loading the script to read one tuple would put that cost on
+all of them. `test_require_background.py` asserts the two agree, so a fifth waiting verb cannot
+be added without the gate covering it.
 """
 
 from __future__ import annotations
@@ -28,20 +33,32 @@ BLOCKING_VERBS = ("wait", "merged", "deploy", "ship")
 # argparse puts the subcommand before its flags, so the verb is the word right after the script.
 _CI_VERB_RE = re.compile(rf"\bci\.py\s+({'|'.join(BLOCKING_VERBS)})(?![\w-])")
 # Quoted spans are blanked first: a command that merely *talks* about `ci.py ship` — an echo, a
-# commit message, a heredoc of instructions — is not a call and must not be denied.
+# commit message — is not a call and must not be denied.
 _QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+# …except the argument of `sh -c` / `eval`, which is a quoted span that *is* the command. Blanking
+# it would leave `bash -c 'ci.py ship'` — the shape acl-hook documents for a long job — as the one
+# way to freeze the session in the foreground without the gate seeing it.
+_SHELL_C_RE = re.compile(r"(?:ba|z|da)?sh\s+-c\s+(['\"])(.*?)\1|eval\s+(['\"])(.*?)\3", re.DOTALL)
 
 REASON = (
     "`ci.py {verb}` blocks until the branch gets there — a CI run is minutes, a merge waiting on a "
     "reviewer can be an hour — and in the foreground that is the whole session frozen: the user "
     "cannot ask anything and you cannot do the work that never needed the answer.\n\n"
-    "Run the same command with Bash `run_in_background: true`. The harness re-invokes you when it "
-    "exits, so the wait costs the conversation nothing, and `ship` is one launch for the whole arc "
-    "(checks → merge → deploy).\n\n"
+    "Run the same command with Bash `run_in_background: true`, under its own bound: "
+    "`timeout -v 6600 <the command>`. The harness re-invokes you when it exits, so the wait costs "
+    "the conversation nothing, and `ship` is one launch for the whole arc (checks → merge → "
+    "deploy). The prefix matters — a detached command carrying no bound of its own is capped at "
+    "1800s, which is less than the merge stage alone may take.\n\n"
     "Do not reach for a substitute instead: a `sleep`/`while` poll loop or a Monitor loop around "
     "`status` pays for the same answer twice and re-freezes the turn. The wait already has a hard "
     "cap (`--timeout`), and `status` / `logs` stay foreground for a state you want right now."
 )
+
+
+def runnable_text(command: str) -> str:
+    """The parts of a Bash call that actually run: quoted prose dropped, `sh -c` bodies kept."""
+    shelled = " ".join(found.group(2) or found.group(4) or "" for found in _SHELL_C_RE.finditer(command))
+    return _QUOTED_RE.sub(" ", command) + " " + shelled
 
 
 def blocking_verb(data: dict[str, object]) -> str | None:
@@ -51,8 +68,7 @@ def blocking_verb(data: dict[str, object]) -> str | None:
         return None
     if tool_input.get("run_in_background"):
         return None
-    command = _QUOTED_RE.sub(" ", str(tool_input.get("command", "")))
-    found = _CI_VERB_RE.search(command)
+    found = _CI_VERB_RE.search(runnable_text(str(tool_input.get("command", ""))))
     return found.group(1) if found else None
 
 

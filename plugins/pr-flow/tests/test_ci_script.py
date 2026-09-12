@@ -51,8 +51,14 @@ exit "${FAKE_GH_EXIT:-0}"
 GCLOUD_STUB = """#!/bin/sh
 echo "gcloud $*" >> "$FAKE_GH_LOG"
 case "$1 $2" in
-  "config list") printf '\\t%s' "$FAKE_GCLOUD_REGION"; exit 0 ;;
-  "builds list") printf '%s' "$FAKE_GCLOUD_BUILDS_JSON"; exit "${FAKE_GCLOUD_BUILDS_EXIT:-0}" ;;
+  "config list") printf '%s\\t%s' "$FAKE_GCLOUD_BUILDS_REGION" "$FAKE_GCLOUD_COMPUTE_REGION"; exit 0 ;;
+  "builds list")
+    if [ "$(grep -c '^gcloud builds list' "$FAKE_GH_LOG")" -gt 1 ] && [ -n "$FAKE_GCLOUD_BUILDS_JSON2" ]; then
+      printf '%s' "$FAKE_GCLOUD_BUILDS_JSON2"
+    else
+      printf '%s' "$FAKE_GCLOUD_BUILDS_JSON"
+    fi
+    exit "${FAKE_GCLOUD_BUILDS_EXIT:-0}" ;;
   "logging read") printf '%s' "$FAKE_GCLOUD_BUILD_LOG"; exit 0 ;;
 esac
 echo "unexpected gcloud call: $*" >&2
@@ -109,18 +115,31 @@ class Ran(NamedTuple):
 
 @pytest.fixture
 def ci(tmp_path):
-    """Run `ci.py` against a stub `gh` and a stub `gcloud`."""
+    """Run `ci.py` against a stub `gh` and — unless a test passes `gcloud=False` — a stub `gcloud`.
+
+    Dropping the stub is not enough to simulate a machine without `gcloud`: `shutil.which` would
+    walk on and find the installed one. So that case also takes every directory holding a real
+    `gcloud` out of `PATH`, while keeping the rest — the stubs themselves need `grep` and `printf`.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir()
+    log = tmp_path / "cli.log"
     for name, body in (("gh", GH_STUB), ("gcloud", GCLOUD_STUB)):
         stub = bindir / name
         stub.write_text(body)
         stub.chmod(0o755)
-    log = tmp_path / "cli.log"
+
+    def path(*, with_gcloud: bool) -> str:
+        """`PATH` with the stub dir in front, and without the real gcloud when a test asks."""
+        inherited = os.environ["PATH"].split(os.pathsep)
+        if not with_gcloud:
+            inherited = [entry for entry in inherited if not (Path(entry) / "gcloud").exists()]
+        return os.pathsep.join([str(bindir), *inherited])
 
     # One keyword per shape the CLIs can answer in; the stubs read them out of the environment.
     def run(
         *args: str,
+        gcloud=True,
         checks=(),
         exit_code=0,
         run_log="",
@@ -131,13 +150,18 @@ def ci(tmp_path):
         pr_exit=0,
         runs_exit=0,
         builds=(),
+        builds_then=(),
         builds_exit=0,
         build_log="",
-        region="us-central1",
+        builds_region="",
+        compute_region="us-central1",
+        appear=0,
     ) -> Ran:
+        if not gcloud:
+            (bindir / "gcloud").unlink()
         env = {
             **os.environ,
-            "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}",
+            "PATH": path(with_gcloud=gcloud),
             "FAKE_GH_JSON": json.dumps(list(checks)),
             "FAKE_GH_EXIT": str(exit_code),
             "FAKE_GH_RUN_LOG": run_log,
@@ -149,9 +173,14 @@ def ci(tmp_path):
             "FAKE_GH_RUNS_JSON2": json.dumps(list(runs_then)) if runs_then else "",
             "FAKE_GH_RUNS_EXIT": str(runs_exit),
             "FAKE_GCLOUD_BUILDS_JSON": json.dumps(list(builds)),
+            "FAKE_GCLOUD_BUILDS_JSON2": json.dumps(list(builds_then)) if builds_then else "",
             "FAKE_GCLOUD_BUILDS_EXIT": str(builds_exit),
             "FAKE_GCLOUD_BUILD_LOG": build_log,
-            "FAKE_GCLOUD_REGION": region,
+            "FAKE_GCLOUD_BUILDS_REGION": builds_region,
+            "FAKE_GCLOUD_COMPUTE_REGION": compute_region,
+            # Off unless a test is about the window itself: every other deploy test would
+            # otherwise spend two minutes waiting for a Cloud Build build it never stubbed.
+            "PR_FLOW_BUILD_APPEAR_S": str(appear),
         }
         result = subprocess.run(  # noqa: S603
             (sys.executable, str(SCRIPT), *args), capture_output=True, text=True, env=env, check=False
@@ -356,7 +385,7 @@ def test_a_failed_cloud_build_carries_its_log_from_cloud_logging(ci):
     assert "RED" in out
     assert "line 79" in out
     assert "line 76" not in out
-    assert any(call.startswith("gcloud logging read") for call in calls)
+    assert any(call.startswith("gcloud logging read") and "--order desc" in call for call in calls)
     assert not any(call.startswith("gcloud builds log") for call in calls)
 
 
@@ -366,11 +395,74 @@ def test_a_named_region_is_used_instead_of_asking_gcloud_for_one(ci):
     assert not any(call.startswith("gcloud config list") for call in calls)
 
 
-def test_a_gcloud_that_cannot_list_builds_says_so_instead_of_passing_in_silence(ci):
-    """Actions alone can be green while the Cloud Build half was never read — that has to be visible."""
+def test_a_gcloud_that_cannot_list_builds_is_not_a_green_verdict(ci):
+    """One of the two systems that could ship the commit went unread, so GREEN is not available."""
     code, out, _ = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("ci", "success")], builds=(), builds_exit=1)
-    assert code == 0
+    assert code == 3
     assert "could not list Cloud Build builds in us-central1" in out
+    assert "GREEN" not in out
+
+
+def test_a_deploy_is_not_green_until_cloud_build_has_had_time_to_create_its_build(ci):
+    """The false green this whole half exists to stop.
+
+    A merge commit's Actions runs — the push-to-trunk CI — go green seconds after the merge, while
+    the trigger has not yet created the build that ships the change. Judging the first listing
+    would report a deploy that does not exist as finished.
+    """
+    code, out, calls = ci(
+        "deploy",
+        "--interval",
+        "0",
+        pull=pr("MERGED"),
+        runs=[deploy_run("ci", "success")],
+        builds=(),
+        builds_then=[cloud_build("SUCCESS")],
+        appear=30,
+    )
+    assert code == 0
+    assert "backend-deployment" in out
+    assert sum(1 for call in calls if call.startswith("gcloud builds list")) == 2
+
+
+@pytest.mark.parametrize(
+    ("status", "expected", "verdict_word"),
+    [("CANCELLED", 1, "NOT GREEN"), ("TIMEOUT", 1, "RED"), ("EXPIRED", 1, "RED"), ("QUEUED", 2, "PENDING")],
+)
+def test_no_build_outcome_short_of_success_is_reported_as_shipped(ci, status, expected, verdict_word):
+    """Each of these reads as shipped under a bucket table that maps it wrong, and none of them is."""
+    code, out, _ = ci("deploy", "--timeout", "0", pull=pr("MERGED"), runs=(), builds=[cloud_build(status)])
+    assert code == expected
+    assert verdict_word in out
+
+
+@pytest.mark.parametrize(
+    ("configured", "compute", "expected"),
+    [("europe-west1", "us-central1", "europe-west1"), ("", "us-central1", "us-central1"), ("", "", "global")],
+)
+def test_the_region_falls_back_from_builds_to_compute_to_global(ci, configured, compute, expected):
+    """gcloud's own build region first, the machine's compute region next, gcloud's default last."""
+    _, _, calls = ci(
+        "deploy",
+        "--timeout",
+        "0",
+        pull=pr("MERGED"),
+        runs=(),
+        builds=(),
+        builds_region=configured,
+        compute_region=compute,
+    )
+    assert any(f"builds list --region {expected} " in call for call in calls)
+
+
+def test_without_gcloud_the_report_does_not_name_a_region_nobody_queried(ci):
+    """`--region` is not a search: with no gcloud on PATH nothing was asked, and saying so is the answer."""
+    code, out, calls = ci(
+        "deploy", "--region", "us-central1", "--timeout", "0", pull=pr("MERGED"), runs=(), gcloud=False
+    )
+    assert code == 3
+    assert "us-central1" not in out
+    assert not any(call.startswith("gcloud") for call in calls)
 
 
 def test_ship_runs_the_whole_arc_in_one_call(ci):

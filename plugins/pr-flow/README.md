@@ -31,10 +31,12 @@ whole session frozen behind a wait nobody was watching.
 ## Watching the branch, in the background
 
 ```
-python3 scripts/ci.py ship      # the whole arc: checks → merge → deploy, one process
+timeout -v 6600 python3 scripts/ci.py ship   # the whole arc: checks → merge → deploy, one process
 ```
 
 That is the intended call, and it is intended to run under Bash `run_in_background: true`. The
+`timeout -v` prefix is its own bound: a detached command without one is capped at 1800s (by
+`acl-hook`, if installed), and the merge stage alone may take twice that. The
 three answers an agent needs after a push take tens of minutes to arrive and none of them are
 needed this second, so one launched process carries the branch from a pushed commit to a live
 change and re-invokes the agent once, with the whole story. A foreground wait freezes the session
@@ -47,7 +49,7 @@ the transcript readable at a glance.
 Each stage is also its own verb, for when only one answer is wanted:
 
 ```
-python3 scripts/ci.py status    # every check, one line each, right now (the one fast verb)
+python3 scripts/ci.py status    # every check, one line each, right now (foreground, like logs)
 python3 scripts/ci.py wait      # block until the checks conclude, then the verdict (+ log if red)
 python3 scripts/ci.py logs      # the failing steps only, tail-trimmed (--lines N)
 python3 scripts/ci.py merged    # block until the PR leaves OPEN, re-checking every 5 minutes
@@ -75,25 +77,18 @@ and the sleep lives inside the script instead of in an agent's loop.
 `deploy` watches **both** systems that can ship a merge commit:
 
 - **GitHub Actions** — the runs of the merge commit, from `gh run list --commit`.
-- **Google Cloud Build** — the builds whose `COMMIT_SHA` substitution is that commit. Builds are
-  regional and `gcloud`'s default is `global`, so the region comes from `builds/region`, else
-  `compute/region`, else an explicit `--region`; the report always names the region it searched.
-  A failed build's log comes from its Cloud Logging resource, not from `gcloud builds log` — that
-  command crashes outright on some SDK installs (`KeyError: log_severity.proto`).
+- **Google Cloud Build** — the builds whose `COMMIT_SHA` substitution is that commit, in the
+  region from `builds/region`, else `compute/region`, else an explicit `--region`. An empty answer
+  names the region it searched, because builds are regional while `gcloud`'s default is `global`.
 
-Both, not one or the other: a repo whose CI is Actions and whose deploy is Cloud Build has green
-Actions runs on the merge commit that say nothing about whether the change is live, and judging
-only those is how a queued deploy gets reported as shipped. The wait is one re-listing poll over
-both, which is also the only thing that notices a build whose trigger had not fired yet when the
-merge landed — the normal case, since `deploy` runs the moment `merged` returns.
+Both, not one or the other: green Actions runs on a merge commit say nothing about a Cloud Build
+deploy that is still queued, and judging only those is how an unshipped change gets reported as
+live. Builds and runs are then judged by the same code that judges checks — same buckets, same
+verdict, same trimmed log on red — and a `gh` or `gcloud` that could not answer is never reported
+as a repo that does not deploy.
 
-Builds and runs are judged by the same code that judges checks: same buckets, same verdict, same
-trimmed log on red. A set that is entirely cancelled or skipped is not green — nothing was
-deployed — and neither a `gh` nor a `gcloud` that could not answer is ever reported as a repo
-that does not deploy.
-
-The flags and the exit codes are in `commands/ci.md`; the reasoning behind each default is
-beside it in `scripts/ci.py`.
+The flags and the exit codes are in `commands/ci.md`; the reasoning behind each default and each
+of these choices is beside it in `scripts/ci.py` (`deploy_targets`, `await_deploy`, `build_log`).
 
 ### When it stays silent
 
@@ -107,13 +102,10 @@ beside it in `scripts/ci.py`.
 - On a `--dry-run`, on a `git -C <other repo>` command, and on `git commit` written inside a
   quoted string — each is judged per command segment, not per whole Bash call.
 
-And the background gate stays out of the way:
-
-- For `status`, `logs` and a bare `ci.py` — one `gh` call each, so the foreground is where they
-  belong.
-- For a command that only mentions a blocking verb inside quotes (an `echo`, a commit message, a
-  heredoc of instructions) — talking about the call is not making it.
-- For any call that already sets `run_in_background: true`. That is the whole point.
+And the background gate stays out of the way of `status`, `logs` and a bare `ci.py` (one `gh` call
+each), and of a blocking verb that only appears inside quotes — an `echo`, a commit message —
+since talking about the call is not making it. A `sh -c '…'` body is the exception: that quoted
+span *is* the command, so it is read, not skipped.
 
 ## Install
 
@@ -121,7 +113,9 @@ And the background gate stays out of the way:
 /plugin install pr-flow@belay
 ```
 
-Requires `git`, and `gh` (authenticated) for anything PR-related.
+Requires `git`, and `gh` (authenticated) for anything PR-related. `gcloud` (authenticated, with
+the Cloud Build API enabled) only if the repo deploys from Cloud Build — without it `deploy` reads
+GitHub Actions alone and says so.
 
 ## Config
 

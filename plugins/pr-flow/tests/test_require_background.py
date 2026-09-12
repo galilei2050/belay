@@ -5,7 +5,15 @@ the deny is the product and its shape (`permissionDecision`, the reason text) is
 reads.
 """
 
+import importlib.util
+import sys
+from pathlib import Path
+
 import pytest
+
+HOOKS = Path(__file__).parent.parent / "hooks"
+SCRIPT = Path(__file__).parent.parent / "scripts" / "ci.py"
+sys.path.insert(0, str(HOOKS))  # the hooks import their siblings by bare name, as Claude Code runs them
 
 CI = "python3 /home/x/.claude/plugins/pr-flow/scripts/ci.py"
 
@@ -28,8 +36,23 @@ def gate(run_hook, tmp_path):
 def test_every_blocking_verb_is_denied_in_the_foreground(gate, verb):
     output = gate(f"{CI} {verb}")
     assert output is not None
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "run_in_background" in output["hookSpecificOutput"]["permissionDecisionReason"]
+    payload = output["hookSpecificOutput"]
+    # The whole mapping, not just the decision: a deny naming the wrong event is one the harness
+    # ignores, and it would look identical to a working one from inside a test.
+    assert payload["hookEventName"] == "PreToolUse"
+    assert payload["permissionDecision"] == "deny"
+    assert "run_in_background" in payload["permissionDecisionReason"]
+
+
+def test_the_denied_verbs_are_the_ones_the_script_says_block():
+    """The hook restates `ci.py`'s list instead of importing it, so something has to hold them level."""
+    spec = importlib.util.spec_from_file_location("ci_module", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    hook = importlib.import_module("require_background")
+    assert set(hook.BLOCKING_VERBS) == set(script.BLOCKING_VERBS)
 
 
 def test_the_reason_names_the_verb_that_was_denied(gate):
@@ -53,8 +76,18 @@ def test_an_unrelated_bash_call_is_none_of_its_business(gate):
 
 
 def test_talking_about_the_command_is_not_running_it(gate):
-    """A quoted mention — an echo, a commit message, a heredoc of instructions — is not a call."""
+    """A quoted mention — an echo, a commit message — is not a call."""
     assert gate(f'echo "launch {CI} ship in the background"') is None
+
+
+@pytest.mark.parametrize(
+    "wrapper", ["bash -c '{cmd}'", 'sh -c "{cmd}"', "eval '{cmd}'", "timeout 7200 bash -c '{cmd}'"]
+)
+def test_a_shell_wrapped_call_does_not_slip_past_the_quotes(gate, wrapper):
+    """`sh -c '…'` is a quoted span that IS the command — blanking it would leave the gate open."""
+    output = gate(wrapper.format(cmd=f"{CI} ship"))
+    assert output is not None
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
 
 
 def test_a_blocking_verb_anywhere_in_a_chain_is_still_denied(gate):

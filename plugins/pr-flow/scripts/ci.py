@@ -18,7 +18,7 @@ So: six verbs, each ending in a statement the agent can act on.
 * `merged` — blocks until the PR leaves OPEN, then says what shipped and what to watch next.
 * `deploy` — blocks on everything the merge commit set off — GitHub Actions runs and Cloud Build
              builds alike — judged and log-trimmed exactly like the PR's checks.
-* `ship`   — those three in order in one process: CI, then the merge, then the deploy.
+* `ship`   — `wait`, `merged` and `deploy` in order, in one process.
 
 The last three exist because green CI is where an agent stops, and a green branch is not a shipped
 change. The chain is CI → merge → deploy → the service's own metrics, and each verb ends by
@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -72,8 +73,9 @@ DEFAULT_MERGE_WAIT_S = 3600
 DEFAULT_DEPLOY_WAIT_S = 1800
 # A trigger takes seconds to turn a merge into a build, and `deploy` normally runs the instant
 # `merged` returns. Without a grace window the usual case — asking before the build exists — would
-# report the commit as deployed by nothing at all.
-BUILD_APPEAR_S = 120
+# report the commit as deployed by nothing at all. Read from the environment so the window can be
+# exercised without a two-minute test, the way `branch_state.py` takes its `gh` timeout.
+BUILD_APPEAR_S = float(os.environ.get("PR_FLOW_BUILD_APPEAR_S", "120"))
 
 # The run id lives only in the check's URL: .../actions/runs/<run>/job/<job>. A check from outside
 # Actions (a status posted by an external service) has no run and no log to fetch.
@@ -113,6 +115,11 @@ _BUILD_STATUSES = {
 }
 
 EXIT_GREEN, EXIT_RED, EXIT_PENDING, EXIT_UNKNOWN = 0, 1, 2, 3
+
+# The verbs that block, as opposed to `status` and `logs`, which answer in one call. Named here
+# because `hooks/require_background.py` denies exactly these in the foreground, and a fifth
+# waiting verb added without the hook knowing would be a wait the gate lets through.
+BLOCKING_VERBS = ("wait", "merged", "deploy", "ship")
 
 # How this script was invoked, so every "run this next" sentence is a line the agent can paste.
 ME = f"python3 {sys.argv[0]}"
@@ -168,37 +175,47 @@ def run_gh(*args: str, timeout: float) -> subprocess.CompletedProcess[str]:
 
 
 def run_gcloud(*args: str, timeout: float) -> subprocess.CompletedProcess[str]:
-    """Run `gcloud` and capture it. Every call site checks `GCLOUD` first — no gcloud, no builds."""
+    """Run `gcloud` and capture it.
+
+    Only reachable with gcloud present: `builds_region` and `fetch_builds` check `GCLOUD`, and
+    `build_log` runs only against a build one of them already returned.
+    """
     # S603: fixed argv from this module plus the region/commit/build id the caller passed; no shell.
     return subprocess.run((GCLOUD, *args), capture_output=True, text=True, check=False, timeout=timeout)  # noqa: S603
 
 
 def builds_region(flag: str) -> str:
-    """Which Cloud Build region to search, and the answer is never a guess the report hides.
+    """Which Cloud Build region to search, or "" when there is no gcloud to search with.
 
     Builds are regional and `gcloud builds list` defaults to `global`, so a repo that builds in
     `us-central1` answers an empty list to the default call — the one failure shape that reads as
-    "nothing deployed". `gcloud config list --all` resolves `builds/region` through gcloud's own
-    property chain (so `CLOUDSDK_BUILDS_REGION` and a configured value both land here); when that
-    is unset, `compute/region` is what a machine that deploys to one region actually has set. The
-    region this returns is printed with the result, so an empty answer says where it looked.
+    "nothing deployed". `gcloud config list` reports the region gcloud itself would use
+    (`builds/region`, however it was set); `compute/region` is the fallback because a machine that
+    deploys to one region has that one set. Both come from one call, tab-separated, and the tab is
+    only stripped per field — stripping the whole line first would shift an unset `builds/region`
+    and make the second leg unreachable. An empty result names the region it searched, so a wrong
+    guess here is visible rather than silent.
     """
-    if flag:
-        return flag
     if not GCLOUD:
         return ""
+    if flag:
+        return flag
     result = run_gcloud("config", "list", "--all", "--format=value(builds.region,compute.region)", timeout=GH_TIMEOUT_S)
-    configured, _, compute = result.stdout.strip().partition("\t")
-    return configured or compute or "global"
+    if result.returncode != 0:
+        sys.stdout.write(f"gcloud could not resolve a Cloud Build region: {result.stderr.strip()[:200]}\n")
+        return "global"
+    configured, _, compute = result.stdout.partition("\t")
+    return configured.strip() or compute.strip() or "global"
 
 
 def build_log(build_id: str, lines: int) -> str:
     """The tail of a Cloud Build's log, read out of Cloud Logging.
 
-    Not `gcloud builds log`: that rebuilds the stream through the logging client and crashes on
-    some SDK installs (`KeyError: log_severity.proto`), while reading the build's own log resource
-    is the same text on every install. `--order desc` asks for the newest entries — the tail the
-    failure is in — so they come back newest-first and are flipped for reading.
+    Not `gcloud builds log`: on the SDK this was written against (Google Cloud SDK 582.0.0) that
+    command dies with `ERROR: gcloud crashed (KeyError): 'google/logging/type/log_severity.proto'`
+    while `logging read` over the same build answers, so the log is read from the build's own log
+    resource. `--order desc` asks for the newest entries — the tail the failure is in — so they
+    come back newest-first and are flipped for reading.
     """
     query = f'resource.type="build" AND resource.labels.build_id="{build_id}"'
     result = run_gcloud(
@@ -239,10 +256,16 @@ def fetch_builds(commit: str, region: str) -> list[Check]:
         timeout=GH_TIMEOUT_S,
     )
     if result.returncode != 0:
-        # Said out loud rather than swallowed: an unauthenticated gcloud or a disabled API is why
-        # a Cloud Build deploy would otherwise go unreported, and the agent has to see that.
-        sys.stdout.write(f"gcloud could not list Cloud Build builds in {region}: {result.stderr.strip()[:200]}\n")
-        return []
+        # Exits rather than returning [], for the reason `fetch_runs` exits on a broken `gh`: an
+        # unauthenticated gcloud or a disabled API says nothing about whether the change is live,
+        # and merging that silence with green Actions runs would report a deploy nobody read as
+        # finished. Loud and exit 3; the fix is in the message.
+        sys.stdout.write(
+            f"gcloud could not list Cloud Build builds in {region}: {result.stderr.strip()[:200]}\n"
+            "That is one of the two systems that could ship this commit left unread, so this is "
+            "not a verdict. Fix the gcloud auth/project, or pass --region, and ask again.\n"
+        )
+        raise SystemExit(EXIT_UNKNOWN)
     items = json.loads(result.stdout) if result.stdout.strip() else []
     return [
         Check(
@@ -461,6 +484,18 @@ def deploy_targets(commit: str, region: str) -> list[Check]:
     return sorted(targets, key=lambda target: (_BUCKET_ORDER.get(target.bucket, 9), target.name))
 
 
+def awaited_builds(targets: list[Check], region: str) -> bool:
+    """True while Cloud Build could still produce a build for this commit that is not listed yet.
+
+    The whole false green this verb exists to stop lives here. A merge commit's Actions runs —
+    the push-to-trunk CI — are green seconds after the merge, while the Cloud Build trigger takes
+    seconds more to even create the build that ships the change. Judging the first listing would
+    then report a deploy that does not exist yet as finished, with nothing pending to give it
+    away. So while gcloud can be asked and has returned no build, the answer is "not yet".
+    """
+    return bool(GCLOUD) and bool(region) and not any(target.build for target in targets)
+
+
 def await_deploy(commit: str, region: str, *, timeout: float, interval: float) -> list[Check]:
     """Block until nothing the merge commit set off is still running, then return the final state.
 
@@ -468,16 +503,28 @@ def await_deploy(commit: str, region: str, *, timeout: float, interval: float) -
     Build has no watch at all, and one loop over both is simpler than two waits spliced together.
     Re-listing is also the only thing that sees a build whose trigger had not fired yet when the
     merge landed — the normal case when this runs the moment `merged` returns, hence the grace
-    window before "nothing ran" is reported as an answer.
+    window before any verdict is handed back.
     """
     deadline = time.monotonic() + timeout
     appear_by = time.monotonic() + BUILD_APPEAR_S
+    targets: list[Check] = []
     while True:
-        targets = deploy_targets(commit, region)
-        if targets and not any(target.bucket == "pending" for target in targets):
-            return targets
-        if not targets and time.monotonic() >= appear_by:
-            return targets
+        try:
+            targets = deploy_targets(commit, region)
+        except subprocess.TimeoutExpired as expired:
+            # The one recoverable failure in this loop: the next listing answers, and the outer
+            # deadline still bounds the wait. A 30-minute background wait must not die on a
+            # single cold auth refresh — every other failure still raises.
+            sys.stdout.write(f"{expired.cmd[0]} did not answer in {expired.timeout:.0f}s — re-asking.\n")
+        else:
+            settled = bool(targets) and not any(target.bucket == "pending" for target in targets)
+            # A failure is final — no build appearing later turns a failed deploy green — so only
+            # an otherwise-green verdict waits out the window.
+            failed = any(target.bucket == "fail" for target in targets)
+            if settled and (failed or not awaited_builds(targets, region)):
+                return targets
+            if time.monotonic() >= appear_by and (settled or not targets):
+                return targets
         left = deadline - time.monotonic()
         if left <= 0:
             return targets
@@ -554,9 +601,9 @@ def cmd_ship(args: argparse.Namespace) -> int:
     downstream of a red CI or a PR nobody merged.
     """
     stages = (
-        ("CI", cmd_wait, {"timeout": args.ci_timeout}),
-        ("MERGE", cmd_merged, {"timeout": args.merge_timeout, "interval": MERGE_POLL_S}),
-        ("DEPLOY", cmd_deploy, {"timeout": args.deploy_timeout, "interval": WATCH_INTERVAL_S, "region": args.region}),
+        ("CI", cmd_wait, {"timeout": DEFAULT_WAIT_S}),
+        ("MERGE", cmd_merged, {"timeout": DEFAULT_MERGE_WAIT_S, "interval": MERGE_POLL_S}),
+        ("DEPLOY", cmd_deploy, {"timeout": DEFAULT_DEPLOY_WAIT_S, "interval": WATCH_INTERVAL_S, "region": args.region}),
     )
     for label, stage, flags in stages:
         sys.stdout.write(f"\n── {label} ──\n")
@@ -565,30 +612,6 @@ def cmd_ship(args: argparse.Namespace) -> int:
             sys.stdout.write(f"\nChain stopped at {label} — nothing after it has happened yet.\n")
             return code
     return EXIT_GREEN
-
-
-def add_waiting_verbs(
-    sub: argparse._SubParsersAction[argparse.ArgumentParser], common: argparse.ArgumentParser
-) -> None:
-    """The four verbs that block, each with the flags that bound its own wait.
-
-    Every one of these is meant to be launched with `run_in_background: true`, which is why each
-    carries a hard cap: a wait that cannot end is a background process nobody ever hears from.
-    """
-    waiting = sub.add_parser("wait", parents=[common], help="block until the checks conclude, then report")
-    waiting.add_argument("--timeout", type=float, default=DEFAULT_WAIT_S, help="seconds to wait before reporting")
-    merged = sub.add_parser("merged", parents=[common], help="block until the PR is merged or closed")
-    merged.add_argument("--timeout", type=float, default=DEFAULT_MERGE_WAIT_S, help="seconds to wait before reporting")
-    merged.add_argument("--interval", type=float, default=MERGE_POLL_S, help="seconds between merge checks")
-    deploy = sub.add_parser("deploy", parents=[common], help="block on whatever ships the merge commit")
-    deploy.add_argument("--timeout", type=float, default=DEFAULT_DEPLOY_WAIT_S, help="seconds to wait before reporting")
-    deploy.add_argument("--interval", type=float, default=WATCH_INTERVAL_S, help="seconds between deploy re-checks")
-    deploy.add_argument("--region", default="", help="Cloud Build region (default: gcloud's own)")
-    ship = sub.add_parser("ship", parents=[common], help="CI, then the merge, then the deploy, in one call")
-    ship.add_argument("--ci-timeout", type=float, default=DEFAULT_WAIT_S, help="seconds to wait on the checks")
-    ship.add_argument("--merge-timeout", type=float, default=DEFAULT_MERGE_WAIT_S, help="seconds to wait on the merge")
-    ship.add_argument("--deploy-timeout", type=float, default=DEFAULT_DEPLOY_WAIT_S, help="seconds to wait on deploy")
-    ship.add_argument("--region", default="", help="Cloud Build region (default: gcloud's own)")
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -607,7 +630,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command")
     sub.add_parser("status", parents=[common], help="print every check and a verdict")
     sub.add_parser("logs", parents=[common], help="print the verdict plus the failing steps' log")
-    add_waiting_verbs(sub, common)
+    waiting = sub.add_parser("wait", parents=[common], help="block until the checks conclude, then report")
+    waiting.add_argument("--timeout", type=float, default=DEFAULT_WAIT_S, help="seconds to wait before reporting")
+    merged = sub.add_parser("merged", parents=[common], help="block until the PR is merged or closed")
+    merged.add_argument("--timeout", type=float, default=DEFAULT_MERGE_WAIT_S, help="seconds to wait before reporting")
+    merged.add_argument("--interval", type=float, default=MERGE_POLL_S, help="seconds between merge checks")
+    deploy = sub.add_parser("deploy", parents=[common], help="block on whatever ships the merge commit")
+    deploy.add_argument("--timeout", type=float, default=DEFAULT_DEPLOY_WAIT_S, help="seconds to wait before reporting")
+    deploy.add_argument("--interval", type=float, default=WATCH_INTERVAL_S, help="seconds between deploy re-checks")
+    deploy.add_argument("--region", default="", help="Cloud Build region (default: gcloud's own)")
+    ship = sub.add_parser("ship", parents=[common], help="CI, then the merge, then the deploy, in one call")
+    ship.add_argument("--region", default="", help="Cloud Build region (default: gcloud's own)")
     return parser.parse_args(argv or ["status"])
 
 

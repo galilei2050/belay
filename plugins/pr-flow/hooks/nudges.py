@@ -17,18 +17,27 @@ SKILL = "pr-flow:pr-description"
 # from a subdirectory. The agent must be able to paste the line as-is.
 CI = f"python3 {Path(__file__).resolve().parent.parent / 'scripts' / 'ci.py'}"
 
+# `ship`'s own three stage caps (900 + 3600 + 1800) plus slack. Named in the launch line because a
+# detached Bash call that carries no bound of its own is capped for it — 1800s by acl-hook — and
+# that is less than the merge stage alone may take, so the wait would be killed mid-poll with no
+# verdict. A job that needs longer says so; this says so.
+SHIP_BUDGET_S = 6600
+
 # The one line every nudge ends on. `ship` is the whole arc — checks, then the merge, then the
 # deploy — in a single process, and it is named as a background launch because the alternative is
 # what agents actually do: block the session on a foreground wait, or give up and report a pushed
 # branch as done.
 CHAIN = (
-    f"`{CI} ship` is that whole arc in one call — it blocks on the checks, then on the merge, then "
-    "on whatever ships the merge (GitHub Actions runs and Cloud Build builds alike), and stops at "
-    "the first stage that is not green. Launch it with Bash `run_in_background: true` and carry on "
-    "talking: the harness re-invokes you when it exits, so waiting costs the conversation nothing "
-    "and there is no reason to sit in a foreground wait or a `sleep` loop. When it comes back "
-    "green, one thing is still unread — the service's own logs and metrics for real traffic. A "
-    "finished deploy says the deploy ran, not that the change works. Do not stop before that."
+    f"`timeout -v {SHIP_BUDGET_S} {CI} ship` is that whole arc in one call — it blocks on the "
+    "checks, then on the merge, then on whatever ships the merge (GitHub Actions runs and Cloud "
+    "Build builds alike), and stops at the first stage that is not green. Launch it with Bash "
+    "`run_in_background: true` and carry on talking: the harness re-invokes you when it exits, so "
+    "waiting costs the conversation nothing and there is no reason to sit in a foreground wait or "
+    "a `sleep` loop. Keep the `timeout -v` prefix — a detached command with no bound of its own "
+    "gets capped at 30 minutes, which is less than the merge alone is allowed to take, and it "
+    f"would die mid-wait. When it comes back green, one thing is still unread — the service's own "
+    "logs and metrics for real traffic. A finished deploy says the deploy ran, not that the change "
+    "works. Do not stop before that."
 )
 
 NUDGES = {
