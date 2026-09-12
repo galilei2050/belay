@@ -397,7 +397,17 @@ def test_a_named_region_is_used_instead_of_asking_gcloud_for_one(ci):
 
 def test_a_gcloud_that_cannot_list_builds_is_not_a_green_verdict(ci):
     """One of the two systems that could ship the commit went unread, so GREEN is not available."""
-    code, out, _ = ci("deploy", pull=pr("MERGED"), runs=[deploy_run("ci", "success")], builds=(), builds_exit=1)
+    code, out, _ = ci(
+        "deploy",
+        "--timeout",
+        "0",
+        "--interval",
+        "0",
+        pull=pr("MERGED"),
+        runs=[deploy_run("ci", "success")],
+        builds=(),
+        builds_exit=1,
+    )
     assert code == 3
     assert "could not list Cloud Build builds in us-central1" in out
     assert "GREEN" not in out
@@ -418,11 +428,37 @@ def test_a_deploy_is_not_green_until_cloud_build_has_had_time_to_create_its_buil
         runs=[deploy_run("ci", "success")],
         builds=(),
         builds_then=[cloud_build("SUCCESS")],
-        appear=30,
+        appear=1,
     )
     assert code == 0
     assert "backend-deployment" in out
-    assert sum(1 for call in calls if call.startswith("gcloud builds list")) == 2
+    assert sum(1 for call in calls if call.startswith("gcloud builds list")) >= 2
+
+
+def test_a_failed_deploy_is_final_without_waiting_out_the_window(ci):
+    """The other half of the rule: nothing appearing later turns a failed deploy green, so a red
+    verdict is handed back on the first listing rather than after the grace window."""
+    code, out, calls = ci(
+        "deploy",
+        "--interval",
+        "0",
+        pull=pr("MERGED"),
+        runs=[deploy_run("deploy", "failure")],
+        builds=(),
+        appear=30,
+    )
+    assert code == 1
+    assert "RED" in out
+    assert sum(1 for call in calls if call.startswith("gcloud builds list")) == 1
+
+
+def test_a_listing_that_never_answers_is_not_reported_as_nothing_deploying(ci):
+    """ "I could not look" and "nothing ships this commit" are different answers, and the second one
+    sends the agent chasing a region flag for a CLI that never spoke."""
+    code, out, _ = ci("deploy", "--timeout", "0", "--interval", "0", pull=pr("MERGED"), runs=(), builds_exit=1)
+    assert code == 3
+    assert "No listing" in out
+    assert "Nothing deploys" not in out
 
 
 @pytest.mark.parametrize(
@@ -484,6 +520,17 @@ def test_deploy_refuses_to_guess_a_commit_for_an_unmerged_pr(ci):
     code, out, _ = ci("deploy", pull=pr("OPEN"))
     assert code == 2
     assert "not merged" in out
+
+
+def test_every_blocking_verb_is_a_verb_the_script_dispatches():
+    """`hooks/require_background.py` denies exactly `BLOCKING_VERBS`, so a waiting verb added to the
+    dispatch table without landing in that tuple would be a wait the foreground gate lets past."""
+    spec = importlib.util.spec_from_file_location("ci_module", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert set(module.VERBS) - {"status", "logs"} == set(module.BLOCKING_VERBS)
 
 
 def test_every_outcome_maps_onto_a_bucket_the_verdict_knows():

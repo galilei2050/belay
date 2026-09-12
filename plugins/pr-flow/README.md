@@ -115,7 +115,7 @@ span *is* the command, so it is read, not skipped.
 
 Requires `git`, and `gh` (authenticated) for anything PR-related. `gcloud` (authenticated, with
 the Cloud Build API enabled) only if the repo deploys from Cloud Build — without it `deploy` reads
-GitHub Actions alone and says so.
+GitHub Actions alone, and an empty answer says so.
 
 ## Config
 

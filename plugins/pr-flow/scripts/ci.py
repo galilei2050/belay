@@ -45,6 +45,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import NamedTuple
 
 GH = shutil.which("gh")
@@ -125,6 +126,14 @@ BLOCKING_VERBS = ("wait", "merged", "deploy", "ship")
 ME = f"python3 {sys.argv[0]}"
 
 
+class UnreadableError(RuntimeError):
+    """A deploy system answered with an error, so its state is unknown — which is not "empty".
+
+    The distinction is the whole point of reading two systems: an empty list means nothing ships
+    this commit, an error means nobody looked. Only the first can be part of a verdict.
+    """
+
+
 class Check(NamedTuple):
     """One thing that ran and can pass or fail: a PR check, an Actions run, a Cloud Build build.
 
@@ -189,12 +198,11 @@ def builds_region(flag: str) -> str:
 
     Builds are regional and `gcloud builds list` defaults to `global`, so a repo that builds in
     `us-central1` answers an empty list to the default call — the one failure shape that reads as
-    "nothing deployed". `gcloud config list` reports the region gcloud itself would use
-    (`builds/region`, however it was set); `compute/region` is the fallback because a machine that
-    deploys to one region has that one set. Both come from one call, tab-separated, and the tab is
-    only stripped per field — stripping the whole line first would shift an unset `builds/region`
-    and make the second leg unreachable. An empty result names the region it searched, so a wrong
-    guess here is visible rather than silent.
+    "nothing deployed". `gcloud config list --all` reports the region gcloud itself would use;
+    `--all` is load-bearing, since without it an unset-but-overridden `builds/region` is not
+    listed at all. `compute/region` is the fallback because a machine that deploys to one region
+    has that one set. Both fields come from the one call, tab-separated, each stripped on its own.
+    An empty result names the region it searched, so a wrong guess here is visible, not silent.
     """
     if not GCLOUD:
         return ""
@@ -202,8 +210,16 @@ def builds_region(flag: str) -> str:
         return flag
     result = run_gcloud("config", "list", "--all", "--format=value(builds.region,compute.region)", timeout=GH_TIMEOUT_S)
     if result.returncode != 0:
-        sys.stdout.write(f"gcloud could not resolve a Cloud Build region: {result.stderr.strip()[:200]}\n")
-        return "global"
+        # Not a fallback to `global`: that region exists, so `builds list` would answer it with an
+        # empty list and exit 0 — the unread Cloud Build half would then merge into green Actions
+        # runs and report as a shipped change. An unresolvable region is the same "not a verdict"
+        # as an unreadable build list.
+        sys.stdout.write(
+            f"gcloud could not resolve a Cloud Build region: {result.stderr.strip()[:200]}\n"
+            "Searching the wrong region answers an empty list, which is indistinguishable from a "
+            "change that never deployed, so this is not a verdict. Pass --region and ask again.\n"
+        )
+        raise SystemExit(EXIT_UNKNOWN)
     configured, _, compute = result.stdout.partition("\t")
     return configured.strip() or compute.strip() or "global"
 
@@ -237,9 +253,9 @@ def fetch_builds(commit: str, region: str) -> list[Check]:
     """The Cloud Build builds triggered by `commit`, shaped like checks so the same code judges them.
 
     No builds is a real answer here — most repos deploy from Actions — so a machine without
-    `gcloud`, a project without the API and a commit nothing built all return an empty list
-    instead of a verdict. `deploy_targets` is the single place that decides what "nothing
-    anywhere" means.
+    `gcloud` and a commit nothing built both return an empty list rather than a verdict, and
+    `cmd_deploy` is the single place that decides what "nothing anywhere" means. A `gcloud` that
+    *failed* is not that answer: it raises `UnreadableError`.
     """
     if not GCLOUD or not region:
         return []
@@ -256,16 +272,12 @@ def fetch_builds(commit: str, region: str) -> list[Check]:
         timeout=GH_TIMEOUT_S,
     )
     if result.returncode != 0:
-        # Exits rather than returning [], for the reason `fetch_runs` exits on a broken `gh`: an
+        # Raises rather than returning [], for the reason `fetch_runs` exits on a broken `gh`: an
         # unauthenticated gcloud or a disabled API says nothing about whether the change is live,
         # and merging that silence with green Actions runs would report a deploy nobody read as
-        # finished. Loud and exit 3; the fix is in the message.
-        sys.stdout.write(
-            f"gcloud could not list Cloud Build builds in {region}: {result.stderr.strip()[:200]}\n"
-            "That is one of the two systems that could ship this commit left unread, so this is "
-            "not a verdict. Fix the gcloud auth/project, or pass --region, and ask again.\n"
-        )
-        raise SystemExit(EXIT_UNKNOWN)
+        # finished. `UnreadableError` rather than `SystemExit` because one failed listing inside a long
+        # poll is not the end of the wait — only never getting one is.
+        raise UnreadableError(f"gcloud could not list Cloud Build builds in {region}: {result.stderr.strip()[:200]}")
     items = json.loads(result.stdout) if result.stdout.strip() else []
     return [
         Check(
@@ -484,50 +496,54 @@ def deploy_targets(commit: str, region: str) -> list[Check]:
     return sorted(targets, key=lambda target: (_BUCKET_ORDER.get(target.bucket, 9), target.name))
 
 
-def awaited_builds(targets: list[Check], region: str) -> bool:
-    """True while Cloud Build could still produce a build for this commit that is not listed yet.
+class Deployment(NamedTuple):
+    """What the wait ended up knowing: what ships the commit, and whether anything answered.
 
-    The whole false green this verb exists to stop lives here. A merge commit's Actions runs —
-    the push-to-trunk CI — are green seconds after the merge, while the Cloud Build trigger takes
-    seconds more to even create the build that ships the change. Judging the first listing would
-    then report a deploy that does not exist yet as finished, with nothing pending to give it
-    away. So while gcloud can be asked and has returned no build, the answer is "not yet".
+    `answered` is the load-bearing field. An empty `targets` from a listing that came back is
+    "nothing deploys this commit"; the same empty list from a CLI that only ever errored or hung
+    is "nobody looked", and the two must not print the same sentence.
     """
-    return bool(GCLOUD) and bool(region) and not any(target.build for target in targets)
+
+    targets: list[Check]
+    answered: bool
 
 
-def await_deploy(commit: str, region: str, *, timeout: float, interval: float) -> list[Check]:
+def await_deploy(commit: str, region: str, *, timeout: float, interval: float) -> Deployment:
     """Block until nothing the merge commit set off is still running, then return the final state.
 
     A re-listing poll rather than a watch, deliberately: `gh run watch` only knows Actions, Cloud
     Build has no watch at all, and one loop over both is simpler than two waits spliced together.
-    Re-listing is also the only thing that sees a build whose trigger had not fired yet when the
-    merge landed — the normal case when this runs the moment `merged` returns, hence the grace
-    window before any verdict is handed back.
+
+    One rule decides when to answer: a failure is final immediately, and anything else waits out
+    `BUILD_APPEAR_S` first. That window is what stops the false green this verb exists for — a
+    merge commit's Actions runs go green seconds after the merge, while the Cloud Build trigger
+    has yet to create the build that ships the change, and a repo can have more than one build
+    per commit — so no green verdict is handed back until a build has had time to show up.
     """
     deadline = time.monotonic() + timeout
     appear_by = time.monotonic() + BUILD_APPEAR_S
-    targets: list[Check] = []
+    deployment = Deployment(targets=[], answered=False)
     while True:
         try:
-            targets = deploy_targets(commit, region)
+            deployment = Deployment(targets=deploy_targets(commit, region), answered=True)
+        # Both failures are recoverable inside the loop: the next listing answers, and the outer
+        # deadline still bounds the wait. A 30-minute background wait must not die because one
+        # poll hit a cold auth refresh — but if none of them ever answers, `answered` stays False
+        # and the caller says so instead of reporting an absence it never established.
         except subprocess.TimeoutExpired as expired:
-            # The one recoverable failure in this loop: the next listing answers, and the outer
-            # deadline still bounds the wait. A 30-minute background wait must not die on a
-            # single cold auth refresh — every other failure still raises.
-            sys.stdout.write(f"{expired.cmd[0]} did not answer in {expired.timeout:.0f}s — re-asking.\n")
+            cli = Path(str(expired.cmd[0])).name
+            sys.stdout.write(f"{cli} did not answer in {expired.timeout:.0f}s — re-asking.\n")
+        except UnreadableError as unread:
+            sys.stdout.write(f"{unread} — re-asking.\n")
         else:
-            settled = bool(targets) and not any(target.bucket == "pending" for target in targets)
-            # A failure is final — no build appearing later turns a failed deploy green — so only
-            # an otherwise-green verdict waits out the window.
-            failed = any(target.bucket == "fail" for target in targets)
-            if settled and (failed or not awaited_builds(targets, region)):
-                return targets
-            if time.monotonic() >= appear_by and (settled or not targets):
-                return targets
+            settled = bool(deployment.targets) and not any(item.bucket == "pending" for item in deployment.targets)
+            if any(item.bucket == "fail" for item in deployment.targets):
+                return deployment  # no build appearing later turns a failed deploy green
+            if time.monotonic() >= appear_by and (settled or not deployment.targets):
+                return deployment
         left = deadline - time.monotonic()
         if left <= 0:
-            return targets
+            return deployment
         time.sleep(min(interval, left))
 
 
@@ -580,15 +596,23 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         sys.stdout.write("This PR has no merge commit — it is not merged yet. Run `merged` first.\n")
         return EXIT_PENDING
     region = builds_region(args.region)
-    targets = await_deploy(commit, region, timeout=args.timeout, interval=args.interval)
-    if not targets:
+    deployment = await_deploy(commit, region, timeout=args.timeout, interval=args.interval)
+    if not deployment.answered:
+        sys.stdout.write(
+            f"No listing of what deploys {commit[:12]} ever came back within {args.timeout:.0f}s — "
+            "the errors above are the whole story. Nothing is known about whether the change is "
+            "live, which is not the same as nothing deploying it. Fix what those lines name and "
+            "ask again.\n"
+        )
+        return EXIT_UNKNOWN
+    if not deployment.targets:
         sys.stdout.write(
             f"Nothing deploys {commit[:12]}: no Actions run, and no Cloud Build build in "
             f"{region or 'any region (no gcloud here)'}. Either this repo ships some other way — find "
             "out how, watch that — or the deploy is in a region this was not pointed at: `--region`.\n"
         )
         return EXIT_UNKNOWN
-    return report_with_logs(targets, args.lines, DEPLOY_ADVICE)
+    return report_with_logs(deployment.targets, args.lines, DEPLOY_ADVICE)
 
 
 def cmd_ship(args: argparse.Namespace) -> int:
@@ -607,11 +631,33 @@ def cmd_ship(args: argparse.Namespace) -> int:
     )
     for label, stage, flags in stages:
         sys.stdout.write(f"\n── {label} ──\n")
-        code = stage(argparse.Namespace(branch=args.branch, lines=args.lines, **flags))
+        try:
+            code = stage(argparse.Namespace(branch=args.branch, lines=args.lines, **flags))
+        except SystemExit as stop:
+            # A stage that exits (a `gh` or `gcloud` that could not answer at all) still has to say
+            # which stage the chain stopped at — a background `ship` whose only output is an exit
+            # code is the one thing this verb exists to avoid. A non-int code is a message, not a
+            # verdict, so it keeps its own path out.
+            if not isinstance(stop.code, int):
+                raise
+            code = stop.code
         if code != EXIT_GREEN:
             sys.stdout.write(f"\nChain stopped at {label} — nothing after it has happened yet.\n")
             return code
     return EXIT_GREEN
+
+
+# Every verb, and the only place a verb becomes reachable. A fifth blocking verb has to land here
+# to work at all, and a test reads this table against `BLOCKING_VERBS` — so it cannot be added
+# without the foreground gate in `hooks/require_background.py` learning about it.
+VERBS = {
+    "status": cmd_status,
+    "logs": cmd_logs,
+    "wait": cmd_wait,
+    "merged": cmd_merged,
+    "deploy": cmd_deploy,
+    "ship": cmd_ship,
+}
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -647,15 +693,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     """Entry point: dispatch the verb, return its exit code."""
     args = parse_args(argv)
-    verbs = {
-        "status": cmd_status,
-        "logs": cmd_logs,
-        "wait": cmd_wait,
-        "merged": cmd_merged,
-        "deploy": cmd_deploy,
-        "ship": cmd_ship,
-    }
-    return verbs[args.command](args)
+    return VERBS[args.command](args)
 
 
 if __name__ == "__main__":

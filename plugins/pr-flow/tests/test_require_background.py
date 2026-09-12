@@ -32,7 +32,22 @@ def gate(run_hook, tmp_path):
     return run
 
 
-@pytest.mark.parametrize("verb", ["wait", "merged", "deploy", "ship"])
+def script_blocking_verbs() -> list[str]:
+    """`ci.py`'s own list of blocking verbs — the source the hook copies.
+
+    Driving the deny test from the script rather than from a literal here is what holds the two
+    copies level: a verb the script blocks and the hook has not learned about fails at the real
+    boundary, not in a comparison of two constants that passes even if the matcher stopped working.
+    """
+    spec = importlib.util.spec_from_file_location("ci_module", SCRIPT)
+    assert spec is not None
+    assert spec.loader is not None
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    return list(script.BLOCKING_VERBS)
+
+
+@pytest.mark.parametrize("verb", script_blocking_verbs())
 def test_every_blocking_verb_is_denied_in_the_foreground(gate, verb):
     output = gate(f"{CI} {verb}")
     assert output is not None
@@ -42,17 +57,6 @@ def test_every_blocking_verb_is_denied_in_the_foreground(gate, verb):
     assert payload["hookEventName"] == "PreToolUse"
     assert payload["permissionDecision"] == "deny"
     assert "run_in_background" in payload["permissionDecisionReason"]
-
-
-def test_the_denied_verbs_are_the_ones_the_script_says_block():
-    """The hook restates `ci.py`'s list instead of importing it, so something has to hold them level."""
-    spec = importlib.util.spec_from_file_location("ci_module", SCRIPT)
-    assert spec is not None
-    assert spec.loader is not None
-    script = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(script)
-    hook = importlib.import_module("require_background")
-    assert set(hook.BLOCKING_VERBS) == set(script.BLOCKING_VERBS)
 
 
 def test_the_reason_names_the_verb_that_was_denied(gate):
@@ -81,11 +85,32 @@ def test_talking_about_the_command_is_not_running_it(gate):
 
 
 @pytest.mark.parametrize(
-    "wrapper", ["bash -c '{cmd}'", 'sh -c "{cmd}"', "eval '{cmd}'", "timeout 7200 bash -c '{cmd}'"]
+    "wrapper",
+    [
+        "bash -c '{cmd}'",
+        'sh -c "{cmd}"',
+        "eval '{cmd}'",
+        "timeout 7200 bash -c '{cmd}'",
+        "bash -lc '{cmd}'",  # the commoner idiom, and a bare-`-c` pattern let it through
+        "bash -ec '{cmd}'",
+        "bash --norc -c '{cmd}'",
+    ],
 )
 def test_a_shell_wrapped_call_does_not_slip_past_the_quotes(gate, wrapper):
     """`sh -c '…'` is a quoted span that IS the command — blanking it would leave the gate open."""
     output = gate(wrapper.format(cmd=f"{CI} ship"))
+    assert output is not None
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_a_heredoc_mentioning_the_command_is_denied_too(gate):
+    """A known, loud false positive, recorded rather than left to be rediscovered.
+
+    A heredoc body is not a quoted span, so prose inside one reads as a command. Telling "writes
+    the line into a file" apart from "runs it" needs a real shell parser; until something needs
+    that, a deny the agent can rephrase past beats a gate with a hole in it.
+    """
+    output = gate(f"cat <<'EOF' > notes.md\nlaunch {CI} ship in the background\nEOF")
     assert output is not None
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
 

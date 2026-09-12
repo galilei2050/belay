@@ -8,8 +8,9 @@ Launch the plugin's CI script **in the background** — Bash `run_in_background:
 timeout -v 6600 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py ship
 ```
 
-Keep the `timeout -v` prefix: a detached command with no bound of its own is capped at 1800s, and
-the merge stage alone may take twice that — without it the wait dies mid-poll with no verdict.
+Keep the `timeout -v` prefix: with `acl-hook` installed, a detached command with no bound of its
+own is capped at 1800s, and the merge stage alone may take twice that — without the prefix the
+wait dies mid-poll with no verdict.
 
 `ship` is the whole arc in one process: it blocks on the checks, then on the merge, then on
 whatever puts the merge in production, and stops at the first stage that is not green. Backgrounded,
@@ -42,8 +43,9 @@ names the region it searched, because an empty list from the wrong region looks 
 change that never deployed.
 
 Never wrap any of this in a `sleep` loop, a `while` loop, or a Monitor poll. The script already
-blocks on the other side, the wait already has a hard cap (`--timeout`), and a hand-rolled loop just
-re-pays for the same answer. One background launch, one notification.
+blocks on the other side, every wait caps itself (`--timeout` on the verbs that take one; `ship`
+uses each stage's default), and a hand-rolled loop just re-pays for the same answer. One background
+launch, one notification.
 
 ## What to do with each verdict
 
