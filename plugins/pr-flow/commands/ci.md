@@ -2,49 +2,59 @@
 description: Take the current branch's CI to a verdict, then the PR to merged, deployed and measured
 ---
 
-Run the plugin's CI script — one blocking call, not a poll loop:
+Launch the plugin's CI script **in the background** — Bash `run_in_background: true`:
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py wait
+timeout -v 6600 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py ship
 ```
 
-It returns when the checks conclude (hard cap `--timeout`, 900s by default), prints one line per
-check and a verdict, and — only when something failed — the failing steps' log, tail-trimmed.
-Exit code: `0` green, `1` red, `2` still pending, `3` nothing to report on (no PR, no checks, or
-`gh` could not answer).
+Keep the `timeout -v` prefix: with `acl-hook` installed, a detached command with no bound of its
+own is capped at 1800s, and the merge stage alone may take twice that — without the prefix the
+wait dies mid-poll with no verdict.
 
-- `status` instead of `wait` when you only want the state right now.
-- `logs` when a run has already failed and you just need the failure text (`--lines N` for more).
-- `--branch <name>` to inspect a branch other than the checked-out one; pass it when `$ARGUMENTS`
-  names one.
+`ship` is the whole arc in one process: it blocks on the checks, then on the merge, then on
+whatever puts the merge in production, and stops at the first stage that is not green. Backgrounded,
+it costs the conversation nothing — the harness re-invokes you when it exits, and until then you
+answer the user and keep working. A branch takes tens of minutes to reach production; none of them
+are minutes the session should spend frozen.
 
-Never wrap this in a `sleep`/re-run loop and never re-run it "to see if it changed" — `wait`
-already blocks on GitHub's side and comes back exactly when there is something new to say.
+Exit code: `0` shipped, `1` red, `2` still pending at a timeout, `3` nothing to report on (no PR,
+no checks, `gh` could not answer). `--branch <name>` inspects a branch other than the checked-out
+one; pass it when `$ARGUMENTS` names one.
 
-On red: read the log, name the cause in one sentence, fix it, push, and run `wait` again. If the
-run is still pending when the timeout hits, say so plainly rather than reporting the branch as
-done.
+## The stages on their own
 
-## Green CI is the middle of the flow, not the end
-
-A branch is finished when the change is live and behaving, so on green keep going:
+Each is also its own verb, for when you only want that one answer — and each one that blocks is
+still a background launch:
 
 ```
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py merged    # blocks until the PR leaves OPEN (re-checks every 5 min)
-python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py deploy    # blocks on the merge commit's workflow runs
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py status    # every check, one line each, right now (fast, foreground)
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py wait      # block until the checks conclude
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py logs      # the failing steps only, tail-trimmed (--lines N)
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py merged    # block until the PR leaves OPEN
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/ci.py deploy    # block on whatever ships the merge commit
 ```
 
-`merged` exits `0` merged, `1` closed unmerged, `2` still open at the timeout, `3` if `gh` could
-not read the PR. It re-checks on a reviewer's clock (`--interval`) because GitHub has no watch
-for a merge — that sleep belongs inside the script, never in your own loop. It prints the merge
-commit.
+`wait` blocks inside `gh`'s own watch; `merged` re-asks on a reviewer's clock (`--interval`,
+5 min); `deploy` re-lists the merge commit's GitHub Actions runs **and** its Cloud Build builds
+until none is still running. Cloud Build is regional and `gcloud`'s default is `global`, so the
+region comes from `builds/region`, else `compute/region`, else `--region <name>`; the report always
+names the region it searched, because an empty list from the wrong region looks exactly like a
+change that never deployed.
 
-`deploy` then finds the Actions runs for that commit, blocks until they conclude, and reports
-them like checks — failing steps' log included. `2` means there is nothing to watch yet (the PR
-is not merged); `3` means `gh` could not answer, or it answered with no runs at all, in which
-case this repo ships some other way and you have to find out how. A run set that is entirely
-cancelled or skipped is `1`, not green: nothing was deployed.
+Never wrap any of this in a `sleep` loop, a `while` loop, or a Monitor poll. The script already
+blocks on the other side, every wait caps itself (`--timeout` on the verbs that take one; `ship`
+uses each stage's default), and a hand-rolled loop just re-pays for the same answer. One background
+launch, one notification.
 
-Then read the service itself — its runtime logs and metrics for real traffic on the path you
-changed. A green deploy workflow says the deploy ran; only the metrics say the change works.
-Report what you actually observed there, quoting the numbers.
+## What to do with each verdict
+
+On red: read the log the script printed, name the cause in one sentence, fix it, push, launch `ship`
+again. If a stage was still pending when its timeout hit, say so plainly rather than reporting the
+branch as done — and if a PR has been sitting unmerged for an hour, that is a person to ask, not a
+wait to extend.
+
+On green all the way through, one thing is left that this script cannot read: the service itself.
+Read its runtime logs and metrics for real traffic on the path you changed. A finished deploy says
+the deploy ran; only the metrics say the change works. Report what you actually observed there,
+quoting the numbers.
