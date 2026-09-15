@@ -1,0 +1,8 @@
+{
+  "name": "comment-guard-hook",
+  "version": "0.1.0",
+  "description": "PreToolUse file-tool gate: denies Python comments and docstrings that specify unwritten code, record the state of a discussion, narrate a change, or echo the signature.",
+  "author": {
+    "name": "galilei2050"
+  }
+}
