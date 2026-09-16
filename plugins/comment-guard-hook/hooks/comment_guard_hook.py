@@ -5,7 +5,7 @@ A model asked to write a contract writes it in the docstrings, and an essay abov
 as finished work long enough to survive review. No rule about *what* a comment may say can be
 enforced without judging meaning, which a hook cannot do. A line count can.
 
-Only `deny` is ever emitted, and only for lines this very edit touches.
+Only `deny` is ever emitted, and only for prose this very edit is answerable for.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import ast
 import difflib
 import io
 import json
+import re
 import sys
 import tokenize
 from pathlib import Path
@@ -23,6 +24,21 @@ MAX_LINES = 3
 
 GUARDED_SUFFIX = ".py"
 
+# The matcher in hooks.json must never name a tool this hook ignores, and vice versa: a tool that
+# reached `post_edit_source` unrecognised would be replayed as an `Edit` and die on a missing key.
+EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
+
+# Machine-readable header lines, which are not prose and have no shorter legal form — a file needs
+# its shebang, its coding cookie, its licence tag and its tool pragmas, and four of them in a row
+# is a normal header, not an essay. This recognises fixed directive syntax, not meaning.
+_DIRECTIVE = re.compile(
+    r"^#!"
+    r"|^#\s*-\*-"
+    r"|^#\s*(?:SPDX-[\w-]+|Copyright)\b"
+    r"|^#\s*(?:ruff|mypy|flake8|pylint|isort|pyright|type|coding|pragma)\s*:"
+    r"|^#\s*noqa\b",
+    re.IGNORECASE,
+)
 
 _REASON = (
     "{count} docstring(s)/comment(s) in this {tool} run past {limit} lines:\n\n{listed}\n\n"
@@ -44,23 +60,12 @@ _REASON = (
 )
 
 
-class EditSpec(TypedDict):
-    """One replacement, as `Edit` carries it and as each entry of `MultiEdit`'s list does."""
+class Replacement(TypedDict):
+    """One search-and-replace, as `Edit` sends it and as each entry of `MultiEdit`'s list does."""
 
     old_string: str
     new_string: str
     replace_all: NotRequired[bool]
-
-
-class ToolInput(TypedDict):
-    """`tool_input` of a Write/Edit/MultiEdit call; which keys arrive depends on the tool."""
-
-    file_path: str
-    content: NotRequired[str]
-    old_string: NotRequired[str]
-    new_string: NotRequired[str]
-    replace_all: NotRequired[bool]
-    edits: NotRequired[list[EditSpec]]
 
 
 class Finding(NamedTuple):
@@ -71,29 +76,24 @@ class Finding(NamedTuple):
     length: int
 
 
-class Block(NamedTuple):
-    """A run of prose and the source lines it spans, both ends inclusive."""
+class CommentLine(NamedTuple):
+    """One own-line `#` comment: the source line it sits on, and the whole token including `#`."""
 
-    start: int
-    end: int
+    line: int
     text: str
 
 
-def _touched(block: Block, changed: frozenset[int]) -> bool:
-    """True when this edit wrote any line of the block.
+def _touched(start: int, end: int, changed: frozenset[int]) -> bool:
+    """True when this edit is answerable for any line of the inclusive span `start`..`end`.
 
     The whole span, not just its first line: an essay usually grows by appending to a docstring
     whose opening quote was written long ago and has not moved.
     """
-    return any(line in changed for line in range(block.start, block.end + 1))
+    return not changed.isdisjoint(range(start, end + 1))
 
 
-def _docstring(node: ast.AST) -> Block | None:
-    body = getattr(node, "body", None)
-    first = body[0] if body else None
-    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(first.value.value, str):
-        return Block(first.value.lineno, first.value.end_lineno or first.value.lineno, first.value.value)
-    return None
+def _prose_lines(text: str) -> int:
+    return sum(1 for line in text.splitlines() if line.strip())
 
 
 def _docstring_findings(tree: ast.AST, changed: frozenset[int]) -> list[Finding]:
@@ -106,45 +106,54 @@ def _docstring_findings(tree: ast.AST, changed: frozenset[int]) -> list[Finding]
     for node in ast.walk(tree):
         if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        block = _docstring(node)
-        if block is None or not _touched(block, changed):
+        text = ast.get_docstring(node, clean=False)
+        first = node.body[0]
+        if text is None or not isinstance(first, ast.Expr):
             continue
-        length = sum(1 for line in block.text.splitlines() if line.strip())
-        if length > MAX_LINES:
-            out.append(Finding(block.start, f"docstring of `{node.name}`", length))
+        start, end = first.value.lineno, first.value.end_lineno or first.value.lineno
+        if _touched(start, end, changed) and _prose_lines(text) > MAX_LINES:
+            out.append(Finding(start, f"docstring of `{node.name}`", _prose_lines(text)))
     return out
 
 
-def _own_line_comments(source: str) -> list[int]:
-    """Lines holding nothing but a `#` comment. A trailing one annotates its own line, not a block."""
-    try:
-        tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
-    except (tokenize.TokenError, IndentationError, SyntaxError):
-        return []
-    return [t.start[0] for t in tokens if t.type == tokenize.COMMENT and t.line.lstrip().startswith("#")]
+def own_line_comments(source: str) -> list[CommentLine]:
+    """Every `#` comment that is alone on its line, directives excluded.
+
+    A trailing comment annotates its own line of code rather than forming a block, and a directive
+    is machine input with no shorter legal form.
+    """
+    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+    alone = (t for t in tokens if t.type == tokenize.COMMENT and t.line.lstrip().startswith("#"))
+    return [CommentLine(t.start[0], t.string) for t in alone if not _DIRECTIVE.match(t.string)]
 
 
 def _comment_findings(source: str, changed: frozenset[int]) -> list[Finding]:
-    """Runs of consecutive own-line comments, capped the same as a docstring.
+    """Runs of consecutive own-line comments, measured exactly as a docstring is.
 
     Without this the cap is one keystroke away from being routed around: the essay moves from
-    inside the quotes to a `#` block directly above them and says exactly the same thing.
+    inside the quotes to a `#` block above them. A bare `#` is the blank line of that form.
     """
-    runs: list[Block] = []
-    for line in _own_line_comments(source):
-        if runs and line == runs[-1].end + 1:
-            runs[-1] = runs[-1]._replace(end=line)
+    runs: list[list[CommentLine]] = []
+    for comment in own_line_comments(source):
+        if runs and comment.line == runs[-1][-1].line + 1:
+            runs[-1].append(comment)
         else:
-            runs.append(Block(line, line, ""))
-    over = (r for r in runs if r.end - r.start + 1 > MAX_LINES and _touched(r, changed))
-    return [Finding(r.start, "comment block", r.end - r.start + 1) for r in over]
+            runs.append([comment])
+    return [f for run in runs if (f := _run_finding(run, changed)) is not None]
+
+
+def _run_finding(run: list[CommentLine], changed: frozenset[int]) -> Finding | None:
+    length = sum(1 for comment in run if comment.text.lstrip("#").strip())
+    if length <= MAX_LINES or not _touched(run[0].line, run[-1].line, changed):
+        return None
+    return Finding(run[0].line, "comment block", length)
 
 
 def check(source: str, changed: frozenset[int]) -> list[Finding]:
-    """Every docstring and comment block over the cap that starts on a changed line.
+    """Every docstring and comment block over the cap that overlaps `changed`, in source order.
 
-    Unparseable source yields nothing — an edit landing a file mid-rewrite is the editor's
-    business, and the next edit over the finished file re-runs the check anyway.
+    Source that does not parse yields nothing; `judged_lines` is what stops that from becoming a
+    way to land an essay beside a syntax error and never have it looked at again.
     """
     try:
         tree = ast.parse(source)
@@ -153,39 +162,46 @@ def check(source: str, changed: frozenset[int]) -> list[Finding]:
     return sorted(_docstring_findings(tree, changed) + _comment_findings(source, changed))
 
 
-def changed_lines(before: str, after: str) -> frozenset[int]:
-    """1-indexed lines of `after` that `before` does not already hold in that position.
+def _parses(source: str) -> bool:
+    try:
+        ast.parse(source)
+    except SyntaxError:
+        return False
+    return True
 
-    Scoping to these keeps the hook off code the agent did not touch: changing one function in an
-    old file must not be denied over an essay written years ago.
+
+def _changed_lines(before: str, after: str) -> frozenset[int]:
+    """1-indexed lines of `after` this edit wrote, plus the seam either side of a pure deletion.
+
+    A deletion has an empty range in `after`, so counting only written lines would let an agent
+    trim a sixteen-line essay to four for free while a one-character edit is denied.
     """
     diff = difflib.SequenceMatcher(a=before.splitlines(), b=after.splitlines(), autojunk=False)
-    spans = (range(j1 + 1, j2 + 1) for tag, _, _, j1, j2 in diff.get_opcodes() if tag != "equal")
+    edits = ((j1, j2) for tag, _, _, j1, j2 in diff.get_opcodes() if tag != "equal")
+    spans = (range(j1 + 1, j2 + 1) if j2 > j1 else range(max(j1, 1), j1 + 2) for j1, j2 in edits)
     return frozenset(line for span in spans for line in span)
 
 
-def _apply(source: str, old: str, new: str, *, every: bool) -> str:
-    return source.replace(old, new) if every else source.replace(old, new, 1)
+def judged_lines(before: str, after: str) -> frozenset[int]:
+    """The lines of `after` this call is answerable for — normally the ones it changed.
+
+    A `before` that did not parse was never judged at all, so the edit that makes the file parse
+    answers for all of it; otherwise an essay lands beside a syntax error and is never seen again.
+    """
+    if not _parses(before):
+        return frozenset(range(1, len(after.splitlines()) + 1))
+    return _changed_lines(before, after)
 
 
-def post_edit_source(tool_name: str, tool_input: ToolInput, before: str) -> str:
-    """The file's content as this call would leave it.
+def replay(edits: list[Replacement], source: str) -> str:
+    """`source` with every replacement applied in order, as the edit tool would apply them.
 
     An `Edit`'s `new_string` is a fragment — an indented method, half a class — that rarely parses
-    alone. Replaying the edit over the file on disk gives text that does.
+    alone, so the rules need the whole file as this call would leave it, not the fragment.
     """
-    if tool_name == "Write":
-        return tool_input["content"]
-    if tool_name == "MultiEdit":
-        for edit in tool_input["edits"]:
-            before = _apply(before, edit["old_string"], edit["new_string"], every=bool(edit.get("replace_all")))
-        return before
-    return _apply(
-        before,
-        tool_input["old_string"],
-        tool_input["new_string"],
-        every=bool(tool_input.get("replace_all")),
-    )
+    for edit in edits:
+        source = source.replace(edit["old_string"], edit["new_string"], -1 if edit.get("replace_all") else 1)
+    return source
 
 
 def _emit(reason: str) -> None:
@@ -212,15 +228,21 @@ def reason_for(findings: list[Finding], tool_name: str) -> str:
 def main() -> None:
     """PreToolUse entry point: read the stdin payload, emit a deny, or nothing."""
     data = json.loads(sys.stdin.read())
+    tool_name = data["tool_name"]
+    if tool_name not in EDIT_TOOLS:
+        return
+    # `tool_input`'s shape is chosen by `tool_name`, which sits outside the record — a tag no
+    # TypedDict union can narrow on, so the dispatch reads each tool's own keys here instead.
     tool_input = data["tool_input"]
     path = Path(tool_input["file_path"])
     if path.suffix != GUARDED_SUFFIX:
         return
     before = path.read_text(encoding="utf-8") if path.is_file() else ""
-    after = post_edit_source(data["tool_name"], tool_input, before)
-    findings = check(after, changed_lines(before, after))
+    # An `Edit` is a `MultiEdit` of one, so both take the same path.
+    after = tool_input["content"] if tool_name == "Write" else replay(tool_input.get("edits", [tool_input]), before)
+    findings = check(after, judged_lines(before, after))
     if findings:
-        _emit(reason_for(findings, data["tool_name"]))
+        _emit(reason_for(findings, tool_name))
 
 
 if __name__ == "__main__":

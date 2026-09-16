@@ -7,6 +7,7 @@ Claude Code actually receives, and exercises payload -> replay -> diff -> AST ->
 import io
 import json
 import textwrap
+from pathlib import Path
 
 import comment_guard_hook
 import pytest
@@ -53,8 +54,10 @@ def test_function_docstring_over_the_cap_is_denied(monkeypatch, capsys, tmp_path
     )
     assert out["hookSpecificOutput"]["hookEventName"] == "PreToolUse"  # how the harness routes it
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "`route`" in denied_lines(out)
-    assert f"{OVER} lines" in denied_lines(out)
+    # The whole rendered line, not substrings of it: the line number is the only thing telling the
+    # agent where the offender is, and a cherry-picked `"`route`" in reason` never checks it.
+    assert "line 3 — docstring of `route`: 4 lines" in denied_lines(out)
+    assert "1 docstring(s)/comment(s) in this Write run past 3 lines" in denied_lines(out)
 
 
 def test_docstring_at_the_cap_passes(monkeypatch, capsys, tmp_path):
@@ -337,6 +340,106 @@ def test_every_offender_is_listed_with_its_length(monkeypatch, capsys, tmp_path)
         ''',
     )
     reason = denied_lines(out)
-    assert "`Router`" in reason
-    assert "`route`" in reason
-    assert f"{OVER + 1} lines" in reason
+    assert "line 3 — docstring of `Router`: 4 lines" in reason
+    assert "line 10 — docstring of `route`: 5 lines" in reason
+    assert "2 docstring(s)/comment(s)" in reason
+
+
+# ── the holes the review panel found ─────────────────────────────────────────
+
+
+def test_replace_all_stamps_the_essay_into_every_copy(monkeypatch, capsys, tmp_path):
+    """Replaying only the first occurrence would let every other copy land unjudged."""
+    target = tmp_path / "mod.py"
+    target.write_text('def a():\n    """One."""\n\n\ndef b():\n    """One."""\n', encoding="utf-8")
+    out = via_main(
+        monkeypatch,
+        capsys,
+        "Edit",
+        target,
+        old_string='"""One."""',
+        new_string='"""One.\n    Two.\n    Three.\n    Four."""',
+        replace_all=True,
+    )
+    reason = denied_lines(out)
+    assert "`a`" in reason
+    assert "`b`" in reason
+
+
+def test_a_deletion_only_edit_is_judged_on_what_survives(monkeypatch, capsys, tmp_path):
+    """Trimming five lines to four must not be free while changing one character is denied."""
+    target = tmp_path / "mod.py"
+    target.write_text(
+        'def r(c):\n    """One.\n    Two.\n    Three.\n    Four.\n    Five.\n    """\n    return c\n',
+        encoding="utf-8",
+    )
+    out = via_main(monkeypatch, capsys, "Edit", target, old_string="    Five.\n", new_string="")
+    assert "line 2 — docstring of `r`: 4 lines" in denied_lines(out)
+
+
+def test_deleting_a_blank_line_can_assemble_an_over_cap_comment_block(monkeypatch, capsys, tmp_path):
+    target = tmp_path / "mod.py"
+    target.write_text("# One.\n# Two.\n\n# Three.\n# Four.\na = 1\n", encoding="utf-8")
+    out = via_main(monkeypatch, capsys, "Edit", target, old_string="# Two.\n\n", new_string="# Two.\n")
+    assert "comment block" in denied_lines(out)
+
+
+def test_editing_elsewhere_in_a_file_with_a_long_comment_block_is_allowed(monkeypatch, capsys, tmp_path):
+    """The comment lane needs the edit-scoping the docstring lane has."""
+    target = tmp_path / "legacy.py"
+    target.write_text("# One.\n# Two.\n# Three.\n# Four.\ndef r(c):\n    return c\n", encoding="utf-8")
+    out = via_main(monkeypatch, capsys, "Edit", target, old_string="return c", new_string="return c.id")
+    assert out is None
+
+
+def test_a_bare_hash_is_the_blank_line_of_a_comment_block(monkeypatch, capsys, tmp_path):
+    """Identical prose must cost the same above the quotes as inside them."""
+    out = write_py(monkeypatch, capsys, tmp_path, "\n# One.\n#\n# Two.\n# Three.\na = 1\n")
+    assert out is None
+
+
+def test_a_file_header_of_directives_is_not_an_essay(monkeypatch, capsys, tmp_path):
+    """Shebang, coding cookie, licence tag and pragmas have no shorter legal form."""
+    source = (
+        "#!/usr/bin/env python3\n"
+        "# -*- coding: utf-8 -*-\n"
+        "# Copyright 2026 Acme\n"
+        "# SPDX-License-Identifier: MIT\n"
+        "# ruff: noqa: E501\n"
+        "a = 1\n"
+    )
+    out = via_main(monkeypatch, capsys, "Write", tmp_path / "mod.py", content=source)
+    assert out is None
+
+
+def test_an_essay_beside_a_syntax_error_is_judged_once_the_file_parses(monkeypatch, capsys, tmp_path):
+    """Otherwise the SyntaxError bail-out plus edit-scoping is a permanent bypass."""
+    target = tmp_path / "broken.py"
+    target.write_text(
+        'def r(c)\n    """One.\n    Two.\n    Three.\n    Four.\n    """\n    return c\n',
+        encoding="utf-8",
+    )
+    out = via_main(monkeypatch, capsys, "Edit", target, old_string="def r(c)\n", new_string="def r(c):\n")
+    assert "`r`" in denied_lines(out)
+
+
+def test_write_over_an_existing_file_keeps_untouched_prose_out_of_it(monkeypatch, capsys, tmp_path):
+    source = 'def r(c):\n    """One.\n    Two.\n    Three.\n    Four.\n    """\n    return c\n'
+    target = tmp_path / "mod.py"
+    target.write_text(source, encoding="utf-8")
+    out = via_main(monkeypatch, capsys, "Write", target, content=source.replace("return c", "return c.id"))
+    assert out is None
+
+
+@pytest.mark.parametrize("tool_name", ["NotebookEdit", "Read", "Bash"])
+def test_tools_outside_the_matcher_are_ignored(monkeypatch, capsys, tmp_path, tool_name):
+    """One replayed as an Edit would die on a missing `old_string`."""
+    out = via_main(monkeypatch, capsys, tool_name, tmp_path / "mod.py")
+    assert out is None
+
+
+def test_every_tool_in_the_matcher_is_handled():
+    """hooks.json's matcher and EDIT_TOOLS must never drift apart."""
+    hooks_json = Path(comment_guard_hook.__file__).parent / "hooks.json"
+    matcher = json.loads(hooks_json.read_text(encoding="utf-8"))["hooks"]["PreToolUse"][0]["matcher"]
+    assert set(matcher.split("|")) == set(comment_guard_hook.EDIT_TOOLS)

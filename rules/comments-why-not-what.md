@@ -58,6 +58,28 @@ data = sorted(rows, key=by_name)   # name-sorted so the export matches the print
 ```
 If you can kill the comment by renaming a variable or extracting a well-named function, do that instead and drop the comment.
 
+## Three lines, and the ladder when it doesn't fit
+
+A function or class docstring gets **at most three non-blank lines**, and so does a run of
+own-line `#` comments. A docstring describes the thing it sits on and nothing else: how to call
+it and what you get back. The operational test is the Google Python Style Guide's — it should
+give enough to write a call without reading the function's code — and PEP 257 names the contents:
+behaviour, arguments, return value, side effects, exceptions raised, restrictions. That fits.
+
+Doesn't fit? In this order:
+
+1. **Name it better.** `_company_wide_shop` needed a paragraph; `shop_for_ad_call` needs a line.
+   A precise name documents for free and cannot go stale.
+2. **Say it shorter.** Most of an essay is the code restated, the history of how it got here, and
+   hedging. None of that is the contract.
+3. **Refactor.** A function that still needs more than three lines to explain is doing more than
+   one thing. Split it, and each part explains itself in one line.
+
+Module docstrings are exempt — one orientation paragraph per file sits on no signature that could
+have carried it instead. `comment-guard-hook` is the enforcement half: it denies the Write/Edit
+that would land the essay, so this cap is the one part of this file you meet as a `deny` rather
+than as advice.
+
 ## Why this rule exists
 
 What-not-why comments are the single most common AI comment failure — 40-45% of generated comments, vs ~25% for humans — because models describe observable syntax fluently but rarely infer design rationale, and RLHF rewarded "explaining." The damage is measured: codebases heavy in redundant/ceremony comments cost reviewers ~22% longer and slow onboarding ~29%; stale and contradictory comments (which over-specific AI comments become as code evolves) were traced to ~18% more bugs because developers trust the comment over the code. Worse than no comment is a confidently wrong one. Write few; make each one load-bearing.

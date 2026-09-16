@@ -9,7 +9,8 @@ The failure it exists to stop is the essay: a model asked to write a contract wr
 into the docstrings, and sixteen lines of design above a stub reads as finished work long enough
 to survive review. Every attempt to catch that by *meaning* — narration, restatement, open
 questions, duplicated facts — needs judgement, and a hook cannot judge; regexes match phrases and
-miss the point. A line count needs no judgement and has no false positives. It measures.
+miss the point. A line count needs no judgement. It measures, and the only things it excludes are
+mechanical: blank lines, trailing comments, and header directives that have no shorter legal form.
 
 What survives the cap is what a docstring is for: **how to call the thing, and what you get back.**
 
@@ -41,6 +42,25 @@ It names each offender with its length, then gives the ladder: name it better, s
 and if it still will not fit, the function is doing more than one thing — refactor. Plus where the
 overflow actually belongs: CLAUDE.md for rules and decisions, a line comment for one non-obvious
 line, the commit message for why this change.
+
+## Scope of an edit
+
+Only prose this edit is answerable for is judged, by the whole span of the block rather than its
+first line — an essay grows by appending to a docstring whose opening quote has not moved. A pure
+deletion counts as touching the lines it now sits between, so trimming a sixteen-line essay to four
+is denied like any other over-cap result. And a file whose previous state did not parse is judged
+whole once it parses: otherwise an essay could land beside a syntax error and never be looked at
+again.
+
+belay's own sources predate the gate — 59 docstrings across 10 plugins run over the cap. Editing
+one of those function bodies stays silent; the deny fires only when an edit rewrites one of those
+spans.
+
+## Install
+
+```
+/plugin install comment-guard-hook@belay
+```
 
 ## Tuning
 
