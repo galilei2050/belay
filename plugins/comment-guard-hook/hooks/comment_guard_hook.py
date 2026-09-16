@@ -44,8 +44,10 @@ _REASON = (
     "{count} docstring(s)/comment(s) in this {tool} run past {limit} lines:\n\n{listed}\n\n"
     "A docstring describes the thing it sits on, and nothing else: how to call it and what you "
     "get back. The test, from the Google Python Style Guide — it should give enough information "
-    "to write a call without reading the function's code. PEP 257 names the contents: behaviour, "
-    "arguments, return value, side effects, exceptions raised, restrictions.\n\n"
+    "to write a call without reading the function's code. The same guide says the Args/Returns/"
+    "Raises sections may be omitted \"in cases where the function's name and signature are "
+    'informative enough that it can be aptly described using a one-line docstring". Making that '
+    "true of your function is the work here; {limit} lines is what it costs when it is.\n\n"
     "It does not fit in {limit} lines? In this order:\n"
     "  1. Name it better. `_company_wide_shop` needed a paragraph; `shop_for_ad_call` needs a "
     "line. A precise name documents for free and cannot go stale.\n"

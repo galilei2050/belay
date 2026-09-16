@@ -62,9 +62,12 @@ If you can kill the comment by renaming a variable or extracting a well-named fu
 
 A function or class docstring gets **at most three non-blank lines**, and so does a run of
 own-line `#` comments. A docstring describes the thing it sits on and nothing else: how to call
-it and what you get back. The operational test is the Google Python Style Guide's — it should
-give enough to write a call without reading the function's code — and PEP 257 names the contents:
-behaviour, arguments, return value, side effects, exceptions raised, restrictions. That fits.
+it and what you get back. The operational test is the Google Python Style Guide's — it should give
+enough to write a call without reading the function's code. The same guide says the Args/Returns/
+Raises sections "can be omitted in cases where the function's name and signature are informative
+enough that it can be aptly described using a one-line docstring", and PEP 257 ends its list of
+contents with "(all if applicable)". Making that true of the function is the work; three lines is
+what it costs once it is.
 
 Doesn't fit? In this order:
 

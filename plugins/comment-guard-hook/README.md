@@ -17,9 +17,14 @@ What survives the cap is what a docstring is for: **how to call the thing, and w
 > A docstring should give enough information to write a call to the function without reading the
 > function's code. — [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)
 
-> The docstring for a function or method should summarize its behavior and document its arguments,
-> return value(s), side effects, exceptions raised, and restrictions.
-> — [PEP 257](https://peps.python.org/pep-0257/)
+> These sections can be omitted in cases where the function's name and signature are informative
+> enough that it can be aptly described using a one-line docstring.
+> — [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)
+
+That second sentence is the authority for the cap, and the first is the work it demands. PEP 257
+asks for "behavior … arguments, return value(s), side effects, exceptions raised, and restrictions
+on when it can be called (**all if applicable**)" — the parenthesis is the whole point: a function
+whose name and signature carry their weight has almost none of it applicable.
 
 ## What it checks
 
