@@ -18,8 +18,6 @@ HOOK = Path(__file__).parent.parent / "hooks" / "claude_md_hook.py"
 
 
 class AuditResult(NamedTuple):
-    """What the audit CLI gave back."""
-
     status: int
     stdout: str
 
@@ -61,8 +59,8 @@ def repo(tmp_path, git):
 def after_write():
     """Run the hook as PostToolUse over a file that was just written; returns its parsed output."""
 
-    def run(path: Path, tool_name: str = "Write") -> dict[str, str] | None:
-        payload = {"hook_event_name": "PostToolUse", "tool_name": tool_name, "tool_input": {"file_path": str(path)}}
+    def run(path: Path, tool_name: str = "Write", path_key: str = "file_path") -> dict[str, str] | None:
+        payload = {"hook_event_name": "PostToolUse", "tool_name": tool_name, "tool_input": {path_key: str(path)}}
         # S603: argv is this interpreter plus the hook under test; no shell, no user input.
         result = subprocess.run(  # noqa: S603
             (sys.executable, str(HOOK)), input=json.dumps(payload), capture_output=True, text=True, check=True

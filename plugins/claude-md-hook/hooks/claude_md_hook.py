@@ -4,8 +4,8 @@
 Two entry points share the checks. As a PostToolUse hook (JSON on stdin) it runs after a
 Write/Edit of a CLAUDE.md: it stamps today's date into the `Updated:` line, lints the result, and
 hands any findings back as a `block` so the agent fixes them while the file is still open. As a
-CLI (`claude_md_hook.py <file-or-dir>...`) it audits existing files and adds the one check that
-only makes sense at rest — how far the code beside a CLAUDE.md has moved since the file last did.
+CLI (`claude_md_hook.py <file-or-dir>...`) it audits existing files and adds what only makes
+sense at rest — how far the code beside a CLAUDE.md has moved since the file last did.
 
 The date is stamped here, never typed: a hand-kept date stops moving on the second edit, and the
 model reading the file has no `git log` to tell it the file is old.
@@ -20,6 +20,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 FILE_NAME = "CLAUDE.md"
 # Anthropic's memory docs: past ~200 lines a CLAUDE.md costs context and adherence drops.
@@ -27,6 +28,10 @@ MAX_LINES = 200
 # Commits to the directory since its CLAUDE.md last changed before the audit calls the file stale.
 STALE_COMMITS = 20
 REQUIRED_SECTIONS = ("Business decisions", "Technical decisions")
+# The whole body of a required section at a level that decided nothing.
+NO_DECISIONS = "None at this level."
+# NotebookEdit names its target `notebook_path`; listing the tools keeps it out whatever the matcher lets through.
+EDIT_TOOLS = frozenset({"Write", "Edit", "MultiEdit"})
 
 GIT = shutil.which("git")
 
@@ -37,30 +42,40 @@ _CODE_SPAN_RE = re.compile(r"`([^`\s]+)`")
 _NOT_A_PATH_RE = re.compile(r"[<>*{}$|=:@#,()\[\]]|^-")
 
 
-def stamp(text: str, today: str) -> str:
-    """`text` with its `Updated:` line set to `today`, inserted under the H1 when absent."""
-    line = f"Updated: {today}"
-    lines = text.splitlines()
-    for index, existing in enumerate(lines):
-        if _UPDATED_RE.match(existing):
-            lines[index] = line
-            break
-    else:
-        at = 1 if lines and lines[0].startswith("# ") else 0
-        lines[at:at] = ["", line] if at else [line, ""]
-    return "\n".join(lines) + "\n"
-
-
-def prose_lines(text: str) -> list[str]:
-    """The lines outside fenced code blocks — a `## ` or a path inside a fence is an example."""
-    kept: list[str] = []
+def prose_indices(lines: list[str]) -> list[int]:
+    """Indices of the lines outside fenced code blocks — a heading, a date or a path inside a fence is an example."""
+    kept: list[int] = []
     fenced = False
-    for line in text.splitlines():
+    for index, line in enumerate(lines):
         if _FENCE_RE.match(line):
             fenced = not fenced
         elif not fenced:
-            kept.append(line)
+            kept.append(index)
     return kept
+
+
+def prose_lines(text: str) -> list[str]:
+    """The lines of `text` outside fenced code blocks."""
+    lines = text.splitlines()
+    return [lines[index] for index in prose_indices(lines)]
+
+
+def stamp(text: str, today: str) -> str:
+    """`text` with its `Updated:` line set to `today`; inserted under the H1 (or on top, with no H1) when absent."""
+    line = f"Updated: {today}"
+    lines = text.splitlines()
+    prose = prose_indices(lines)
+    existing = next((i for i in prose if _UPDATED_RE.match(lines[i])), None)
+    if existing is not None:
+        lines[existing] = line
+        return "\n".join(lines) + "\n"
+    title = next((i for i in prose if lines[i].startswith("# ")), None)
+    at = 0 if title is None else title + 1
+    # Blank lines on both sides, or markdown folds the stamp into the neighbouring paragraph.
+    before = [] if title is None else [""]
+    after = [""] if at < len(lines) and lines[at].strip() else []
+    lines[at:at] = [*before, line, *after]
+    return "\n".join(lines) + "\n"
 
 
 def sections(text: str) -> dict[str, list[str]]:
@@ -75,21 +90,31 @@ def sections(text: str) -> dict[str, list[str]]:
     return found
 
 
+def bullets(body: list[str]) -> list[str]:
+    """The `- ` bullets of one section body; indented continuation lines fold into their bullet."""
+    found: list[str] = []
+    for line in body:
+        if line.startswith("- "):
+            found.append(line[2:])
+        elif found and line.startswith(" ") and line.strip():
+            found[-1] += " " + line
+    return found
+
+
 def decisions(text: str) -> set[str]:
-    """Normalised bullets of the decision sections; continuation lines fold into their bullet."""
-    bullets: list[str] = []
-    for title in REQUIRED_SECTIONS:
-        for line in sections(text).get(title.lower(), []):
-            if line.startswith("- "):
-                bullets.append(line[2:])
-            elif bullets and line.startswith(" ") and line.strip():
-                bullets[-1] += " " + line
-    normalised = {" ".join(bullet.lower().split()) for bullet in bullets}
-    return {bullet for bullet in normalised if not bullet.startswith("none")}
+    """Normalised bullets of the decision sections, minus the `NO_DECISIONS` placeholder.
+
+    The placeholder is dropped by exact match: every childless level carries it, so it would
+    otherwise be reported as a duplicate of its parent's.
+    """
+    found = sections(text)
+    raw = [bullet for title in REQUIRED_SECTIONS for bullet in bullets(found.get(title.lower(), []))]
+    normalised = {" ".join(bullet.lower().split()) for bullet in raw}
+    return normalised - {NO_DECISIONS.lower()}
 
 
 def repo_root(start: Path) -> Path | None:
-    """Nearest ancestor of `start` holding a `.git`, or None outside a checkout."""
+    """`start` or its nearest ancestor holding a `.git`, or None outside a checkout."""
     return next((p for p in (start, *start.parents) if (p / ".git").exists()), None)
 
 
@@ -103,22 +128,42 @@ def missing_paths(path: Path, text: str) -> list[str]:
     bases = [path.parent, *([root] if root else [])]
     missing: list[str] = []
     for span in _CODE_SPAN_RE.findall("\n".join(prose_lines(text))):
-        parts = span.strip("/").split("/")
-        if len(parts) < 2 or _NOT_A_PATH_RE.search(span):  # noqa: PLR2004 — a path needs two segments
-            continue
-        candidates = [Path(span).expanduser()] if span.startswith(("~", "/")) else []
-        candidates += [base / span.strip("/") for base in bases]
-        anchored = any((c.parents[len(parts) - 2]).is_dir() for c in candidates)
-        if anchored and not any(c.exists() for c in candidates) and span not in missing:
+        lookups = [] if _NOT_A_PATH_RE.search(span) else lookups_for(span, bases)
+        anchored = any(lookup.anchor.is_dir() for lookup in lookups)
+        if anchored and not any(lookup.target.exists() for lookup in lookups) and span not in missing:
             missing.append(span)
     return missing
+
+
+class Lookup(NamedTuple):
+    """One place a code-span path may live: its first segment there, and the whole path there."""
+
+    anchor: Path
+    target: Path
+
+
+def lookups_for(span: str, bases: list[Path]) -> list[Lookup]:
+    """Where `span` could resolve: under each base, plus `~/…` in the home dir and `/…` on disk.
+
+    Segments come from `Path.parts`, so `./a/b` and `a//b` anchor on `a` like `a/b` does. Only a
+    literal `~/` is expanded — `~user/…` stays relative, and `expanduser()` raises on an unknown user.
+    """
+    relative = Path(span.lstrip("/"))
+    if len(relative.parts) < 2:  # noqa: PLR2004 — a single segment is a word, not a path
+        return []
+    lookups = [Lookup(base / relative.parts[0], base / relative) for base in bases]
+    if span.startswith("~/"):
+        lookups.append(Lookup(Path.home(), Path(span).expanduser()))
+    elif span.startswith("/"):
+        lookups.append(Lookup(Path("/", relative.parts[0]), Path(span)))
+    return lookups
 
 
 def lint(path: Path, text: str) -> list[str]:
     """Every skeleton finding for the CLAUDE.md at `path` holding `text`."""
     findings: list[str] = []
     lines = text.splitlines()
-    if not any(_UPDATED_RE.match(line) for line in lines):
+    if not any(_UPDATED_RE.match(line) for line in prose_lines(text)):
         findings.append("no `Updated: YYYY-MM-DD` line under the title")
     if len(lines) > MAX_LINES:
         findings.append(
@@ -131,7 +176,7 @@ def lint(path: Path, text: str) -> list[str]:
         if body is None:
             findings.append(f"missing section `## {title}`")
         elif not any(line.strip() for line in body):
-            findings.append(f"`## {title}` is empty — record the decisions, or write `None at this level.`")
+            findings.append(f"`## {title}` is empty — record the decisions, or write `{NO_DECISIONS}`")
     findings += [f"referenced path does not exist: `{span}`" for span in missing_paths(path, text)]
     return findings + duplicate_decisions(path, text)
 
@@ -151,15 +196,16 @@ def duplicate_decisions(path: Path, text: str) -> list[str]:
 def _git(cwd: Path, *args: str) -> str:
     if GIT is None:
         raise RuntimeError("git is required to audit CLAUDE.md files")
-    # S603: resolved binary, fixed argv built here, no shell.
-    return subprocess.run((GIT, *args), cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()  # noqa: S603
+    # stderr is left on the terminal: with check=True, git's own "fatal: …" is the only explanation there is.
+    # S603: resolved binary, literal git subcommands, values passed as argv after `--`, no shell.
+    return subprocess.run((GIT, *args), cwd=cwd, check=True, stdout=subprocess.PIPE, text=True).stdout.strip()  # noqa: S603
 
 
 def staleness(path: Path) -> list[str]:
     """A finding when the directory has moved `STALE_COMMITS`+ commits past its CLAUDE.md."""
     last = _git(path.parent, "log", "-1", "--format=%H", "--", path.name)
     if not last:
-        return []  # never committed — nothing to be older than
+        return ["never committed — staleness unknown"]  # silence would read as "fresh"
     moved = int(_git(path.parent, "rev-list", "--count", f"{last}..HEAD", "--", ".", f":(exclude){path.name}"))
     if moved < STALE_COMMITS:
         return []
@@ -193,6 +239,8 @@ def audit(args: list[str]) -> int:
 def main() -> None:
     """PostToolUse entry point: stamp the date, then block with the findings, or stay silent."""
     data = json.loads(sys.stdin.read())
+    if data["tool_name"] not in EDIT_TOOLS:
+        return
     path = Path(data["tool_input"]["file_path"])
     if path.name != FILE_NAME:
         return
@@ -203,7 +251,8 @@ def main() -> None:
     findings = lint(path, stamped)
     if findings:
         listing = "\n".join(f"- {finding}" for finding in findings)
-        reason = f"{path} breaks the CLAUDE.md skeleton (see the `claude-md` skill):\n{listing}\nFix these now."
+        skill = "`claude-md-hook:claude-md` skill"
+        reason = f"{path} breaks the CLAUDE.md skeleton (see the {skill}):\n{listing}\nFix these now."
         sys.stdout.write(json.dumps({"decision": "block", "reason": reason}) + "\n")
 
 

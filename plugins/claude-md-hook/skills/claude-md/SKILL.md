@@ -1,6 +1,6 @@
 ---
 name: claude-md
-description: Writes or restructures a CLAUDE.md to the belay skeleton — a dated preamble, a mandatory Business decisions section, a mandatory Technical decisions section, then commands and gotchas, all under 200 lines. Use when creating a CLAUDE.md, adding to one, migrating an existing one to the skeleton, fixing findings from claude-md-hook, or auditing a repo's CLAUDE.md files ("напиши CLAUDE.md", "обнови CLAUDE.md", "запиши это решение", "audit CLAUDE.md"). NOT for `.claude/rules`, skills, or README files.
+description: Writes or restructures a CLAUDE.md to the belay skeleton — a dated preamble, a mandatory Business decisions section, a mandatory Technical decisions section, then commands and gotchas, in at most 200 lines. Use when creating a CLAUDE.md, adding to one, migrating an existing one to the skeleton, fixing findings from claude-md-hook, or auditing a repo's CLAUDE.md files ("напиши CLAUDE.md", "обнови CLAUDE.md", "запиши это решение", "audit CLAUDE.md"). NOT for `.claude/rules`, skills, or README files.
 ---
 
 # Writing a CLAUDE.md
@@ -79,6 +79,6 @@ prose into the two sections. Do not drop a line you cannot place; ask what it pr
 python3 "${CLAUDE_PLUGIN_ROOT}/hooks/claude_md_hook.py" <file-or-dir>...
 ```
 
-A directory means its git-tracked CLAUDE.md files. Beyond the hook's checks, the audit reports
-`stale` when 20+ commits touched a directory since its CLAUDE.md last changed — reread that file
-against the code before trusting it.
+A directory means its git-tracked CLAUDE.md files. Beyond the hook's checks, the audit reports a
+missing `Updated:` line, a file git has never seen, and `stale` — 20+ commits touched the
+directory since its CLAUDE.md last changed; reread that file against the code before trusting it.

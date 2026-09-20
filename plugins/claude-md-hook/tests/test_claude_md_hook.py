@@ -14,8 +14,14 @@ None at this level.
 
 ## Technical decisions
 
-- **Stdlib only** — hooks run on bare python3. Rejected: click, a dependency for one flag.
+- **Stdlib only** — hooks run on bare python3.
+  Rejected: click, a dependency for one flag.
 """
+
+
+def padded(total_lines):
+    """GOOD grown to exactly `total_lines`; it already carries its `Updated:` line, so stamping adds none."""
+    return GOOD + "- filler\n" * (total_lines - len(GOOD.splitlines()))
 
 
 def write(path, text):
@@ -49,6 +55,28 @@ def test_a_missing_date_line_is_inserted_under_the_title(repo, after_write):
     assert target.read_text().splitlines()[:3] == ["# CLAUDE.md — demo", "", f"Updated: {TODAY}"]
 
 
+def test_the_date_goes_under_a_title_that_is_not_the_first_line(repo, after_write):
+    text = GOOD.replace("Updated: 2020-01-01\n\n", "").replace(
+        "# CLAUDE.md — demo\n\n", "intro\n# CLAUDE.md — demo\nprose\n\n"
+    )
+    target = write(repo / "CLAUDE.md", text)
+    assert after_write(target) is None
+    assert target.read_text().splitlines()[:5] == ["intro", "# CLAUDE.md — demo", "", f"Updated: {TODAY}", ""]
+
+
+def test_a_date_inside_a_code_fence_is_an_example_not_the_stamp(repo, after_write):
+    example = "\n```markdown\nUpdated: 2020-01-01\n```\n"
+    target = write(repo / "CLAUDE.md", GOOD.replace("Updated: 2020-01-01\n\n", "") + example)
+    assert after_write(target) is None
+    assert target.read_text().splitlines()[2] == f"Updated: {TODAY}"
+    assert example in target.read_text()
+
+
+def test_a_notebook_edit_is_none_of_our_business(repo, after_write):
+    """NotebookEdit carries `notebook_path`, not `file_path` — it must not reach the path lookup."""
+    assert after_write(repo / "CLAUDE.md", "NotebookEdit", path_key="notebook_path") is None
+
+
 def test_a_file_already_stamped_today_is_not_rewritten(repo, after_write):
     target = write(repo / "CLAUDE.md", GOOD.replace("2020-01-01", TODAY))
     before = target.stat().st_mtime_ns
@@ -79,17 +107,33 @@ def test_a_heading_inside_a_code_fence_is_not_a_section(repo, after_write):
     assert "missing section `## Business decisions`" in out["reason"]
 
 
-def test_over_200_lines_blocks(repo, after_write):
-    out = after_write(write(repo / "CLAUDE.md", GOOD + "\n## Notes\n" + "- filler line\n" * 200))
-    assert "limit is 200" in out["reason"]
+def test_200_lines_pass_and_201_block(repo, after_write):
+    assert after_write(write(repo / "CLAUDE.md", padded(200))) is None
+    out = after_write(write(repo / "CLAUDE.md", padded(201)))
+    assert "201 lines, limit is 200" in out["reason"]
 
 
-def test_a_dead_path_in_a_real_tree_blocks_while_lookalikes_pass(repo, after_write):
-    text = GOOD + "\nSee `src/app.py`, `src/gone.py`, `origin/main`, `plugins/<name>/x.py`.\n"
-    out = after_write(write(repo / "CLAUDE.md", text))
+def test_a_dead_path_blocks_when_its_first_segment_is_real(repo, after_write):
+    """`src/sub/gone.py` separates "first segment exists" from "parent dir exists": `src/sub` does not."""
+    out = after_write(write(repo / "CLAUDE.md", GOOD + "\nSee `src/app.py`, `src/gone.py`, `src/sub/gone.py`.\n"))
     assert "`src/gone.py`" in out["reason"]
-    for fine in ("src/app.py", "origin/main", "<name>"):
-        assert fine not in out["reason"]
+    assert "`src/sub/gone.py`" in out["reason"]
+    assert "`src/app.py`" not in out["reason"]
+
+
+def test_path_lookalikes_are_left_alone(repo, after_write):
+    """Every span but the last two anchors on the real `src/`, so only the not-a-path filter spares it."""
+    spans = [
+        "src/<name>/x.py",
+        "src/*.py",
+        "src/app.py:12",
+        "src/{a,b}.py",
+        "$HOME/src/x",
+        "origin/main",
+        "./nope/x.py",
+    ]
+    text = GOOD + "\nSee " + ", ".join(f"`{span}`" for span in spans) + ", `~nosuchuser/x.py`.\n"
+    assert after_write(write(repo / "CLAUDE.md", text)) is None
 
 
 def test_a_decision_repeated_from_a_parent_blocks(repo, after_write):
@@ -99,28 +143,41 @@ def test_a_decision_repeated_from_a_parent_blocks(repo, after_write):
     assert "stdlib only" in out["reason"]
 
 
-def test_a_child_with_its_own_decisions_is_clean(repo, after_write):
+def test_a_child_differing_only_in_a_wrapped_line_is_clean(repo, after_write):
     write(repo / "CLAUDE.md", GOOD)
-    child = GOOD.replace("Stdlib only", "One module per tool")
+    child = GOOD.replace("Rejected: click", "Rejected: typer")
     assert after_write(write(repo / "src" / "CLAUDE.md", child)) is None
+
+
+def test_a_repeated_decision_that_starts_with_none_still_blocks(repo, after_write):
+    """Only the exact placeholder is exempt — `None of…` is a decision like any other."""
+    text = GOOD.replace("None at this level.", "- None of the bots may DM a customer.")
+    write(repo / "CLAUDE.md", text)
+    out = after_write(write(repo / "src" / "CLAUDE.md", text.replace("Stdlib only", "One module per tool")))
+    assert "none of the bots may dm a customer." in out["reason"]
+    assert "one module per tool" not in out["reason"]
 
 
 # ── audit CLI ────────────────────────────────────────────────────────────────
 
 
-def test_audit_of_a_dir_covers_tracked_files_only(repo, git, run_audit):
+def test_audit_of_a_dir_finds_nested_tracked_files_and_skips_untracked(repo, git, run_audit):
     write(repo / "CLAUDE.md", GOOD)
-    git(repo, "add", "CLAUDE.md")
+    nested = write(repo / "src" / "CLAUDE.md", "# CLAUDE.md — src\n")
+    git(repo, "add", ".")
     git(repo, "commit", "-qm", "docs")
     write(repo / "untracked" / "CLAUDE.md", "# nothing\n")
-    assert run_audit(repo) == (0, "")
-
-
-def test_audit_reports_findings_and_fails(repo, run_audit):
-    bad = write(repo / "CLAUDE.md", "# CLAUDE.md — demo\n")
-    status, out = run_audit(bad)
+    status, out = run_audit(repo)
     assert status == 1
-    assert "no `Updated: YYYY-MM-DD` line" in out
+    assert f"{nested}: no `Updated: YYYY-MM-DD` line" in out
+    assert f"{repo / 'CLAUDE.md'}:" not in out
+    assert "untracked" not in out
+
+
+def test_audit_says_so_when_git_has_never_seen_the_file(repo, run_audit):
+    status, out = run_audit(write(repo / "CLAUDE.md", GOOD))
+    assert status == 1
+    assert out == f"{repo / 'CLAUDE.md'}: never committed — staleness unknown\n"
 
 
 def test_audit_flags_a_file_the_code_has_left_behind(repo, git, run_audit):
