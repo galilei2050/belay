@@ -9,9 +9,26 @@ from datetime import datetime
 TODAY = datetime.now().astimezone().date().isoformat()
 
 
+def split(finding):
+    """A finding is `<what is wrong> → <how to fix it>`; one that only rejects fails right here."""
+    what, how = finding.split(" → ", 1)
+    assert how.strip()
+    return what, how
+
+
 def findings(out):
-    """The findings of a block, one string each — or [] when the hook stayed silent."""
-    return [line[2:] for line in out["reason"].splitlines() if line.startswith("- ")] if out else []
+    """What a block says is wrong, one string per finding."""
+    return [split(line[2:])[0] for line in out["reason"].splitlines() if line.startswith("- ")]
+
+
+def advice(out):
+    """How a block says to fix it, one string per finding, in the same order as `findings`."""
+    return [split(line[2:])[1] for line in out["reason"].splitlines() if line.startswith("- ")]
+
+
+def audit_findings(stdout):
+    """What the audit says is wrong, as `<path>: <what>` lines."""
+    return [split(line)[0] for line in stdout.splitlines()]
 
 
 def head(path, count):
@@ -85,9 +102,24 @@ def test_missing_sections_are_each_named(repo, place, after_write):
     assert findings(out) == ["missing section `## Business decisions`", "missing section `## Technical decisions`"]
 
 
+def test_a_missing_section_comes_with_its_entry_format_and_the_way_out(repo, place, after_write):
+    business, technical = advice(after_write(place("missing_sections", repo)))
+    assert "`- **<decision, with its value>** — <why>.`" in business
+    assert "never invent one — ask the user" in business
+    assert "Rejected: <alternative, and what ruled it out>" in technical
+    for how in (business, technical):
+        assert "nothing decided at this level → the body is the sentence `None at this level.`" in how
+
+
+def test_the_block_points_at_the_skill_by_its_invocable_name(repo, place, after_write):
+    out = after_write(place("missing_sections", repo))
+    assert "`agent-knowledge:claude-md` skill" in out["reason"]
+
+
 def test_an_empty_section_blocks_and_says_what_to_write_instead(repo, place, after_write):
     out = after_write(place("empty_business_section", repo))
-    assert findings(out) == ["`## Business decisions` is empty — record the decisions, or write `None at this level.`"]
+    assert findings(out) == ["`## Business decisions` is empty"]
+    assert "None at this level." in advice(out)[0]
 
 
 def test_a_heading_inside_a_code_fence_is_not_a_section(repo, place, after_write):
@@ -106,8 +138,8 @@ def test_200_lines_pass_and_201_block(repo, place, after_write):
 
     target.write_text(clean + filler + "- one line too many\n")
     out = after_write(target)
-    assert len(findings(out)) == 1
-    assert findings(out)[0].startswith("201 lines, limit is 200 — ")
+    assert findings(out) == ["201 lines, limit is 200"]
+    assert "`.claude/rules/<topic>.md` with `paths:`" in advice(out)[0]
 
 
 def test_a_path_is_dead_when_its_first_segment_is_real_and_the_rest_is_not(repo, place, after_write):
@@ -116,6 +148,7 @@ def test_a_path_is_dead_when_its_first_segment_is_real_and_the_rest_is_not(repo,
         "referenced path does not exist: `src/gone.py`",
         "referenced path does not exist: `src/sub/gone.py`",
     ]
+    assert "find where it moved and fix the span" in advice(out)[0]
 
 
 def test_things_that_only_look_like_paths_are_left_alone(repo, place, after_write):
@@ -132,6 +165,7 @@ def test_a_decision_repeated_from_the_parent_blocks(repo, place, after_write):
         f"decision already recorded in {parent}: "
         "`**stdlib only** — hooks run on bare python3. rejected: click, a dependency for one flag.`"
     ]
+    assert advice(out)[0].startswith("delete it here, the parent already governs this directory")
 
 
 def test_a_decision_differing_only_in_its_wrapped_line_is_not_a_repeat(repo, place, after_write):
@@ -158,7 +192,7 @@ def test_audit_of_a_dir_covers_nested_tracked_files_and_skips_untracked(repo, pl
 
     status, out = run_audit(repo)
     assert status == 1
-    assert out.splitlines() == [
+    assert audit_findings(out) == [
         f"{nested}: no `Updated: YYYY-MM-DD` line under the title",
         f"{nested}: missing section `## Business decisions`",
         f"{nested}: missing section `## Technical decisions`",
@@ -167,7 +201,9 @@ def test_audit_of_a_dir_covers_nested_tracked_files_and_skips_untracked(repo, pl
 
 def test_audit_says_so_when_git_has_never_seen_the_file(repo, place, run_audit):
     target = place("clean", repo)
-    assert run_audit(target) == (1, f"{target}: never committed — staleness unknown\n")
+    status, out = run_audit(target)
+    assert status == 1
+    assert out == f"{target}: never committed, staleness unknown → commit the file, then audit again\n"
 
 
 def test_audit_calls_a_file_stale_at_20_commits_past_it(repo, place, git, run_audit):
@@ -185,4 +221,7 @@ def test_audit_calls_a_file_stale_at_20_commits_past_it(repo, place, git, run_au
     assert run_audit(target) == (0, "")
 
     commit_code("twentieth.py")
-    assert run_audit(target) == (1, f"{target}: stale: 20 commits touched this directory since the file last changed\n")
+    status, out = run_audit(target)
+    assert status == 1
+    assert audit_findings(out) == [f"{target}: stale: 20 commits touched this directory since the file last changed"]
+    assert "fix what drifted, and commit it" in out

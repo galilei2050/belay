@@ -27,7 +27,20 @@ FILE_NAME = "CLAUDE.md"
 MAX_LINES = 200
 # Commits to the directory since its CLAUDE.md last changed before the audit calls the file stale.
 STALE_COMMITS = 20
-REQUIRED_SECTIONS = ("Business decisions", "Technical decisions")
+# Each required section with the entry format a finding hands the agent — a block that only says
+# "missing" gets the heading added and the body invented.
+SECTION_ENTRIES = {
+    "Business decisions": (
+        "one bullet per value or rule the business owns (price, hours, threshold, who may do what) — "
+        "`- **<decision, with its value>** — <why>.` Record only what the user stated or a design doc fixes; "
+        "never invent one — ask the user, then record the answer"
+    ),
+    "Technical decisions": (
+        "one bullet per choice a reader would otherwise reopen — "
+        "`- **<decision>** — <why>. Rejected: <alternative, and what ruled it out>.`"
+    ),
+}
+REQUIRED_SECTIONS = tuple(SECTION_ENTRIES)
 # The whole body of a required section at a level that decided nothing.
 NO_DECISIONS = "None at this level."
 # NotebookEdit names its target `notebook_path`; listing the tools keeps it out whatever the matcher lets through.
@@ -164,20 +177,29 @@ def lint(path: Path, text: str) -> list[str]:
     findings: list[str] = []
     lines = text.splitlines()
     if not any(_UPDATED_RE.match(line) for line in prose_lines(text)):
-        findings.append("no `Updated: YYYY-MM-DD` line under the title")
+        findings.append(
+            "no `Updated: YYYY-MM-DD` line under the title → add one with today's date; "
+            "from then on the hook keeps it current on every edit"
+        )
     if len(lines) > MAX_LINES:
         findings.append(
-            f"{len(lines)} lines, limit is {MAX_LINES} — move directory-specific rules to a nested CLAUDE.md or "
-            "`.claude/rules` with `paths:`, procedures to a skill, must-always actions to a hook"
+            f"{len(lines)} lines, limit is {MAX_LINES} → keep what every task at this level needs and move the rest: "
+            "directory-specific rules to that directory's CLAUDE.md or `.claude/rules/<topic>.md` with `paths:`, "
+            "procedures to a skill, must-always actions to a hook; delete what the code already says"
         )
     found = sections(text)
-    for title in REQUIRED_SECTIONS:
+    for title, entry in SECTION_ENTRIES.items():
         body = found.get(title.lower())
+        fill = f"{entry}; nothing decided at this level → the body is the sentence `{NO_DECISIONS}`"
         if body is None:
-            findings.append(f"missing section `## {title}`")
+            findings.append(f"missing section `## {title}` → add it: {fill}")
         elif not any(line.strip() for line in body):
-            findings.append(f"`## {title}` is empty — record the decisions, or write `{NO_DECISIONS}`")
-    findings += [f"referenced path does not exist: `{span}`" for span in missing_paths(path, text)]
+            findings.append(f"`## {title}` is empty → {fill}")
+    findings += [
+        f"referenced path does not exist: `{span}` → find where it moved and fix the span; if it names something "
+        "planned, removed or rejected on purpose, say so in words, without the code span"
+        for span in missing_paths(path, text)
+    ]
     return findings + duplicate_decisions(path, text)
 
 
@@ -189,7 +211,11 @@ def duplicate_decisions(path: Path, text: str) -> list[str]:
         parent_file = ancestor / FILE_NAME
         if parent_file.is_file():
             repeated = own & decisions(parent_file.read_text(encoding="utf-8"))
-            findings += [f"decision already recorded in {parent_file}: `{bullet}`" for bullet in sorted(repeated)]
+            findings += [
+                f"decision already recorded in {parent_file}: `{bullet}` → delete it here, the parent already governs "
+                "this directory; if this level decides differently, record the difference, not the repeat"
+                for bullet in sorted(repeated)
+            ]
     return findings
 
 
@@ -205,11 +231,15 @@ def staleness(path: Path) -> list[str]:
     """A finding when the directory has moved `STALE_COMMITS`+ commits past its CLAUDE.md."""
     last = _git(path.parent, "log", "-1", "--format=%H", "--", path.name)
     if not last:
-        return ["never committed — staleness unknown"]  # silence would read as "fresh"
+        # Silence here would read as "fresh".
+        return ["never committed, staleness unknown → commit the file, then audit again"]
     moved = int(_git(path.parent, "rev-list", "--count", f"{last}..HEAD", "--", ".", f":(exclude){path.name}"))
     if moved < STALE_COMMITS:
         return []
-    return [f"stale: {moved} commits touched this directory since the file last changed"]
+    return [
+        f"stale: {moved} commits touched this directory since the file last changed → reread it against "
+        f"`git log {last[:8]}..HEAD -- .`, fix what drifted, and commit it; the commit is what resets this count"
+    ]
 
 
 def audit_targets(args: list[str]) -> list[Path]:
@@ -251,8 +281,11 @@ def main() -> None:
     findings = lint(path, stamped)
     if findings:
         listing = "\n".join(f"- {finding}" for finding in findings)
-        skill = "`agent-knowledge:claude-md` skill"
-        reason = f"{path} breaks the CLAUDE.md skeleton (see the {skill}):\n{listing}\nFix these now."
+        reason = (
+            f"{path} breaks the CLAUDE.md skeleton. Each item says what is wrong → how to fix it:\n{listing}\n"
+            "Fix every item now and save — the hook reruns on the save. The full skeleton, the entry formats and "
+            "where a line belongs instead of CLAUDE.md: the `agent-knowledge:claude-md` skill."
+        )
         sys.stdout.write(json.dumps({"decision": "block", "reason": reason}) + "\n")
 
 
