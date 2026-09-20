@@ -15,6 +15,7 @@ from typing import NamedTuple
 import pytest
 
 HOOK = Path(__file__).parent.parent / "hooks" / "claude_md.py"
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 class AuditResult(NamedTuple):
@@ -53,6 +54,21 @@ def repo(tmp_path, git):
     git(root, "add", ".")
     git(root, "commit", "-qm", "base")
     return root
+
+
+@pytest.fixture
+def place():
+    """Put the prepared `fixtures/<name>.md` into `directory` as its CLAUDE.md.
+
+    The samples cannot be called CLAUDE.md where they live: Claude Code would load them as
+    instructions for this repo, and the audit would lint them.
+    """
+
+    def copy(name: str, directory: Path) -> Path:
+        directory.mkdir(parents=True, exist_ok=True)
+        return Path(shutil.copy(FIXTURES / f"{name}.md", directory / "CLAUDE.md"))
+
+    return copy
 
 
 @pytest.fixture
