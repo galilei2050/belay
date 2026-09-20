@@ -4,7 +4,7 @@
 Two entry points share the checks. As a PostToolUse hook (JSON on stdin) it runs after a
 Write/Edit of a CLAUDE.md: it stamps today's date into the `Updated:` line, lints the result, and
 hands any findings back as a `block` so the agent fixes them while the file is still open. As a
-CLI (`claude_md_hook.py <file-or-dir>...`) it audits existing files and adds what only makes
+CLI (`claude_md.py <file-or-dir>...`) it audits existing files and adds what only makes
 sense at rest — how far the code beside a CLAUDE.md has moved since the file last did.
 
 The date is stamped here, never typed: a hand-kept date stops moving on the second edit, and the
@@ -251,7 +251,7 @@ def main() -> None:
     findings = lint(path, stamped)
     if findings:
         listing = "\n".join(f"- {finding}" for finding in findings)
-        skill = "`claude-md-hook:claude-md` skill"
+        skill = "`agent-knowledge:claude-md` skill"
         reason = f"{path} breaks the CLAUDE.md skeleton (see the {skill}):\n{listing}\nFix these now."
         sys.stdout.write(json.dumps({"decision": "block", "reason": reason}) + "\n")
 

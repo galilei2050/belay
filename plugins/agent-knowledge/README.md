@@ -1,6 +1,10 @@
-# claude-md-hook
+# agent-knowledge
 
-Keeps every `CLAUDE.md` on one skeleton, so a reader — human or model — always finds the same
+Keeps the knowledge an agent loads lean, current and in one shape. Every line of it is paid for
+in context on every session, and a stale line is worse than a missing one. The part covered
+today is `CLAUDE.md`.
+
+It keeps every `CLAUDE.md` on one skeleton, so a reader — human or model — always finds the same
 three things in the same place: how old the file is, what the business decided, what the
 engineering decided. The skeleton itself lives in the
 [`claude-md` skill](skills/claude-md/SKILL.md#the-skeleton).
@@ -33,7 +37,7 @@ It adds the checks that only make sense at rest — see the skill's
 ## Install
 
 ```
-/plugin install claude-md-hook@belay
+/plugin install agent-knowledge@belay
 ```
 
 An existing `CLAUDE.md` that predates the skeleton reports its findings on the first edit after
@@ -41,4 +45,4 @@ install. Migrate it with the skill instead of patching finding by finding.
 
 ## Config
 
-None — the limits and the section titles are constants at the top of `hooks/claude_md_hook.py`.
+None — the limits and the section titles are constants at the top of `hooks/claude_md.py`.

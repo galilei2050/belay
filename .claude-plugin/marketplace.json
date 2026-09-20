@@ -56,9 +56,9 @@
       "description": "Skill that writes PR descriptions a reviewer can act on, a CI script whose one backgroundable call carries a branch from a CI verdict through the merge to the deploy that ships it — GitHub Actions or Google Cloud Build — while printing only the failing log, a PreToolUse hook that denies that wait in the foreground so it never freezes the session, plus a PostToolUse hook that says what the branch still owes — a push, a PR, a refreshed body, a green CI, a live change — right after each commit and push."
     },
     {
-      "name": "claude-md-hook",
-      "source": "./plugins/claude-md-hook",
-      "description": "PostToolUse gate that keeps every CLAUDE.md on one skeleton: an auto-stamped `Updated:` date, mandatory Business decisions and Technical decisions sections, a 200-line limit, no dead paths, no decisions duplicated from a parent file. Ships the skill that writes to that skeleton and an audit CLI."
+      "name": "agent-knowledge",
+      "source": "./plugins/agent-knowledge",
+      "description": "Keeps the knowledge an agent loads lean and current, starting with CLAUDE.md. A PostToolUse gate holds every CLAUDE.md to one skeleton: an auto-stamped `Updated:` date, mandatory Business decisions and Technical decisions sections, a 200-line limit, no dead paths, no decisions duplicated from a parent file. Ships the skill that writes to that skeleton and an audit CLI."
     }
   ]
 }

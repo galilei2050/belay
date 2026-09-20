@@ -1,4 +1,4 @@
-"""Test fixtures for claude-md-hook.
+"""Test fixtures for agent-knowledge.
 
 The hook is exercised at its real boundary: the script Claude Code runs, fed a PostToolUse payload
 on stdin (or paths on argv for the audit), against real files in a real git repo.
@@ -14,7 +14,7 @@ from typing import NamedTuple
 
 import pytest
 
-HOOK = Path(__file__).parent.parent / "hooks" / "claude_md_hook.py"
+HOOK = Path(__file__).parent.parent / "hooks" / "claude_md.py"
 
 
 class AuditResult(NamedTuple):

@@ -1,4 +1,4 @@
-"""Tests for plugins/claude-md-hook/hooks/claude_md_hook.py, driven through the script itself."""
+"""Tests for plugins/agent-knowledge/hooks/claude_md.py, driven through the script itself."""
 
 from datetime import datetime
 
