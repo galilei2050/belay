@@ -1,0 +1,8 @@
+{
+  "name": "claude-md-hook",
+  "version": "0.1.0",
+  "description": "PostToolUse gate that keeps every CLAUDE.md on one skeleton: an auto-stamped `Updated:` date, mandatory Business decisions and Technical decisions sections, a 200-line limit, no dead paths, no decisions duplicated from a parent file. Ships the skill that writes to that skeleton and an audit CLI.",
+  "author": {
+    "name": "galilei2050"
+  }
+}
