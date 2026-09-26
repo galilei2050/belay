@@ -933,6 +933,14 @@
     "rules": [],
     "default": "allow"
   },
+  "nmap": {
+    "rules": [],
+    "default": "allow"
+  },
+  "nmcli": {
+    "rules": [],
+    "default": "allow"
+  },
   "chmod": {
     "rules": [],
     "default": "allow"
