@@ -256,14 +256,14 @@ PYTHON_C_INLINE_MAX = 200
 BACKGROUND_TIMEOUT_SECONDS = 1800
 
 
+def _has_flag(args: list[str], long: str, short: str) -> bool:
+    """True iff `args` hold `long`, or a short-flag cluster (`-rf`) containing any letter of `short`."""
+    return any(a == long or (a.startswith("-") and not a.startswith("--") and set(a[1:]) & set(short)) for a in args)
+
+
 def rm_recursive(args: list[str]) -> bool:
     """True iff `rm` was invoked with a recursive flag."""
-    for arg in args:
-        if arg == "--recursive":
-            return True
-        if arg.startswith("-") and not arg.startswith("--") and ("r" in arg or "R" in arg):
-            return True
-    return False
+    return _has_flag(args, "--recursive", "rR")
 
 
 def all_paths_inside_project(args: list[str]) -> bool:
@@ -769,6 +769,7 @@ def git_write_on_merged_branch(args: list[str]) -> bool:
 
 # `checkout` flags that mean "make a ref current", never "copy files over the working tree".
 _CHECKOUT_REF_FLAGS = {"-b", "-B", "--orphan", "--detach", "--track", "--no-track", "-t"}
+_CONFLICT_SIDE_FLAGS = {"--ours", "--theirs"}
 
 
 def _is_worktree_path(arg: str) -> bool:
@@ -782,6 +783,12 @@ def _is_worktree_path(arg: str) -> bool:
     return (Path(_INVOCATION["cwd"]) / arg).exists()
 
 
+def _has_conflict_markers(arg: str) -> bool:
+    """True iff `arg` is a file holding a `<<<<<<<` conflict marker — an unmerged path, read from disk."""
+    path = Path(_INVOCATION["cwd"]) / arg
+    return path.is_file() and any(line.startswith("<<<<<<< ") for line in path.read_text(errors="replace").splitlines())
+
+
 def git_discards_worktree_changes(args: list[str]) -> bool:
     """True iff a `git checkout`/`git restore` overwrites working-tree files with a committed version.
 
@@ -792,18 +799,27 @@ def git_discards_worktree_changes(args: list[str]) -> bool:
     refuses a switch that would clobber a modified file. `git restore --staged <path>` only rewrites
     the index, leaving the file on disk untouched, so it stays allowed too; `--worktree` alongside it
     puts the overwrite back.
+
+    `--ours`/`--theirs` pass only when every path still holds conflict markers: on a clean path git
+    ignores the flag and overwrites from the index like a bare checkout.
     """
     if not args:
         return False
     sub, rest = args[0], args[1:]
-    if sub == "restore":
-        staged_only = bool({"--staged", "-S"} & set(rest)) and not ({"--worktree", "-W"} & set(rest))
-        return not staged_only
-    if sub != "checkout" or set(rest) & _CHECKOUT_REF_FLAGS:
+    flags = set(rest)
+    if sub not in ("checkout", "restore") or flags & _CHECKOUT_REF_FLAGS:
         return False
-    if "--" in rest:
-        return bool(rest[rest.index("--") + 1 :])
-    return any(_is_worktree_path(a) for a in rest if not a.startswith("-"))
+    paths = rest[rest.index("--") + 1 :] if "--" in rest else [a for a in rest if not a.startswith("-")]
+    if flags & _CONFLICT_SIDE_FLAGS:
+        return not all(_has_conflict_markers(p) for p in paths)
+    if sub == "restore":
+        return not ({"--staged", "-S"} & flags) or bool({"--worktree", "-W"} & flags)
+    return bool(paths) if "--" in rest else any(_is_worktree_path(p) for p in paths)
+
+
+def git_rm_forced(args: list[str]) -> bool:
+    """True iff `git rm` is forced — the only form that deletes a file with uncommitted edits."""
+    return args[:1] == ["rm"] and _has_flag(args[1:], "--force", "f")
 
 
 _GCS_COPY_SUBCOMMANDS = (["storage", "cp"], ["storage", "rsync"])
@@ -837,6 +853,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "git_branch_off_stale_main": git_branch_off_stale_main,
     "git_write_on_merged_branch": git_write_on_merged_branch,
     "git_discards_worktree_changes": git_discards_worktree_changes,
+    "git_rm_forced": git_rm_forced,
     "any_path_under_git": any_path_under_git,
     "tee_writes_outside_project": tee_writes_outside_project,
 }

@@ -292,6 +292,10 @@ def test_merged_pr_lookup_fails_open_without_gh(monkeypatch, hook_log):
         "git restore app",
         "git restore .",
         "git restore --staged --worktree app",
+        "git checkout --ours app/main.py",  # no conflict markers: git overwrites from the index
+        "git checkout --ours .",
+        "git restore --theirs app",
+        "git checkout -m app/main.py",
     ],
 )
 def test_overwriting_the_working_tree_is_denied(cmd, fix_project_dir, logger):
@@ -309,10 +313,35 @@ def test_overwriting_the_working_tree_is_denied(cmd, fix_project_dir, logger):
         "git checkout --detach HEAD~3",
         "git switch main",
         "git restore --staged app",  # rewrites the index only; the file on disk is untouched
+        "git rm app/main.py",  # git refuses a modified file without -f
+        "git rm -r --cached app",
+        "git merge origin/main",
+        "git merge --abort",
+        "git merge-tree --write-tree origin/main HEAD",
+        "git rev-list --left-right --count origin/main...HEAD",
+        "git for-each-ref --format=%(refname:short) refs/heads",
+        "git check-ignore -v .scratch",
+        "git apply .scratch/fix.patch",
     ],
 )
 def test_switching_refs_and_unstaging_stay_allowed(cmd, logger):
     assert decide(cmd, logger)[0] == "allow"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    ["git checkout --ours app/main.py", "git checkout --theirs -- app/main.py", "git restore --theirs app/main.py"],
+)
+def test_taking_a_side_of_a_live_conflict_is_allowed(cmd, fix_project_dir, logger):
+    (fix_project_dir / "app" / "main.py").write_text("<<<<<<< HEAD\nx = 1\n=======\nx = 2\n>>>>>>> feat\n")
+    assert decide(cmd, logger)[0] == "allow"
+
+
+@pytest.mark.parametrize("cmd", ["git rm -f app/main.py", "git rm -rf app", "git rm --force app/main.py"])
+def test_forced_git_rm_is_denied(cmd, logger):
+    decision, reason = decide(cmd, logger)
+    assert decision == "deny"
+    assert "git rm --cached" in reason
 
 
 def test_dropping_a_stash_is_denied_but_reading_the_stack_is_not(logger):
