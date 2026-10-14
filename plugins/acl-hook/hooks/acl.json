@@ -62,7 +62,7 @@
       {
         "fn": "git_discards_worktree_changes",
         "decision": "deny",
-        "reason": "This overwrites working-tree files with a committed version, and whatever it overwrites was never committed or stashed — no reflog entry, no dangling object, nothing to recover from. It is the most-reported way an agent destroys a user's uncommitted work, and the tree you are about to revert holds their edits as well as yours. To unstage without touching the file: `git restore --staged <path>`. To undo an edit you made, edit it back with the Edit tool, which shows a diff. To see what would be lost: `git diff -- <path>`. Reverting the user's working tree is their call — leave the command to them."
+        "reason": "This overwrites working-tree files with a committed version, and whatever it overwrites was never committed or stashed — no reflog entry, no dangling object, nothing to recover from. It is the most-reported way an agent destroys a user's uncommitted work, and the tree you are about to revert holds their edits as well as yours. To unstage without touching the file: `git restore --staged <path>`; to untrack it: `git rm --cached <path>`. To resolve a merge conflict: `git checkout --ours|--theirs <path>`. To undo an edit you made, edit it back with the Edit tool, which shows a diff. To see what would be lost: `git diff -- <path>`. Reverting the user's working tree is their call — leave the command to them."
       },
       {
         "args": [
@@ -347,6 +347,48 @@
       {
         "args": [
           "merge-base"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "merge-tree"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "rev-list"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "for-each-ref"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "check-ignore"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "rm"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "apply"
         ],
         "decision": "allow",
         "reason": ""

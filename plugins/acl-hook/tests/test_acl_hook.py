@@ -292,6 +292,9 @@ def test_merged_pr_lookup_fails_open_without_gh(monkeypatch, hook_log):
         "git restore app",
         "git restore .",
         "git restore --staged --worktree app",
+        "git rm -f app/main.py",
+        "git rm -rf app",
+        "git rm --force app/main.py",
     ],
 )
 def test_overwriting_the_working_tree_is_denied(cmd, fix_project_dir, logger):
@@ -309,6 +312,18 @@ def test_overwriting_the_working_tree_is_denied(cmd, fix_project_dir, logger):
         "git checkout --detach HEAD~3",
         "git switch main",
         "git restore --staged app",  # rewrites the index only; the file on disk is untouched
+        "git checkout --ours app/main.py",  # resolves a conflict; `checkout -m` recreates it
+        "git checkout --theirs -- app/main.py",
+        "git restore --theirs app/main.py",
+        "git rm app/main.py",  # git refuses a modified file without -f
+        "git rm -r --cached app",
+        "git merge origin/main",
+        "git merge --abort",
+        "git merge-tree --write-tree origin/main HEAD",
+        "git rev-list --left-right --count origin/main...HEAD",
+        "git for-each-ref --format=%(refname:short) refs/heads",
+        "git check-ignore -v .scratch",
+        "git apply .scratch/fix.patch",
     ],
 )
 def test_switching_refs_and_unstaging_stay_allowed(cmd, logger):

@@ -769,6 +769,7 @@ def git_write_on_merged_branch(args: list[str]) -> bool:
 
 # `checkout` flags that mean "make a ref current", never "copy files over the working tree".
 _CHECKOUT_REF_FLAGS = {"-b", "-B", "--orphan", "--detach", "--track", "--no-track", "-t"}
+_CONFLICT_SIDE_FLAGS = {"--ours", "--theirs", "-m", "--merge"}
 
 
 def _is_worktree_path(arg: str) -> bool:
@@ -792,18 +793,25 @@ def git_discards_worktree_changes(args: list[str]) -> bool:
     refuses a switch that would clobber a modified file. `git restore --staged <path>` only rewrites
     the index, leaving the file on disk untouched, so it stays allowed too; `--worktree` alongside it
     puts the overwrite back.
+
+    `--ours`/`--theirs`/`--merge` resolve a merge conflict: the file holds conflict markers, not
+    the user's work, and `git checkout -m <path>` recreates the conflict. `git rm` refuses a
+    modified file unless forced, so only `-f` reaches uncommitted work.
     """
     if not args:
         return False
     sub, rest = args[0], args[1:]
-    if sub == "restore":
-        staged_only = bool({"--staged", "-S"} & set(rest)) and not ({"--worktree", "-W"} & set(rest))
-        return not staged_only
-    if sub != "checkout" or set(rest) & _CHECKOUT_REF_FLAGS:
+    if sub == "rm":
+        return any(a == "--force" or (a.startswith("-") and not a.startswith("--") and "f" in a) for a in rest)
+    if sub not in ("checkout", "restore") or set(rest) & (_CONFLICT_SIDE_FLAGS | _CHECKOUT_REF_FLAGS):
         return False
+    if sub == "restore":
+        return not ({"--staged", "-S"} & set(rest)) or bool({"--worktree", "-W"} & set(rest))
     if "--" in rest:
-        return bool(rest[rest.index("--") + 1 :])
-    return any(_is_worktree_path(a) for a in rest if not a.startswith("-"))
+        paths = rest[rest.index("--") + 1 :]
+    else:
+        paths = [a for a in rest if not a.startswith("-") and _is_worktree_path(a)]
+    return bool(paths)
 
 
 _GCS_COPY_SUBCOMMANDS = (["storage", "cp"], ["storage", "rsync"])
