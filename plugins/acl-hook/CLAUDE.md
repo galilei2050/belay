@@ -168,9 +168,12 @@ Two lines this class must keep holding:
   <branch>`, `-b`, and `git restore --staged` alone — git refuses a ref switch
   that would clobber a modified file, and `--staged` never touches the disk. A
   blanket deny on `checkout`/`restore` would take the agent's normal workflow
-  with it and get routed around. Same split keeps merge-conflict resolution
-  (`--ours`/`--theirs`/`-m`) and unforced `git rm` allowed, and denies `git rm -f`.
-  The predicate's docstring holds the detail.
+  with it and get routed around. The predicate's docstring holds the detail.
+- **`--ours`/`--theirs` pass only on a file that still holds `<<<<<<<` markers.**
+  On any other path git silently ignores the flag and overwrites from the index,
+  so the flag alone proves nothing — the check reads the file, not the command.
+  `-m`/`--merge` get no exemption. `git rm` is allowed; `git rm -f`
+  (`git_rm_forced`) is the form that drops uncommitted edits and is denied.
 - **`checkout` is path-mode iff the name exists on disk** — the same test git
   itself applies. Don't replace it with a flag list; `git checkout .` carries no
   flag at all.

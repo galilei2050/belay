@@ -62,7 +62,12 @@
       {
         "fn": "git_discards_worktree_changes",
         "decision": "deny",
-        "reason": "This overwrites working-tree files with a committed version, and whatever it overwrites was never committed or stashed — no reflog entry, no dangling object, nothing to recover from. It is the most-reported way an agent destroys a user's uncommitted work, and the tree you are about to revert holds their edits as well as yours. To unstage without touching the file: `git restore --staged <path>`; to untrack it: `git rm --cached <path>`. To resolve a merge conflict: `git checkout --ours|--theirs <path>`. To undo an edit you made, edit it back with the Edit tool, which shows a diff. To see what would be lost: `git diff -- <path>`. Reverting the user's working tree is their call — leave the command to them."
+        "reason": "This overwrites working-tree files with a committed version, and whatever it overwrites was never committed or stashed — no reflog entry, no dangling object, nothing to recover from. It is the most-reported way an agent destroys a user's uncommitted work, and the tree you are about to revert holds their edits as well as yours. To unstage without touching the file: `git restore --staged <path>`. `--ours`/`--theirs` pass only on files that still hold conflict markers. To undo an edit you made, edit it back with the Edit tool, which shows a diff. To see what would be lost: `git diff -- <path>`. Reverting the user's working tree is their call — leave the command to them."
+      },
+      {
+        "fn": "git_rm_forced",
+        "decision": "deny",
+        "reason": "`git rm -f` deletes a file together with its uncommitted edits — never committed, nothing to recover. Plain `git rm <path>` works for an unmodified file (git refuses a modified one, which is the point). To stop tracking but keep the file: `git rm --cached <path>`. To retire a modified file reversibly: `mv <path> .scratch/`. Dropping the user's uncommitted edits is their call — leave it to them."
       },
       {
         "args": [
