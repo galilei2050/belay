@@ -16,15 +16,13 @@ import json
 import re
 import sys
 
+from bash_command import blank_quotes
 from branch_state import next_step
 from nudges import NUDGES
 
 # A Bash call is a list of segments; each is judged on its own, so `git commit && git push
 # --dry-run` is a real commit next to a dry run rather than one ambiguous string.
 _SEGMENT_SPLIT_RE = re.compile(r"[;&|\n()]+")
-# Quoted spans are blanked before anything is read out of a segment: `--dry-run` inside a commit
-# message is prose, not a flag.
-_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
 # `-C dir` / `--git-dir` / `--work-tree` point git at a repository that is not the session's, and
 # the branch state we would report is this one's. Stay out of it.
 _OTHER_REPO_RE = re.compile(r"(?<![\w-])(?:-C|--git-dir|--work-tree)(?![\w-])")
@@ -35,7 +33,8 @@ _SUBCOMMAND_RES = {sub: re.compile(rf"^\s*git\b(?:\s+-{{1,2}}\S+(?:\s+\S+)?)*\s+
 
 def git_subcommands(command: str) -> set[str]:
     """Which of `commit` / `push` this Bash call really runs against the session's own repo."""
-    blanked = _QUOTED_RE.sub(lambda match: " " * len(match.group()), command)
+    # `--dry-run` inside a commit message is prose, not a flag.
+    blanked = blank_quotes(command)
     found: set[str] = set()
     for segment in _SEGMENT_SPLIT_RE.split(blanked):
         if _OTHER_REPO_RE.search(segment) or _DRY_RUN_RE.search(segment):
