@@ -392,6 +392,81 @@ def sed_inline_long(args: list[str]) -> bool:
     return False
 
 
+def _skip_delimited(script: str, i: int, delim: str) -> int:
+    """Index just past the closing `delim` of a sed regex/replacement starting at `i`."""
+    while i < len(script) and script[i] != delim:
+        if script[i] == "\\":
+            i += 1
+        elif script[i] == "[":  # an unescaped delim inside a bracket expression doesn't close it
+            i = script.find("]", i + 2) if script[i + 1 : i + 2] == "]" else script.find("]", i + 1)
+            if i == -1:
+                return len(script)
+        i += 1
+    return i + 1
+
+
+def _end_of_command(script: str, i: int, terminators: str) -> int:
+    while i < len(script) and script[i] not in terminators:
+        i += 1
+    return i
+
+
+class SedTransform(NamedTuple):
+    """Where an `s`/`y` command ends, and whether its flags run a command or write a file."""
+
+    end: int
+    reaches_outside: bool
+
+
+def _sed_transform_end(script: str, i: int) -> SedTransform:
+    """Skip the `s`/`y` command at `i`; also say whether `s` carries the `e` or `w` flag."""
+    delim = script[i + 1]
+    flags_start = _skip_delimited(script, _skip_delimited(script, i + 2, delim), delim)
+    flags_end = _end_of_command(script, flags_start, ";\n}")
+    return SedTransform(flags_end, script[i] == "s" and any(f in script[flags_start:flags_end] for f in "ew"))
+
+
+def _sed_script_reaches_outside(script: str) -> bool:
+    """True iff the sed script runs a shell command or reads/writes a file (e/r/R/w/W, s///e, s///w)."""
+    i = 0
+    while i < len(script):
+        c = script[i]
+        if c in "erRwW":
+            return True
+        if c in "/\\":  # regex address: /re/ or \%re%
+            delim = "/" if c == "/" else script[i + 1 : i + 2]
+            i = _skip_delimited(script, i + (1 if c == "/" else 2), delim)
+        elif c in "sy" and i + 1 < len(script):
+            i, reaches = _sed_transform_end(script, i)
+            if reaches:
+                return True
+        elif c in "aic:btT":  # text / label runs to the end of the command
+            i = _end_of_command(script, i, "\n;")
+        else:
+            i += 1
+    return False
+
+
+def sed_reaches_outside(args: list[str]) -> bool:
+    """True iff an un-sandboxed sed could execute a command or touch a file beyond its operands."""
+    if "--sandbox" in args:
+        return False
+    scripts: list[str] = []
+    rest = iter(args)
+    for arg in rest:
+        if arg in ("-f", "--file") or arg.startswith(("--file=", "-f")):
+            return True  # a script file can't be vetted from the command line
+        if arg in ("-e", "--expression"):
+            scripts.append(next(rest, ""))
+        elif arg.startswith("--expression="):
+            scripts.append(arg.split("=", 1)[1])
+        elif arg.startswith("-e"):
+            scripts.append(arg[2:])
+    if not scripts:
+        scripts = [a for a in args if not a.startswith("-")][:1]
+    return any(_sed_script_reaches_outside(s) for s in scripts)
+
+
 _GIT_CONFIG_WRITE_FLAGS = {
     "--add",
     "--unset",
@@ -855,6 +930,7 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "gcloud_storage_download": gcloud_storage_download,
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
+    "sed_reaches_outside": sed_reaches_outside,
     "rm_recursive": rm_recursive,
     "all_paths_inside_project": all_paths_inside_project,
     "all_paths_under_scratch": all_paths_under_scratch,

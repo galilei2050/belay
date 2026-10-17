@@ -709,6 +709,42 @@ def test_ssh_denies_what_the_acl_denies_locally(logger, cmd):
     assert decide(cmd, logger)[0] == "deny"
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "sed -n '1,20p' README.md",
+        "sed -i 's/error/warning/g' app/main.py",
+        "sed -e 's|/usr/bin|/bin|' -e '/^#/d' conf",
+        "sed -n '/^def /p' app/main.py",
+        "sed 's/[/]/x/' f",
+        "sed '/start/,/end/{s/a/b/;p}' f",
+        "sed -n '$p' f",
+        "sed --sandbox '1e id' f",
+    ],
+)
+def test_sed_text_transform_is_allowed(logger, cmd):
+    assert decide(cmd, logger)[0] == "allow"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "sed '1e rm -rf ~' f",
+        "sed 's/x/rm -rf ~/e' f",
+        "sed 's/x/y/w /tmp/out' f",
+        "sed -n 'w ~/.bashrc' f",
+        "sed '1r .env' f",
+        "sed '/x/R secrets' f",
+        "sed -e 's/a/b/' -e '$W out' f",
+        "sed --expression='1e id' f",
+        "sed -f script.sed f",
+        "sed 's/[/]/x/e' f",
+    ],
+)
+def test_sed_command_or_file_io_is_denied(logger, cmd):
+    assert decide(cmd, logger)[0] == "deny"
+
+
 def test_command_prefix_is_denied(logger):
     # `command git status` bypasses ACL routing — denied with directive message.
     assert decide("command git status", logger)[0] == "deny"

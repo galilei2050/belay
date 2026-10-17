@@ -866,6 +866,11 @@
         "reason": "Env files blocked"
       },
       {
+        "fn": "sed_reaches_outside",
+        "decision": "deny",
+        "reason": "This sed script runs a shell command or reads/writes a file of its own (`e`, `r`/`R`, `w`/`W`, or the `e`/`w` flag of `s`), which the ACL never sees. Add `--sandbox` (GNU sed then refuses those commands), read files with the Read tool, and write them with Edit/Write."
+      },
+      {
         "fn": "sed_inline_long",
         "decision": "deny",
         "reason": "`sed -i` expression too long (>300 chars) — use the Edit tool instead. Edit shows a diff, doesn't risk regex mishaps, and the change is reviewable. If you genuinely need a long regex replacement, split it into multiple short `sed -e` expressions or use Edit with the new content."
