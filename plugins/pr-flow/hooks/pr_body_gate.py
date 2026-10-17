@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 
 from bash_command import blank_quotes, shell_bodies
+from title_judge import rewrite
 
 _PR_CALL_RE = re.compile(r"\bgh\s+pr\s+(create|edit)\b")
 # Matched on the raw command: a body is quoted (`-f "body=…"`), and blanking would hide it.
@@ -33,6 +34,7 @@ _SEGMENT_END_RE = re.compile(r"&&|\|\||[;|\n]")
 # value is then read from the raw text at the same offset, quotes and spaces intact.
 _BODY_FILE_FLAG_RE = re.compile(r"(?<!\S)(?:--body-file|-F)(?=[=\s])")
 _FLAG_VALUE_RE = re.compile(r"(?:=|\s+)(\"[^\"]*\"|'[^']*'|\S+)")
+_TITLE_FLAG_RE = re.compile(r"(?<!\S)(?:--title|-t)(?=[=\s])")
 _INLINE_BODY_RE = re.compile(r"(?<!\S)(?:(?:--body|-b)(?:=|\s)|--fill\b)")
 
 _FENCE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
@@ -49,8 +51,8 @@ QUOTED_BULLETS = 3
 QUOTE_WIDTH = 100
 
 DENY_PREFIX = (
-    "PR body rejected — a reviewer cannot get the point of it in a minute. Rewrite the body file, "
-    "then rerun the same command. Do not route around this with `gh api` or the web UI: the body "
+    "PR rejected — a reviewer cannot get the point of it in a minute. Fix what is listed below, "
+    "then rerun the same command. Do not route around this with `gh api` or the web UI: the text "
     "is the problem, not the tool.\n\n"
 )
 NO_VISUAL = (
@@ -82,6 +84,12 @@ MISSING_FILE = (
     "The body file `{path}` does not exist at `{resolved}`. Write it with the Write tool in its own "
     "step, then rerun this command with an absolute path — a file created earlier in the same Bash "
     "call is not there yet when this check runs, and a `cd` in the command is not followed."
+)
+BAD_TITLE = (
+    "The title `{title}` needs the code to decode — its words only mean something inside the "
+    "codebase. Say which part of the product changes and how, in plain words. For example:\n"
+    '  --title "{better}"\n'
+    "That exact title is accepted as is; check it against the facts before you use it."
 )
 UNREADABLE = "The body file `{path}` cannot be read as UTF-8 text ({error}). Rewrite it with the Write tool."
 
@@ -143,18 +151,29 @@ def violations(body: str) -> list[str]:
     return found
 
 
+def flag_value(call: PrCall, flag_re: re.Pattern[str]) -> str | None:
+    """The flag's value with quotes stripped, `-` for a flag given no value, None when it is absent."""
+    flag = flag_re.search(call.blanked)
+    if flag is None:
+        return None
+    value = _FLAG_VALUE_RE.match(call.args, flag.end())
+    return value.group(1).strip("'\"") if value else "-"
+
+
+def _resolve(cwd: Path, path: str) -> Path:
+    return cwd / Path(os.path.expandvars(path)).expanduser()
+
+
 def body_problems(call: PrCall, cwd: Path) -> list[str]:
     """What is wrong with the body this one `gh pr` call would post; empty when it posts none."""
-    flag = _BODY_FILE_FLAG_RE.search(call.blanked)
-    if flag is None:
+    path = flag_value(call, _BODY_FILE_FLAG_RE)
+    if path is None:
         # A title, label or reviewer edit leaves the body alone; a create always posts one.
         posts_body = call.verb == "create" or _INLINE_BODY_RE.search(call.blanked)
         return [NOT_A_FILE.format(verb=call.verb)] if posts_body else []
-    value = _FLAG_VALUE_RE.match(call.args, flag.end())
-    path = value.group(1).strip("'\"") if value else "-"
     if path == "-":  # stdin, or a flag with no value at all
         return [NOT_A_FILE.format(verb=call.verb)]
-    file = cwd / Path(os.path.expandvars(path)).expanduser()
+    file = _resolve(cwd, path)
     if not file.is_file():
         return [MISSING_FILE.format(path=path, resolved=file)]
     try:
@@ -164,11 +183,25 @@ def body_problems(call: PrCall, cwd: Path) -> list[str]:
     return violations(body)
 
 
+def title_problems(call: PrCall, cwd: Path) -> list[str]:
+    """The model's verdict on this call's `--title`; run only once its body passed, since it costs a call."""
+    title = flag_value(call, _TITLE_FLAG_RE)
+    if title is None:
+        return []
+    path = flag_value(call, _BODY_FILE_FLAG_RE)
+    body = "" if path is None or path == "-" else _resolve(cwd, path).read_text(encoding="utf-8")
+    better = rewrite(title, body)
+    return [BAD_TITLE.format(title=title, better=better)] if better else []
+
+
 def problems(command: str, cwd: Path) -> list[str]:
-    """Everything wrong with the PR bodies this Bash command would post."""
+    """Everything wrong with the PR titles and bodies this Bash command would post."""
     if _API_WRITE_RE.search(command):
         return [API_WRITE]
-    return [problem for call in pr_calls(command) for problem in body_problems(call, cwd)]
+    found = []
+    for call in pr_calls(command):
+        found += body_problems(call, cwd) or title_problems(call, cwd)
+    return found
 
 
 def main() -> None:

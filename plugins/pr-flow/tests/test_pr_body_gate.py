@@ -4,6 +4,10 @@
 decisions, and checks full of commands. Every threshold is tested from both sides.
 """
 
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import pytest
 
 NARRATED = """## Defect
@@ -60,6 +64,46 @@ def bullets(coded: int, plain: int) -> str:
     lines = [f"- `Thing{n}.method` changed." for n in range(coded)]
     lines += [f"- A decision number {n} made for a stated reason." for n in range(plain)]
     return "## What changed\n\n" + "\n".join(lines) + "\n"
+
+
+class FakeMessagesApi:
+    """A local Messages API: records each request, answers with the `verdict` tool input it is set to."""
+
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+        self.verdict = {"passes": True, "rewrite": ""}
+        api = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                assert self.path == "/v1/messages"
+                assert self.headers["x-api-key"] == "test-key"
+                api.requests.append(json.loads(self.rfile.read(int(self.headers["content-length"]))))
+                reply = {"content": [{"type": "tool_use", "name": "verdict", "input": api.verdict}]}
+                payload = json.dumps(reply).encode()
+                self.send_response(200)
+                self.send_header("content-type", "application/json")
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A002 — the base's name
+                """Keep the test output clean of access-log lines."""
+
+        self.server = HTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_port}"
+
+
+@pytest.fixture(autouse=True)
+def api(monkeypatch):
+    """Every hook run in this file talks to the fake API, never to the real one."""
+    fake = FakeMessagesApi()
+    # The default 0.5 s poll is what `shutdown` waits on — half a second per test.
+    thread = threading.Thread(target=fake.server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+    thread.start()
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", fake.url)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    yield fake
+    fake.server.shutdown()
 
 
 @pytest.fixture
@@ -220,3 +264,43 @@ def test_a_body_file_that_is_not_text_is_denied_not_crashed_through(gate, tmp_pa
 )
 def test_calls_that_post_no_body_pass(gate, command):
     assert gate(command) is None
+
+
+JARGON = "Tasks agent: the agent decides a text's shop, or leaves it to both piles"
+PLAIN = "Customer texts to the Main line get a follow-up task"
+
+
+def test_a_title_that_needs_the_code_is_denied_with_a_rewrite(gate, api):
+    api.verdict = {"passes": False, "rewrite": PLAIN}
+    reason = reason_of(gate(f'gh pr create --title "{JARGON}" --body-file body.md', GOOD))
+    assert f"The title `{JARGON}` needs the code to decode" in reason
+    assert f'--title "{PLAIN}"' in reason
+    # The judge sees the title and the opening of the body it is meant to describe.
+    content = api.requests[0]["messages"][0]["content"]
+    assert content.startswith(f"Title: {JARGON}\n\nBody (opening):\n## What was wrong")
+    assert api.requests[0]["tool_choice"] == {"type": "tool", "name": "verdict"}
+
+
+def test_the_suggested_title_passes_without_asking_again(gate, api):
+    api.verdict = {"passes": False, "rewrite": PLAIN}
+    gate(f"gh pr create --title '{JARGON}' --body-file body.md", GOOD)
+    assert gate(f"gh pr create --title '{PLAIN}' --body-file body.md") is None
+    assert len(api.requests) == 1
+
+
+def test_a_plain_title_passes(gate, api):
+    assert gate(f'gh pr edit 12 -t "{PLAIN}"') is None
+    assert api.requests[0]["messages"][0]["content"] == f"Title: {PLAIN}\n\nBody (opening):\n"
+
+
+def test_the_title_is_not_judged_while_the_body_is_rejected(gate, api):
+    api.verdict = {"passes": False, "rewrite": PLAIN}
+    reason = reason_of(gate(f'gh pr create --title "{JARGON}" --body-file body.md', NARRATED))
+    assert "narrates the diff" in reason
+    assert "needs the code to decode" not in reason
+    assert api.requests == []
+
+
+def test_calls_without_a_title_do_not_reach_the_judge(gate, api):
+    assert gate("gh pr edit 12 --body-file body.md", GOOD) is None
+    assert api.requests == []
