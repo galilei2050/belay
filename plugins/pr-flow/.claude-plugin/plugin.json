@@ -1,6 +1,6 @@
 {
   "name": "pr-flow",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "A skill that writes PR descriptions a reviewer can act on, a CI script whose one backgroundable call takes a branch from a CI verdict through the merge to the deploy that ships it — GitHub Actions or Google Cloud Build — printing only the failing log, a PreToolUse hook that denies that wait in the foreground so it never freezes the session, another that denies a PR body with no comparison table or diagram, one that narrates the diff, or a title only the code can decode, and a PostToolUse hook that carries every commit through to a pushed branch, an open PR, a green CI and a change that is actually live by saying what the branch still owes, right after each commit and push.",
   "author": {
     "name": "galilei2050"
