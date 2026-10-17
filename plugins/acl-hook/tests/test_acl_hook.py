@@ -559,6 +559,61 @@ def test_split_chained_commands_splits_on_newline():
     assert acl_hook.split_chained_commands("ls -la\ngit status") == ["ls -la", "git status"]
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'grep -rn "permissionDecision\\"" plugins',
+        'grep -viE "LOGGER|_URL|WIDTH\\")" app',
+        "grep -n foo\\|bar file",
+        "find . -name '*.pyc' -exec ls {} \\;",
+        "find . \\( -name a -o -name b \\)",
+    ],
+)
+def test_backslash_escaped_quote_or_separator_does_not_split(logger, cmd):
+    assert acl_hook._decide(cmd, logger, "test")[0] == "allow"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "for f in $(find app -name '*.py' | sort); do wc -l $f; done",
+        "(ruff check app; echo done)",
+        "wc -l $(find app -name '*.py')",
+    ],
+)
+def test_substitution_and_subshell_bodies_are_checked_as_commands(logger, cmd):
+    assert acl_hook._decide(cmd, logger, "test")[0] == "allow"
+
+
+@pytest.mark.parametrize("cmd", ["echo $(sudo ls)", "(cd app && git push --force)", "ls \\; ; sudo ls"])
+def test_dangerous_command_inside_substitution_or_subshell_is_denied(logger, cmd):
+    assert acl_hook._decide(cmd, logger, "test")[0] == "deny"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "node --version",
+        'node "/home/u/.claude/plugins/cache/openai-codex/codex/1.0.6/scripts/codex-companion.mjs" task x',
+        "./node_modules/.bin/tsc --noEmit",
+        "./node_modules/.bin/esbuild src/a.ts --bundle --outdir=.scratch/out",
+        "comm -23 a.txt b.txt",
+        "od -c file",
+        "readlink -f /usr/bin/python3",
+    ],
+)
+def test_node_toolchain_and_readonly_utils_are_allowed(logger, cmd):
+    assert decide(cmd, logger)[0] == "allow"
+
+
+def test_npx_stays_ask_because_non_tty_npx_installs_from_network(logger):
+    assert decide("npx tsc --noEmit", logger)[0] == "ask"
+
+
+def test_printenv_stays_denied(logger):
+    assert decide("printenv ANTHROPIC_API_KEY", logger)[0] == "deny"
+
+
 # ── .git is off-limits to readers ────────────────────────────────────────────
 
 

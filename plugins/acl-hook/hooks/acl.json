@@ -526,9 +526,13 @@
   "xargs": {
     "rules": [],
     "default": "deny",
-    "reason": "xargs bypasses ACL. Use a `for` loop or run commands directly."
+    "reason": "xargs bypasses ACL: the command it runs is never checked. Use command substitution instead — `wc -l $(find app -name '*.py')` — or a `for` loop."
   },
   "python3": {
+    "rules": [],
+    "default": "allow"
+  },
+  "node": {
     "rules": [],
     "default": "allow"
   },
@@ -1008,6 +1012,14 @@
     "rules": [],
     "default": "allow"
   },
+  "tsc": {
+    "rules": [],
+    "default": "allow"
+  },
+  "esbuild": {
+    "rules": [],
+    "default": "allow"
+  },
   "isort": {
     "rules": [],
     "default": "allow"
@@ -1065,6 +1077,18 @@
     "default": "allow"
   },
   "wc": {
+    "rules": [],
+    "default": "allow"
+  },
+  "comm": {
+    "rules": [],
+    "default": "allow"
+  },
+  "od": {
+    "rules": [],
+    "default": "allow"
+  },
+  "readlink": {
     "rules": [],
     "default": "allow"
   },

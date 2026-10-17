@@ -154,31 +154,43 @@ class Span(NamedTuple):
     end: int
 
 
-def _separator_spans(command: str) -> Iterator[Span]:
-    r"""Yield every top-level `&&` / `;` / `|` / newline outside quotes as a Span.
-
-    A newline separates commands exactly like `;` does. Without it, `ls\ngit push --force` parsed as
-    one `ls` invocation with the rest as arguments — every line after the first went unchecked.
-    """
+def _syntax_indices(command: str) -> Iterator[int]:
+    """Indices of characters bash reads as syntax: outside quotes and not backslash-escaped."""
     in_single = in_double = False
     i = 0
     while i < len(command):
         c = command[i]
+        if c == "\\" and not in_single:
+            # `\"`, `\|`, `\;` are literal characters to bash, never a quote or a separator.
+            i += 2
+            continue
         if c == "'" and not in_double:
             in_single = not in_single
         elif c == '"' and not in_single:
             in_double = not in_double
         elif not (in_single or in_double):
-            if c in {"|", ";", "\n"}:
-                yield Span(i, i + 1)
-            elif c == "&" and command[i + 1 : i + 2] == "&":
-                yield Span(i, i + 2)
-                i += 1
+            yield i
         i += 1
 
 
+def _separator_spans(command: str) -> Iterator[Span]:
+    r"""Yield every unquoted `&&` / `;` / `|` / newline / `(` / `$(` / `)` as a Span.
+
+    Parens split so `$(…)` and `( … )` bodies are checked as commands, not as arguments of the outer one.
+    """
+    consumed = 0
+    for i in _syntax_indices(command):
+        if i < consumed:
+            continue
+        if command[i : i + 2] in {"&&", "$("}:
+            yield Span(i, i + 2)
+            consumed = i + 2
+        elif command[i] in "|;\n()":
+            yield Span(i, i + 1)
+
+
 def split_chained_commands(command: str) -> list[str]:
-    """Split a Bash command on top-level `&&`, `;`, `|`, newline — respecting quotes."""
+    """Split a Bash command at every `_separator_spans` separator — respecting quotes and backslashes."""
     pieces: list[str] = []
     cursor = 0
     for start, end in _separator_spans(command):
