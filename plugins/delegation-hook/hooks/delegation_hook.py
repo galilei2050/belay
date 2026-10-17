@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Delegation gate for Claude Code subagents — background only, under hard tool-call and time budgets.
+"""Delegation gate for Claude Code subagents — background only, under hard context and time budgets.
 
 Two ways handing work to a subagent goes wrong, one plugin:
 
@@ -9,7 +9,7 @@ Two ways handing work to a subagent goes wrong, one plugin:
   without anyone waiting for it, and several agents can run at once. Denied at the `Agent` call,
   where dropping `run_in_background: false` fixes it.
 * **Oversized.** An open-ended slice makes the subagent grind: it keeps exploring, its window fills
-  with its own tool output, and it answers from that. Bounded on both axes — `BUDGET` tool calls and
+  with its own tool output, and it answers from that. Bounded on both axes — `CONTEXT_BUDGET` tokens and
   `TIME_BUDGET_SECONDS` of wall-clock — with tools cut off at either limit, which forces an answer
   from what it already has and names what it missed.
 
@@ -31,18 +31,17 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
-# 30 comes from the user. Measured against 59 real subagent runs on this machine (2026-08-22):
-# median 18 tool calls, p90 38, max 58 — so it cuts the slowest ~19%, which is the population that
-# bogs down. A truncated agent still reports; an unbounded one still hasn't answered.
-BUDGET = 30
+# 250k tokens comes from the user. Of 989 subagents (Sep to Oct 2026) the old 30-call cap stopped 44,
+# at a median 124k context and none above 250k; startup alone is ~67k. Context, not calls, is
+# what degrades an answer — 30 cheap Greps and 30 full-file Reads are not the same spend.
+CONTEXT_BUDGET = 250_000
 
-# Warn only once the end is close enough to change behaviour. Earlier is noise in every subagent's
-# context; later leaves no room to converge.
-WARN_FROM = 20
+# Warn with ~50k left: enough room to stop reading and write, too late to start another sweep.
+CONTEXT_WARN_FROM = 200_000
 
 # 7 minutes comes from the user. Measured against 727 real subagent runs on this machine
-# (2026-08-22): median 3.7 min, p90 14.2 min — so it cuts the slowest ~23%, the same population the
-# call budget targets from the other axis: few slow calls instead of many fast ones. Wall-clock, so
+# (2026-08-22): median 3.7 min, p90 14.2 min — so it cuts the slowest ~23%: slow calls that grow
+# the context little but still keep the caller waiting. Wall-clock, so
 # a machine suspend mid-run spends it; an agent resumed hours later is told to wrap up, not to
 # resume grinding.
 TIME_BUDGET_MINUTES = 7
@@ -68,16 +67,17 @@ _FOREGROUND_DENIED = (
 )
 
 _SLICE_THE_TASK = (
-    f"This subagent gets {BUDGET} tool calls and {TIME_BUDGET_MINUTES} minutes. At either "
-    "limit its tools are blocked and it has to answer from whatever it has by then, so the slice "
-    "has to fit the budget:\n"
+    f"This subagent gets {CONTEXT_BUDGET // 1000}k tokens of context and {TIME_BUDGET_MINUTES} "
+    "minutes. Its startup (system prompt, rules) already takes ~70k, so ~180k is left for what it "
+    "reads. At either limit its tools are blocked and it has to answer from whatever it has by "
+    "then, so the slice has to fit the budget:\n"
     '- One named deliverable per agent. "Investigate X" has no end; "read A, B and C, answer Q" does.\n'
     "- Hand over what you already know — exact paths, symbols, commands — so its budget goes on "
     "reading, not on re-discovering what you could have told it.\n"
     "- Scout yourself, delegate the reading: locating the files costs you a few calls and costs it "
     "most of its budget.\n"
-    f"- Work worth more than ~{BUDGET} calls is several agents with one slice each, not one agent told "
-    "to hurry.\n"
+    "- Work that reads more than ~180k tokens is several agents with one slice each, not one agent "
+    "told to hurry. Point it at line ranges and grep hits, not whole large files.\n"
     "You own what comes back. An agent that answers only part of its slice hit a budget you were "
     "handed before you sized the work, so a short answer is your slicing, not the agent falling "
     "short — never report it as the agent's. Name the remainder, dispatch a right-sized agent for "
@@ -102,7 +102,7 @@ _WRAP_UP = (
     "to, so the caller can send a follow-up agent for exactly those."
 )
 
-_BUDGET_SPENT = f"Your tool-call budget is spent ({BUDGET} calls) — {_WRAP_UP}"
+_CONTEXT_SPENT = f"Your context budget is spent ({CONTEXT_BUDGET // 1000}k tokens) — {_WRAP_UP}"
 
 _TIME_SPENT = f"Your wall-clock budget is spent ({TIME_BUDGET_MINUTES} minutes) — {_WRAP_UP}"
 
@@ -164,6 +164,26 @@ def record_call(agent_id: str) -> Spend:
     return Spend(used, float(record.decode("ascii")) - started)
 
 
+def agent_transcript(data: dict[str, object], agent_id: str) -> Path:
+    """The subagent's own transcript, which sits beside the parent session's `transcript_path`."""
+    parent = Path(str(data["transcript_path"]))
+    return parent.parent / parent.stem / "subagents" / f"agent-{agent_id}.jsonl"
+
+
+def context_tokens(transcript: Path) -> int:
+    """Tokens the agent's latest model call carried; 0 before its first call is written."""
+    for line in reversed(transcript.read_text(encoding="utf-8").splitlines()):
+        entry = json.loads(line)
+        usage = entry["message"].get("usage") if entry.get("type") == "assistant" else None
+        if usage:
+            return int(
+                usage["input_tokens"]
+                + usage.get("cache_read_input_tokens", 0)
+                + usage.get("cache_creation_input_tokens", 0)
+            )
+    return 0
+
+
 class Verdict(NamedTuple):
     """What this hook has to say about one tool call: at most one deny, any number of nudges."""
 
@@ -192,16 +212,17 @@ def judge(data: dict[str, object]) -> Verdict:
 
     agent_id = data.get("agent_id")
     if isinstance(agent_id, str):  # absent in the main thread — the budgets are a subagent rule
-        used, elapsed = record_call(agent_id)
-        if used > BUDGET:
-            deny = _BUDGET_SPENT
+        elapsed = record_call(agent_id).elapsed_seconds
+        tokens = context_tokens(agent_transcript(data, agent_id))
+        if tokens > CONTEXT_BUDGET:
+            deny = _CONTEXT_SPENT
         elif elapsed > TIME_BUDGET_SECONDS:
             deny = _TIME_SPENT
-        elif used >= WARN_FROM or elapsed >= TIME_WARN_FROM_SECONDS:
+        elif tokens >= CONTEXT_WARN_FROM or elapsed >= TIME_WARN_FROM_SECONDS:
             context.append(
-                f"Budget: {used}/{BUDGET} tool calls and {elapsed / 60:.1f}/{TIME_BUDGET_MINUTES} "
-                "minutes used. At either limit every tool is blocked and you answer from what you "
-                "have — stop widening the search, start writing."
+                f"Budget: {tokens // 1000}k/{CONTEXT_BUDGET // 1000}k tokens of context and "
+                f"{elapsed / 60:.1f}/{TIME_BUDGET_MINUTES} minutes used. At either limit every tool "
+                "is blocked and you answer from what you have — stop widening the search, start writing."
             )
     return Verdict(deny, context)
 

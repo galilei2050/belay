@@ -22,7 +22,7 @@ a climber when they fall. These plugins are the belay for the agent.
 | [branch-guard-hook](plugins/branch-guard-hook) | PreToolUse | Denies file edits while `main`/`master` is checked out — branch first |
 | [comment-guard-hook](plugins/comment-guard-hook) | PreToolUse | Caps a Python function or class docstring at 3 lines — it says how to call the thing and what you get back, the essay goes elsewhere |
 | [no-shirk-hook](plugins/no-shirk-hook) | Stop | Blocks ending a turn with an ask-instead-of-do question |
-| [delegation-hook](plugins/delegation-hook) | PreToolUse | Subagents run in the background only, so the session is never frozen waiting for one, and each gets a 30 tool-call / 7-minute budget before its tools are cut off |
+| [delegation-hook](plugins/delegation-hook) | PreToolUse | Subagents run in the background only, so the session is never frozen waiting for one, and each gets a 250k-token context / 7-minute budget before its tools are cut off |
 | [review-panel](plugins/review-panel) | Agents + PreToolUse | Dispatches eight read-only reviewer subagents (correctness, integration, test integrity, explicitness, DRY, bloat, SOLID, comments) over every commit of 64+ changed lines |
 | [deep-investigation](plugins/deep-investigation) | Skill + agents | Answers a why-question by building the whole hypothesis tree first, then falsifying branches until the verified mechanisms add up to the observed effect |
 | [usable-ui](plugins/usable-ui) | Skill + agents + PreToolUse | Decides UI wording, control, placement and states while UI is written, then dispatches five read-only UI reviewers (copy, control, layout, state, a11y) over the commit |
