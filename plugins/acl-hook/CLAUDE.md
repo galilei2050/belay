@@ -325,6 +325,13 @@ script as if typed directly. So `bash -c 'git status'` → allow, `bash -c 'rm -
 /etc'` → deny. This keeps smuggling blocked while letting the bounded
 `timeout … bash -c '…'` form (and simple literal scripts) through.
 
+`ssh` is the same idea one hop away: `ssh` itself is `allow`, and `_extract_ssh_remote` pulls
+out the remote command, which then goes through the full pipeline as if typed locally —
+`ssh vm 'git status'` → allow, `ssh vm 'sudo reboot'` → deny. A remote command with `$`/backtick
+is denied (can't be vetted). The ssh flags are checked first: `ProxyCommand` / `LocalCommand`
+run a *local* command the ACL never sees, so they're denied in `acl.json`. Path-based rules
+resolve against the local project, so a remote `rm` is denied — conservative on purpose.
+
 ## `rm`: allowed only in the scratch dir, never `ask`
 
 `rm` has exactly two outcomes — `allow` inside the scratch dir `.scratch/`,

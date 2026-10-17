@@ -681,6 +681,34 @@ def test_bash_subshell_is_denied(logger):
     assert decide("bash -c 'cat .env'", logger)[0] == "deny"
 
 
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "ssh vm 'git status'",
+        "ssh -t vm cat ~/.claude/settings.json",
+        "ssh -p 2222 -i ~/.ssh/id vm 'ls ~/.claude && tach check'",
+        "ssh vm",
+    ],
+)
+def test_ssh_allows_what_the_acl_allows_locally(logger, cmd):
+    assert decide(cmd, logger)[0] == "allow"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "ssh vm 'sudo reboot'",
+        "ssh vm 'git status && git push --force'",
+        "ssh -o User=x vm 'cat .env'",
+        "ssh vm 'echo $HOME'",
+        "ssh -o ProxyCommand='rm -rf ~' vm",
+        "ssh -oLocalCommand=curl vm 'ls'",
+    ],
+)
+def test_ssh_denies_what_the_acl_denies_locally(logger, cmd):
+    assert decide(cmd, logger)[0] == "deny"
+
+
 def test_command_prefix_is_denied(logger):
     # `command git status` bypasses ACL routing — denied with directive message.
     assert decide("command git status", logger)[0] == "deny"

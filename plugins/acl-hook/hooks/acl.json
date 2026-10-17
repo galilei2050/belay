@@ -1012,6 +1012,21 @@
     "rules": [],
     "default": "allow"
   },
+  "ssh": {
+    "rules": [
+      {
+        "args_glob": "*[Pp]roxy[Cc]ommand*",
+        "decision": "deny",
+        "reason": "ProxyCommand runs an arbitrary LOCAL command the ACL never sees. Use `-J <jump-host>` for a jump host, or a Host entry in ~/.ssh/config."
+      },
+      {
+        "args_glob": "*[Ll]ocal[Cc]ommand*",
+        "decision": "deny",
+        "reason": "LocalCommand runs an arbitrary LOCAL command the ACL never sees. Run that command as its own Bash call before or after the ssh."
+      }
+    ],
+    "default": "allow"
+  },
   "mypy": {
     "rules": [],
     "default": "allow"

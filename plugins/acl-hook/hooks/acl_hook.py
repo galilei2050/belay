@@ -1071,6 +1071,33 @@ def _extract_shell_c(command: str) -> str | None:
     return script
 
 
+# ssh(1) options that consume the next token; every other `-x` is a bare flag.
+_SSH_FLAGS_WITH_VALUE = set("BbcDEeFIiJLlmOoPpQRSWw")
+_SSH_REMOTE_NOT_LITERAL = (
+    "The remote command passed to ssh contains `$` or a backtick, so the ACL can't vet what "
+    "will actually run there. Write it fully literal (`~` instead of `$HOME`), or run each step "
+    "as its own `ssh <host> '<cmd>'` call."
+)
+
+
+def _extract_ssh_remote(command: str) -> str | None:
+    """The command `ssh [opts] <host> <cmd…>` runs on the remote host, or None (not ssh / no command).
+
+    ssh joins the trailing args with spaces and hands them to the remote shell, so the join is
+    what gets vetted.
+    """
+    try:
+        parts = _strip_timeout(_strip_wrapper(_strip_env_assignments(shlex.split(command))))
+    except ValueError:
+        return None
+    if not parts or Path(parts[0]).name != "ssh":
+        return None
+    rest = parts[1:]
+    while rest and rest[0].startswith("-"):
+        rest = rest[2:] if rest[0][1:] in _SSH_FLAGS_WITH_VALUE else rest[1:]
+    return " ".join(rest[1:]) or None
+
+
 def _is_claude_script(command: str) -> bool:
     return (
         fnmatch(command, ".claude/skills/*/*.py")
@@ -1149,6 +1176,15 @@ def check_command(cmd_str: str, logger: logging.Logger, *, agent_type: str) -> D
         verdict, reason = _decide(script, logger, agent_type)
         logger.info('decision=%s command="%s" matched=shell_c_recurse agent=%s', verdict, for_log(cmd_str), agent_type)
         return verdict, reason, "shell_c_recurse"
+    remote = _extract_ssh_remote(cmd_str)
+    if remote is not None and _classify(cmd_str)[0] == "allow":
+        # ssh itself is fine; what it runs on the host gets the same rules as a local command.
+        if "$" in remote or "`" in remote:
+            verdict, reason = "deny", _SSH_REMOTE_NOT_LITERAL
+        else:
+            verdict, reason = _decide(remote, logger, agent_type)
+        logger.info('decision=%s command="%s" matched=ssh_recurse agent=%s', verdict, for_log(cmd_str), agent_type)
+        return verdict, reason, "ssh_recurse"
     decision = _classify(cmd_str)
     verdict, _, detail = decision
     logger.info('decision=%s command="%s" matched=%s agent=%s', verdict, for_log(cmd_str), detail, agent_type)
