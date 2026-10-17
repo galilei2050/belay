@@ -681,32 +681,84 @@ def test_bash_subshell_is_denied(logger):
     assert decide("bash -c 'cat .env'", logger)[0] == "deny"
 
 
+def rule_reason(program, fn):
+    return next(rule["reason"] for rule in acl_hook.acl()[program]["rules"] if rule.get("fn") == fn)
+
+
 @pytest.mark.parametrize(
     "cmd",
     [
         "ssh vm 'git status'",
         "ssh -t vm cat ~/.claude/settings.json",
         "ssh -p 2222 -i ~/.ssh/id vm 'ls ~/.claude && tach check'",
-        "ssh vm",
+        "ssh -o User=x -o ConnectTimeout=5 vm 'git status'",
+        "ssh -tp 22 vm 'git status'",
+        "ssh vm -p 22 'git status'",
+        "ssh -- vm git status",
     ],
 )
-def test_ssh_allows_what_the_acl_allows_locally(logger, cmd):
-    assert decide(cmd, logger)[0] == "allow"
+def test_ssh_remote_command_allowed_locally_is_allowed(logger, cmd):
+    assert check_command(cmd, logger, agent_type="subagent")[::2] == ("allow", "ssh_recurse")
+
+
+@pytest.mark.parametrize(
+    ("cmd", "remote"),
+    [
+        ("ssh vm 'sudo reboot'", "sudo reboot"),
+        ("ssh vm 'git status && git push --force'", "git status && git push --force"),
+        ("ssh -o User=x vm 'cat .env'", "cat .env"),
+        # -l takes a value even inside a cluster: the host here is `echo`, the command `rm -rf ~`.
+        ("ssh -vl u echo rm -rf ~", "rm -rf ~"),
+        ("ssh -- vm sudo reboot", "sudo reboot"),
+    ],
+)
+def test_ssh_remote_command_gets_the_local_verdict(logger, cmd, remote):
+    verdict, reason, matched = check_command(cmd, logger, agent_type="subagent")
+    assert (verdict, reason, matched) == ("deny", decide(remote, logger)[1], "ssh_recurse")
 
 
 @pytest.mark.parametrize(
     "cmd",
     [
-        "ssh vm 'sudo reboot'",
-        "ssh vm 'git status && git push --force'",
-        "ssh -o User=x vm 'cat .env'",
-        "ssh vm 'echo $HOME'",
-        "ssh -o ProxyCommand='rm -rf ~' vm",
-        "ssh -oLocalCommand=curl vm 'ls'",
+        "ssh -o ProxyCommand='rm -rf ~' vm ls",
+        "ssh -o PROXYCOMMAND=id vm ls",
+        "ssh -oLocalCommand=curl vm ls",
+        "ssh -o RemoteCommand=id vm ls",
+        "ssh -o KnownHostsCommand=id vm ls",
+        "ssh -o 'Match exec id' vm ls",
+        "ssh -o Include=/tmp/conf vm ls",
+        "ssh -o SetEnv=BASH_ENV=/tmp/x vm ls",
+        "ssh vm -o ProxyCommand=id ls",
+        "ssh -F /tmp/conf vm ls",
+        "ssh -E ~/.bashrc vm ls",
+        "ssh -I /tmp/lib.so vm ls",
+        "ssh -Z vm ls",
     ],
 )
-def test_ssh_denies_what_the_acl_denies_locally(logger, cmd):
-    assert decide(cmd, logger)[0] == "deny"
+def test_ssh_option_that_runs_local_code_is_denied(logger, cmd):
+    assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_runs_local_code"))
+
+
+@pytest.mark.parametrize("cmd", ["ssh vm 'echo $HOME'", "ssh vm 'cat `id`'"])
+def test_ssh_remote_command_with_expansion_is_denied(logger, cmd):
+    assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_remote_not_literal"))
+
+
+@pytest.mark.parametrize("cmd", ["ssh vm", "ssh -t vm"])
+def test_ssh_without_remote_command_is_denied(logger, cmd):
+    assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_without_remote_command"))
+
+
+def test_ssh_fed_a_script_on_stdin_is_denied_via_main(monkeypatch, capsys):
+    # With no command ssh runs a shell on the host fed from stdin, which the ACL never sees.
+    out_hook = via_main(monkeypatch, capsys, "echo 'rm -rf ~' | ssh vm")["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "deny"
+    assert out_hook["permissionDecisionReason"] == rule_reason("ssh", "ssh_without_remote_command")
+
+
+@pytest.mark.parametrize("cmd", ["ssh -N -L 8080:localhost:80 vm", "ssh -O exit vm", "ssh -G vm"])
+def test_ssh_with_nothing_to_run_remotely_is_allowed(logger, cmd):
+    assert decide(cmd, logger) == ("allow", "")
 
 
 @pytest.mark.parametrize(
@@ -714,16 +766,28 @@ def test_ssh_denies_what_the_acl_denies_locally(logger, cmd):
     [
         "sed -n '1,20p' README.md",
         "sed -i 's/error/warning/g' app/main.py",
+        "sed -i.bak -E 's/a+/b/2gp' f",
         "sed -e 's|/usr/bin|/bin|' -e '/^#/d' conf",
         "sed -n '/^def /p' app/main.py",
         "sed 's/[/]/x/' f",
+        "sed 's/[/]/we/' f",
+        "sed 's/[[:alpha:]/]/Z/' f",
         "sed '/start/,/end/{s/a/b/;p}' f",
         "sed -n '$p' f",
+        "sed '1!G;h;$!d' f",
+        "sed 'y/abc/xyz/' f",
+        "sed '/x/I d' f",
+        "sed ':top;s/aa/a/;t top' f",
+        "sed '1i hello world' f",
+        "sed '1a note; e id' f",
+        "sed '# e id' f",
+        "sed --posix -s -n p f",
         "sed --sandbox '1e id' f",
+        "sed -e 'e id' f --sandbox",
     ],
 )
 def test_sed_text_transform_is_allowed(logger, cmd):
-    assert decide(cmd, logger)[0] == "allow"
+    assert decide(cmd, logger) == ("allow", "")
 
 
 @pytest.mark.parametrize(
@@ -736,13 +800,27 @@ def test_sed_text_transform_is_allowed(logger, cmd):
         "sed '1r .env' f",
         "sed '/x/R secrets' f",
         "sed -e 's/a/b/' -e '$W out' f",
-        "sed --expression='1e id' f",
-        "sed -f script.sed f",
         "sed 's/[/]/x/e' f",
+        # a `[` outside a regex is an ordinary character, not the start of a bracket expression
+        "sed 's/a/[/;e touch x' f",
+        "sed 'y/a[/bc/;e id' f",
+        # options read the way getopt reads them
+        "sed --expression='1e id' f",
+        "sed --expr='1e id' f",
+        "sed -l 5 'e id' f",
+        "sed -ne 'e id' f",
+        "sed -e 'e id' -- --sandbox f",
+        # a script the check can't see or doesn't follow
+        "sed -f script.sed f",
+        "sed -nf script.sed f",
+        "sed --fil=script.sed f",
+        "sed --bogus 'p' f",
+        "sed 's/a/b' f",
+        "sed 'v' f",
     ],
 )
-def test_sed_command_or_file_io_is_denied(logger, cmd):
-    assert decide(cmd, logger)[0] == "deny"
+def test_sed_command_file_io_or_unreadable_script_is_denied(logger, cmd):
+    assert decide(cmd, logger) == ("deny", rule_reason("sed", "sed_reaches_outside"))
 
 
 def test_command_prefix_is_denied(logger):
@@ -1251,6 +1329,14 @@ def test_bash_c_hidden_loop_is_denied_via_main(monkeypatch, capsys):
     # A loop smuggled through bash -c (no timeout) is still seen — closes the B-opens-a-hole gap.
     out = via_main(monkeypatch, capsys, "bash -c 'until false; do sleep 2; done'")
     assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_ssh_hidden_loop_is_denied_via_main(monkeypatch, capsys):
+    # The remote command is a script too; polling over ssh is the same wait.
+    out = via_main(monkeypatch, capsys, "ssh vm 'until test -f done; do sleep 5; done'")
+    out_hook = out["hookSpecificOutput"]
+    assert out_hook["permissionDecision"] == "deny"
+    assert "Monitor" in out_hook["permissionDecisionReason"]
 
 
 # ── sed -i inline length cap ─────────────────────────────────────────────────

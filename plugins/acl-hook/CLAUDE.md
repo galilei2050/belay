@@ -318,19 +318,42 @@ the load-bearing part, not the matcher.
 ## `bash -c '<literal>'` is recursed, not blanket-denied
 
 `bash`/`sh` stay `deny` by default, but `check_command` first calls
-`_extract_shell_c`: for the exact `<shell> -c '<script>'` shape with a
+`_inner_script`: for the exact `<shell> -c '<script>'` shape with a
 **fully-literal** script (no `$…`/backtick — those are non-literal and can't be
 statically vetted, so they keep the deny), it re-runs the full pipeline on the
 script as if typed directly. So `bash -c 'git status'` → allow, `bash -c 'rm -rf
 /etc'` → deny. This keeps smuggling blocked while letting the bounded
 `timeout … bash -c '…'` form (and simple literal scripts) through.
 
-`ssh` is the same idea one hop away: `ssh` itself is `allow`, and `_extract_ssh_remote` pulls
-out the remote command, which then goes through the full pipeline as if typed locally —
-`ssh vm 'git status'` → allow, `ssh vm 'sudo reboot'` → deny. A remote command with `$`/backtick
-is denied (can't be vetted). The ssh flags are checked first: `ProxyCommand` / `LocalCommand`
-run a *local* command the ACL never sees, so they're denied in `acl.json`. Path-based rules
-resolve against the local project, so a remote `rm` is denied — conservative on purpose.
+`ssh` is the same idea one hop away. ssh's own rules in `acl.json` run first, then
+`_inner_script` hands the remote command to the full pipeline as if typed locally —
+`ssh vm 'git status'` → allow, `ssh vm 'sudo reboot'` → deny. The wait-loop deny sees through
+both hops the same way. `SshCommandLine` reads argv as OpenSSH's getopt does (clusters like
+`-vl u`, options after the host, `--`), and the ssh rules deny:
+
+- an option that runs or loads code locally: `-F`/`-I`/`-E`, an unknown flag, or any `-o`
+  keyword outside `_SSH_SAFE_OPTIONS`. It's an allowlist because the list of keywords that
+  run code (ProxyCommand, LocalCommand, Match exec, PKCS11Provider, XAuthLocation, …) keeps
+  growing, and a denylist misses the next one;
+- a remote command with `$`/backtick (can't be vetted);
+- ssh with no remote command (unless `-N`/`-O`/`-G`/`-V`/`-W`): the remote shell then runs
+  whatever reaches stdin, e.g. `echo 'rm -rf ~' | ssh vm`.
+
+Path-based rules resolve against the local project, so a remote `rm` is allowed only when
+its paths happen to fall under the local `.scratch/`. Otherwise it's denied, deliberately
+erring strict.
+
+## sed: allowed unless it leaves the text stream
+
+`sed` is default `allow`, but GNU sed can run commands (`e`, the `e` flag of `s`) and read
+or write arbitrary files (`r`/`R`/`w`/`W`, the `w` flag). `sed_reaches_outside` denies
+those unless `--sandbox` is set, since sed then refuses them itself. `SedCommandLine` reads
+argv the way getopt does: clusters, unique long-option prefixes, and options after operands.
+`SedScript` parses the script the way sed does, including bracket expressions, text
+commands that run to the end of the line, and labels. Both **fail closed**: a `-f` script
+file, an unknown option, or syntax the scanner can't place counts as reaching outside. When
+extending it, verify against real sed: under `sed --sandbox` an e/r/w command is a parse
+error, so it is the ground truth.
 
 ## `rm`: allowed only in the scratch dir, never `ask`
 

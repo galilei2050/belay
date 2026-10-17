@@ -392,79 +392,326 @@ def sed_inline_long(args: list[str]) -> bool:
     return False
 
 
-def _skip_delimited(script: str, i: int, delim: str) -> int:
-    """Index just past the closing `delim` of a sed regex/replacement starting at `i`."""
-    while i < len(script) and script[i] != delim:
-        if script[i] == "\\":
-            i += 1
-        elif script[i] == "[":  # an unescaped delim inside a bracket expression doesn't close it
-            i = script.find("]", i + 2) if script[i + 1 : i + 2] == "]" else script.find("]", i + 1)
-            if i == -1:
-                return len(script)
-        i += 1
-    return i + 1
+class _UnsafeSedError(Exception):
+    """Raised by `SedScript` on a command that leaves sed, or on anything it can't read."""
 
 
-def _end_of_command(script: str, i: int, terminators: str) -> int:
-    while i < len(script) and script[i] not in terminators:
-        i += 1
-    return i
+# sed commands that take no argument, or only a number (`l`, `L`, `q`, `Q`).
+_SED_PLAIN = set("=dDgGhHlLnNpPxzFqQ")
+_SED_S_FLAGS = "gpiImM0123456789"
 
 
-class SedTransform(NamedTuple):
-    """Where an `s`/`y` command ends, and whether its flags run a command or write a file."""
+class SedScript:
+    """A GNU sed script read command by command, the way sed parses it.
 
-    end: int
-    reaches_outside: bool
+    Fail-closed: whatever the scanner can't place — an unknown command, an unterminated `s`,
+    a stray character after a command — counts as reaching outside.
+    """
 
+    def __init__(self, text: str) -> None:
+        """Hold `text` with the read cursor at its start."""
+        self._text = text
+        self._at = 0
 
-def _sed_transform_end(script: str, i: int) -> SedTransform:
-    """Skip the `s`/`y` command at `i`; also say whether `s` carries the `e` or `w` flag."""
-    delim = script[i + 1]
-    flags_start = _skip_delimited(script, _skip_delimited(script, i + 2, delim), delim)
-    flags_end = _end_of_command(script, flags_start, ";\n}")
-    return SedTransform(flags_end, script[i] == "s" and any(f in script[flags_start:flags_end] for f in "ew"))
-
-
-def _sed_script_reaches_outside(script: str) -> bool:
-    """True iff the sed script runs a shell command or reads/writes a file (e/r/R/w/W, s///e, s///w)."""
-    i = 0
-    while i < len(script):
-        c = script[i]
-        if c in "erRwW":
+    def reaches_outside(self) -> bool:
+        """True if the script may run a shell command or touch a file (e/r/R/w/W, `s///e`, `s///w`)."""
+        try:
+            while self._skip(" \t\n;}") < len(self._text):
+                self._command()
+        except _UnsafeSedError:
             return True
-        if c in "/\\":  # regex address: /re/ or \%re%
-            delim = "/" if c == "/" else script[i + 1 : i + 2]
-            i = _skip_delimited(script, i + (1 if c == "/" else 2), delim)
-        elif c in "sy" and i + 1 < len(script):
-            i, reaches = _sed_transform_end(script, i)
-            if reaches:
-                return True
-        elif c in "aic:btT":  # text / label runs to the end of the command
-            i = _end_of_command(script, i, "\n;")
+        return False
+
+    def _peek(self) -> str:
+        return self._text[self._at : self._at + 1]
+
+    def _take(self) -> str:
+        if self._at >= len(self._text):
+            raise _UnsafeSedError
+        self._at += 1
+        return self._text[self._at - 1]
+
+    def _skip(self, chars: str) -> int:
+        while self._peek() and self._peek() in chars:
+            self._at += 1
+        return self._at
+
+    def _until(self, stops: str) -> None:
+        while self._peek() and self._peek() not in stops:
+            self._at += 1
+
+    def _command(self) -> None:
+        self._address()
+        command = self._take()
+        if command == "{":
+            return
+        if command in "aic":  # text runs to the end of the line; `\` continues it onto the next
+            self._text_line()
+            return
+        if command in "#:btT":  # a comment runs to the end of the line, a label to the end of the command
+            self._skip(" \t")
+            self._until("\n" if command == "#" else "; \t\n}")
+        elif command in "sy":
+            self._transform(command)
+        elif command in _SED_PLAIN:
+            self._skip(" \t0123456789")
         else:
-            i += 1
-    return False
+            raise _UnsafeSedError  # e/r/R/w/W, or a command this scanner doesn't know
+        self._skip(" \t")
+        if self._peek() not in ("", ";", "\n", "}", "#"):
+            raise _UnsafeSedError
+
+    def _address(self) -> None:
+        self._one_address()
+        if self._peek() == ",":
+            self._at += 1
+            self._skip(" \t")
+            self._one_address()
+        self._skip(" \t!")
+
+    def _one_address(self) -> None:
+        opener = self._peek()
+        if opener not in ("/", "\\"):
+            self._skip("0123456789$+~")
+            return
+        self._at += 1
+        self._regex("/" if opener == "/" else self._take())
+        self._skip("IM")
+
+    def _text_line(self) -> None:
+        while (char := self._peek()) and char != "\n":
+            self._at += 2 if char == "\\" else 1
+
+    def _transform(self, command: str) -> None:
+        delim = self._take()
+        if command == "s":
+            self._regex(delim)
+        else:
+            self._literal(delim)
+        self._literal(delim)
+        if command == "s":
+            self._skip(_SED_S_FLAGS)  # `e`/`w` aren't among them, so the end-of-command check rejects both
+
+    def _literal(self, delim: str) -> None:
+        while (char := self._take()) != delim:
+            if char == "\\":
+                self._take()
+
+    def _regex(self, delim: str) -> None:
+        """Skip to the closing `delim`; inside a bracket expression the delimiter is an ordinary char."""
+        while (char := self._take()) != delim:
+            if char == "\\":
+                self._take()
+            elif char == "[":
+                self._bracket()
+
+    def _bracket(self) -> None:
+        if self._peek() == "^":
+            self._at += 1
+        if self._peek() == "]":
+            self._at += 1
+        while (char := self._take()) != "]":
+            if char == "[" and self._peek() in (":", ".", "="):
+                close = self._text.find(self._take() + "]", self._at)
+                if close == -1:
+                    raise _UnsafeSedError
+                self._at = close + 2
+
+
+_SED_BARE_FLAGS = set("nrsuzEb")
+_SED_LONG_OPTIONS = (
+    "--binary",
+    "--debug",
+    "--expression",
+    "--file",
+    "--follow-symlinks",
+    "--help",
+    "--in-place",
+    "--line-length",
+    "--null-data",
+    "--posix",
+    "--quiet",
+    "--regexp-extended",
+    "--sandbox",
+    "--separate",
+    "--silent",
+    "--unbuffered",
+    "--version",
+    "--zero-terminated",
+)
+
+
+class SedCommandLine:
+    """GNU sed's argv, read the way its getopt reads it, to find the script sed would run.
+
+    `vetted` is False when the script can't be judged from the command line: a `-f` script file,
+    an unknown or ambiguous option, an option missing its value.
+    """
+
+    def __init__(self, args: list[str]) -> None:
+        """Read `args` (everything after `sed`)."""
+        self.expressions: list[str] = []
+        self.operands: list[str] = []
+        self.sandbox = False
+        self.vetted = True
+        rest = iter(args)
+        for arg in rest:
+            if arg == "--":
+                self.operands.extend(rest)
+            elif arg.startswith("--"):
+                self._long(arg, rest)
+            elif arg.startswith("-") and arg != "-":
+                self._short(arg[1:], rest)
+            else:
+                self.operands.append(arg)
+
+    @property
+    def script(self) -> str:
+        """The `-e` pieces joined with newlines, as sed joins them; without any, the first operand."""
+        return "\n".join(self.expressions) if self.expressions else "".join(self.operands[:1])
+
+    def _long(self, arg: str, rest: Iterator[str]) -> None:
+        name, eq, value = arg.partition("=")
+        matches = [option for option in _SED_LONG_OPTIONS if option.startswith(name)]
+        option = name if name in matches else matches[0] if len(matches) == 1 else None
+        if option == "--sandbox":
+            self.sandbox = True
+        elif option in ("--expression", "--line-length"):
+            self._value(option, value if eq else next(rest, None))
+        elif option in (None, "--file"):
+            self.vetted = False
+
+    def _short(self, cluster: str, rest: Iterator[str]) -> None:
+        for at, flag in enumerate(cluster):
+            if flag == "i":
+                return  # -i[SUFFIX]: the rest of the cluster is the backup suffix
+            if flag in "el":
+                self._value(flag, cluster[at + 1 :] or next(rest, None))
+                return
+            if flag not in _SED_BARE_FLAGS:
+                self.vetted = False  # `-f` script file, or a flag sed doesn't have
+                return
+
+    def _value(self, option: str, value: str | None) -> None:
+        if value is None:
+            self.vetted = False
+        elif option in ("e", "--expression"):
+            self.expressions.append(value)
 
 
 def sed_reaches_outside(args: list[str]) -> bool:
-    """True iff an un-sandboxed sed could execute a command or touch a file beyond its operands."""
-    if "--sandbox" in args:
+    """True if an un-sandboxed sed could execute a command or touch a file beyond its operands."""
+    line = SedCommandLine(args)
+    if line.sandbox:
         return False
-    scripts: list[str] = []
-    rest = iter(args)
-    for arg in rest:
-        if arg in ("-f", "--file") or arg.startswith(("--file=", "-f")):
-            return True  # a script file can't be vetted from the command line
-        if arg in ("-e", "--expression"):
-            scripts.append(next(rest, ""))
-        elif arg.startswith("--expression="):
-            scripts.append(arg.split("=", 1)[1])
-        elif arg.startswith("-e"):
-            scripts.append(arg[2:])
-    if not scripts:
-        scripts = [a for a in args if not a.startswith("-")][:1]
-    return any(_sed_script_reaches_outside(s) for s in scripts)
+    return not line.vetted or SedScript(line.script).reaches_outside()
+
+
+# OpenSSH's getopt string: `ssh` with any other letter is an error.
+_SSH_BARE_FLAGS = set("1246afgknqstvxACGKMNTVXYy")
+_SSH_FLAGS_WITH_VALUE = set("bceilmopBDEFIJLOPQRSwW")
+# Flags that load code or write a file on THIS machine: -F config (ProxyCommand…), -I PKCS#11 library,
+# -E log file appended to any path.
+_SSH_LOCAL_EFFECT_FLAGS = set("FIE")
+# `-o` keywords that only shape the connection. Everything else is refused: ProxyCommand, LocalCommand,
+# KnownHostsCommand, Match exec, Include, PKCS11Provider, XAuthLocation… run local code, and RemoteCommand,
+# SetEnv, SendEnv change what runs remotely past the vetted command.
+_SSH_SAFE_OPTIONS = {
+    "addressfamily",
+    "batchmode",
+    "checkhostip",
+    "compression",
+    "connectionattempts",
+    "connecttimeout",
+    "controlmaster",
+    "controlpath",
+    "controlpersist",
+    "exitonforwardfailure",
+    "forwardagent",
+    "hostkeyalias",
+    "hostname",
+    "identitiesonly",
+    "identityfile",
+    "kbdinteractiveauthentication",
+    "loglevel",
+    "numberofpasswordprompts",
+    "passwordauthentication",
+    "port",
+    "preferredauthentications",
+    "proxyjump",
+    "pubkeyauthentication",
+    "requesttty",
+    "serveralivecountmax",
+    "serveraliveinterval",
+    "stricthostkeychecking",
+    "tcpkeepalive",
+    "user",
+}
+
+
+class SshCommandLine:
+    """ssh(1)'s argv read the way its getopt reads it: options may also follow the host, `--` ends them.
+
+    `vetted` is False on a letter ssh doesn't have or an option missing its value.
+    """
+
+    def __init__(self, args: list[str]) -> None:
+        """Read `args` (everything after `ssh`)."""
+        self.flags: set[str] = set()
+        self.options: list[str] = []
+        self.host: str | None = None
+        self.remote: list[str] = []
+        self.vetted = True
+        rest = iter(args)
+        for arg in rest:
+            if arg == "--":
+                self._operands(list(rest))
+            elif arg.startswith("-") and arg != "-":
+                self._cluster(arg[1:], rest)
+            elif self.host is None:
+                self.host = arg
+            else:
+                self.remote = [arg, *rest]
+
+    def runs_local_code(self) -> bool:
+        """True if an option makes ssh run or load something locally, or the argv can't be read."""
+        keywords = {(option.replace("=", " ").split() or [""])[0].lower() for option in self.options}
+        return not self.vetted or bool(self.flags & _SSH_LOCAL_EFFECT_FLAGS) or not keywords <= _SSH_SAFE_OPTIONS
+
+    def _operands(self, operands: list[str]) -> None:
+        if self.host is None and operands:
+            self.host, *operands = operands
+        self.remote = operands
+
+    def _cluster(self, cluster: str, rest: Iterator[str]) -> None:
+        for at, flag in enumerate(cluster):
+            self.flags.add(flag)
+            if flag in _SSH_FLAGS_WITH_VALUE:
+                value = cluster[at + 1 :] or next(rest, None)
+                if value is None:
+                    self.vetted = False
+                elif flag == "o":
+                    self.options.append(value)
+                return
+            if flag not in _SSH_BARE_FLAGS:
+                self.vetted = False
+                return
+
+
+def ssh_runs_local_code(args: list[str]) -> bool:
+    """True if ssh's own options would run or load code on this machine, or can't be read."""
+    return SshCommandLine(args).runs_local_code()
+
+
+def ssh_remote_not_literal(args: list[str]) -> bool:
+    """True if the remote command carries `$…`/backtick, whose expansion on the host can't be vetted."""
+    return not _is_literal(" ".join(SshCommandLine(args).remote))
+
+
+def ssh_without_remote_command(args: list[str]) -> bool:
+    """True if ssh opens a session with no command, so whatever reaches its stdin runs remotely."""
+    line = SshCommandLine(args)
+    return not line.remote and not line.flags & set("NOGVW")
 
 
 _GIT_CONFIG_WRITE_FLAGS = {
@@ -931,6 +1178,9 @@ CUSTOM_FNS: dict[str, Callable[[list[str]], bool]] = {
     "curl_mutating_remote": curl_mutating_remote,
     "sed_inline_long": sed_inline_long,
     "sed_reaches_outside": sed_reaches_outside,
+    "ssh_runs_local_code": ssh_runs_local_code,
+    "ssh_remote_not_literal": ssh_remote_not_literal,
+    "ssh_without_remote_command": ssh_without_remote_command,
     "rm_recursive": rm_recursive,
     "all_paths_inside_project": all_paths_inside_project,
     "all_paths_under_scratch": all_paths_under_scratch,
@@ -1126,52 +1376,39 @@ _SHELL_CMDS = {"bash", "sh"}
 _SHELL_C_PARTS = 3  # exactly `<shell> -c <script>` after stripping env/wrapper/timeout
 
 
-def _extract_shell_c(command: str) -> str | None:
-    """Return the script of a verifiable `bash -c '<script>'` / `sh -c '<script>'`, else None.
+def _is_literal(script: str) -> bool:
+    """False when `$…` or a backtick leaves the script's runtime text unknowable to the ACL."""
+    return "$" not in script and "`" not in script
 
-    Only the exact `[env] [wrapper] [timeout] <shell> -c <script>` shape with a fully-literal script
-    is recursed into — the ACL re-checks the script as if typed directly (so `bash -c 'rm -rf /etc'`
-    is denied, `bash -c 'git status'` allowed). Any expansion (`$…`, backtick) is non-literal: its
-    runtime value can't be statically vetted, so we return None and let the blanket `bash` deny
-    stand. Other forms (`bash -lc`, extra args, `bash file.sh`) also fall through to deny.
+
+class InnerScript(NamedTuple):
+    """A script one command hands to another shell, and the log tag naming that hop."""
+
+    script: str
+    matched: str
+
+
+def _inner_script(command: str) -> InnerScript | None:
+    """The literal script a `bash -c '<script>'` or an allowed `ssh <host> <cmd…>` hands to another shell.
+
+    The ACL re-checks it as if typed directly, so `bash -c 'rm -rf /etc'` and `ssh vm 'sudo reboot'`
+    are denied. None for anything else, including a script with `$…`/backtick: the `bash` deny stands
+    for those, and ssh's own `ssh_remote_not_literal` rule denies them.
     """
     try:
         parts = _strip_timeout(_strip_wrapper(_strip_env_assignments(shlex.split(command))))
     except ValueError:
         return None
-    if len(parts) != _SHELL_C_PARTS or parts[1] != "-c" or Path(parts[0]).name not in _SHELL_CMDS:
+    if not parts:
         return None
-    script = parts[2]
-    if "$" in script or "`" in script:
-        return None
-    return script
-
-
-# ssh(1) options that consume the next token; every other `-x` is a bare flag.
-_SSH_FLAGS_WITH_VALUE = set("BbcDEeFIiJLlmOoPpQRSWw")
-_SSH_REMOTE_NOT_LITERAL = (
-    "The remote command passed to ssh contains `$` or a backtick, so the ACL can't vet what "
-    "will actually run there. Write it fully literal (`~` instead of `$HOME`), or run each step "
-    "as its own `ssh <host> '<cmd>'` call."
-)
-
-
-def _extract_ssh_remote(command: str) -> str | None:
-    """The command `ssh [opts] <host> <cmd…>` runs on the remote host, or None (not ssh / no command).
-
-    ssh joins the trailing args with spaces and hands them to the remote shell, so the join is
-    what gets vetted.
-    """
-    try:
-        parts = _strip_timeout(_strip_wrapper(_strip_env_assignments(shlex.split(command))))
-    except ValueError:
-        return None
-    if not parts or Path(parts[0]).name != "ssh":
-        return None
-    rest = parts[1:]
-    while rest and rest[0].startswith("-"):
-        rest = rest[2:] if rest[0][1:] in _SSH_FLAGS_WITH_VALUE else rest[1:]
-    return " ".join(rest[1:]) or None
+    name = Path(parts[0]).name
+    if name in _SHELL_CMDS and len(parts) == _SHELL_C_PARTS and parts[1] == "-c" and _is_literal(parts[2]):
+        return InnerScript(parts[2], "shell_c_recurse")
+    if name == "ssh" and _classify(command)[0] == "allow":
+        # ssh joins its trailing args with spaces and hands that line to the remote shell.
+        remote = " ".join(SshCommandLine(parts[1:]).remote)
+        return InnerScript(remote, "ssh_recurse") if remote else None
+    return None
 
 
 def _is_claude_script(command: str) -> bool:
@@ -1246,21 +1483,12 @@ def _apply_acl(command: str, args: list[str]) -> Decision:
 
 def check_command(cmd_str: str, logger: logging.Logger, *, agent_type: str) -> Decision:
     """Check a single command against ACL. Returns (decision, reason, log_detail)."""
-    script = _extract_shell_c(cmd_str)
-    if script is not None:
-        # `bash -c '<literal>'`: re-run the full pipeline on the script, as if it were typed directly.
-        verdict, reason = _decide(script, logger, agent_type)
-        logger.info('decision=%s command="%s" matched=shell_c_recurse agent=%s', verdict, for_log(cmd_str), agent_type)
-        return verdict, reason, "shell_c_recurse"
-    remote = _extract_ssh_remote(cmd_str)
-    if remote is not None and _classify(cmd_str)[0] == "allow":
-        # ssh itself is fine; what it runs on the host gets the same rules as a local command.
-        if "$" in remote or "`" in remote:
-            verdict, reason = "deny", _SSH_REMOTE_NOT_LITERAL
-        else:
-            verdict, reason = _decide(remote, logger, agent_type)
-        logger.info('decision=%s command="%s" matched=ssh_recurse agent=%s', verdict, for_log(cmd_str), agent_type)
-        return verdict, reason, "ssh_recurse"
+    inner = _inner_script(cmd_str)
+    if inner is not None:
+        verdict, reason = _decide(inner.script, logger, agent_type)
+        matched = inner.matched
+        logger.info('decision=%s command="%s" matched=%s agent=%s', verdict, for_log(cmd_str), matched, agent_type)
+        return verdict, reason, matched
     decision = _classify(cmd_str)
     verdict, _, detail = decision
     logger.info('decision=%s command="%s" matched=%s agent=%s', verdict, for_log(cmd_str), detail, agent_type)
@@ -1481,13 +1709,13 @@ def unbounded_wait_loop(command: str) -> bool:
     """True iff `command` polls in a loop without ever saying how long it is willing to wait.
 
     An explicit leading `timeout …` is the hatch: it turns the poll into a bounded wait, which is
-    the shape the deny asks for. `bash -c '<literal>'` is unwrapped first so smuggling the loop
-    through a shell doesn't dodge the check — the same recursion `check_command` does.
+    the shape the deny asks for. `bash -c '<literal>'` and `ssh <host> '<cmd>'` are unwrapped first,
+    so smuggling the loop through a shell doesn't dodge the check — the recursion `check_command` does.
     """
     if _has_timeout_prefix(command):
         return False
-    script = _extract_shell_c(command)
-    return wait_loop_unbounded(bashlex.parse(script if script is not None else command))
+    inner = _inner_script(command)
+    return wait_loop_unbounded(bashlex.parse(inner.script if inner is not None else command))
 
 
 def _bound(command: str, *, background: bool) -> BoundedCommand | None:

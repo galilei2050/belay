@@ -868,7 +868,7 @@
       {
         "fn": "sed_reaches_outside",
         "decision": "deny",
-        "reason": "This sed script runs a shell command or reads/writes a file of its own (`e`, `r`/`R`, `w`/`W`, or the `e`/`w` flag of `s`), which the ACL never sees. Add `--sandbox` (GNU sed then refuses those commands), read files with the Read tool, and write them with Edit/Write."
+        "reason": "This sed can run a shell command or read/write a file of its own (`e`, `r`/`R`, `w`/`W`, the `e`/`w` flag of `s`), or its script can't be read from the command line (`-f` script file, an unknown option, syntax the check doesn't follow). Pass the script inline with `-e`, add `--sandbox` (GNU sed then refuses e/r/w), read files with the Read tool and write them with Edit/Write."
       },
       {
         "fn": "sed_inline_long",
@@ -1020,14 +1020,19 @@
   "ssh": {
     "rules": [
       {
-        "args_glob": "*[Pp]roxy[Cc]ommand*",
+        "fn": "ssh_runs_local_code",
         "decision": "deny",
-        "reason": "ProxyCommand runs an arbitrary LOCAL command the ACL never sees. Use `-J <jump-host>` for a jump host, or a Host entry in ~/.ssh/config."
+        "reason": "This ssh call has an option the ACL doesn't vet: `-F`/`-I`/`-E`, an unknown flag, or a `-o` keyword outside the connection basics (User, Port, ConnectTimeout, BatchMode, StrictHostKeyChecking, IdentityFile, ProxyJump, …). Options like ProxyCommand, LocalCommand, RemoteCommand, Match exec or SetEnv run code the ACL never sees. Use `-J <jump-host>` instead of ProxyCommand, run a local step as its own Bash call, or ask the user to put the setting in ~/.ssh/config."
       },
       {
-        "args_glob": "*[Ll]ocal[Cc]ommand*",
+        "fn": "ssh_remote_not_literal",
         "decision": "deny",
-        "reason": "LocalCommand runs an arbitrary LOCAL command the ACL never sees. Run that command as its own Bash call before or after the ssh."
+        "reason": "The remote command contains `$` or a backtick, so the ACL can't vet what will actually run on the host. Write it fully literal (`~` instead of `$HOME`), or run each step as its own `ssh <host> '<cmd>'` call."
+      },
+      {
+        "fn": "ssh_without_remote_command",
+        "decision": "deny",
+        "reason": "ssh with no remote command opens a shell on the host, and whatever reaches its stdin runs there unvetted. Pass the command as an argument — `ssh <host> '<cmd>'` — so the ACL checks it; for a tunnel only, add `-N`."
       }
     ],
     "default": "allow"
