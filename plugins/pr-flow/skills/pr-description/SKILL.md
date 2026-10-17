@@ -1,6 +1,6 @@
 ---
 name: pr-description
-description: Writes or refreshes the description of a pull request — the body a reviewer reads before the diff. Use when opening a PR (`gh pr create`), when a push has made an existing PR's body stale, or when the user asks to write up / re-write / оформить a PR. Produces the failure with its measured numbers, a mermaid diagram of the mechanism, what changed, what was verified, the risk and the rollback. NOT for commit messages (one commit, one why) and not for design docs.
+description: Writes or refreshes the description of a pull request — the body a reviewer reads before the diff. Use when opening a PR (`gh pr create`), when a push has made an existing PR's body stale, or when the user asks to write up / re-write / оформить a PR. Produces the failure with its measured numbers, a before/after table or a mermaid diagram, the decisions made, and what was verified. NOT for commit messages (one commit, one why) and not for design docs.
 ---
 
 # PR description
@@ -45,8 +45,17 @@ Sections in this order. Drop any that has nothing real in it; never pad one to f
 | **What changed** | the decision and where the invariant now lives — not a file list | never |
 | **What the review found** | defects a review round caught that tests did not | no review round ran |
 | **Checks** | the commands you ran, each with its real outcome | never |
-| **Risk / rollback** | blast radius, feature flag, how to undo | a docs-only change |
 | **Open ends** | agreed-but-unimplemented, follow-ups, blocked checks | genuinely none |
+
+No rollback section: "revert this PR" is true of every PR and tells the reviewer nothing.
+
+**What changed** is 2–4 bullets, each a decision and its reason in plain words. Names of files,
+classes and methods belong in the diff; a bullet that is mostly identifiers is the diff narrated.
+
+Every body carries a **before/after table** of the behaviour that changed, with measured numbers,
+or — when nothing existed before — a **mermaid diagram** of the new flow. `hooks/pr_body_gate.py`
+denies `gh pr create` / `gh pr edit` without one, a list narrating symbols, or prose dense with
+inline code outside Checks; its reason says which, quotes the offending lines and how to rewrite.
 
 A title is a claim about the outcome, not about the diff: `Stop the agent creating duplicate
 orders`, not `Update service_orders and add guard`.
