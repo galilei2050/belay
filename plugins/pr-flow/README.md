@@ -28,7 +28,8 @@ run in the foreground, with the sentence that says to relaunch it with `run_in_b
 "launch it in the background" is mechanical, and the failure it prevents is the whole session
 frozen behind a wait nobody was watching. `pr_body_gate.py` denies a PR body a reviewer cannot read
 in a minute, because the skill alone did not stop agents posting the diff as a list of identifiers.
-It checks only what is mechanical; whether the numbers were measured stays with the skill.
+The body rules are mechanical; the title is not, so once the body passes, Sonnet judges it through
+`title_judge.py`. Whether the numbers were measured stays with the skill.
 
 ## Watching the branch, in the background
 
@@ -123,7 +124,8 @@ GitHub Actions alone, and an empty answer says so.
 
 ## Config
 
-`ANTHROPIC_API_KEY` must be set: the title check calls the Messages API. Without it the gate
-crashes on the first `gh pr` call with a title, and Claude Code shows the error and runs the call
-unchecked. The only state on disk is `~/.cache/pr-flow/title-suggestions.txt`, the titles the judge
-has suggested, so a title taken from a deny is not judged twice.
+`ANTHROPIC_API_KEY` must be set: the title check calls the Messages API. Without it, or when the
+API fails, a `gh pr` call with a title is denied with the error, so the agent stops and says so
+rather than posting an unchecked title. The only state on disk is
+`~/.cache/pr-flow/title-suggestions.tsv`: each suggestion the judge made, keyed by repo, accepted
+once without a second call and then dropped.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: a PR body a human cannot read in a minute is denied before it is posted.
+"""PreToolUse hook: a PR title or body a human cannot read in a minute is denied before it is posted.
 
 The `pr-description` skill already says what a readable body is, and agents still post the diff
 narrated as a bullet list of identifiers — every line true, the point buried under them. This hook
@@ -10,6 +10,9 @@ code spans per hundred words. Whether the numbers were measured stays with the s
 The body is read from the `--body-file` the skill mandates. An inline `--body`, a heredoc or stdin
 cannot be judged before it runs, so they are denied with the instruction to write a file first;
 the same goes for `gh api` writing a PR body, which is the obvious way round this gate.
+
+Once every body passes, `title_judge` has a model judge each `--title` — the one check here that is
+not mechanical, and the only one that costs an API call.
 """
 
 from __future__ import annotations
@@ -22,7 +25,7 @@ from pathlib import Path
 from typing import Literal, NamedTuple
 
 from bash_command import blank_quotes, shell_bodies
-from title_judge import rewrite
+from title_judge import JudgeUnavailableError, rewrite
 
 _PR_CALL_RE = re.compile(r"\bgh\s+pr\s+(create|edit)\b")
 # Matched on the raw command: a body is quoted (`-f "body=…"`), and blanking would hide it.
@@ -88,8 +91,12 @@ MISSING_FILE = (
 BAD_TITLE = (
     "The title `{title}` needs the code to decode — its words only mean something inside the "
     "codebase. Say which part of the product changes and how, in plain words. For example:\n"
-    '  --title "{better}"\n'
-    "That exact title is accepted as is; check it against the facts before you use it."
+    "  {better}\n"
+    "That exact title is accepted once, as is; check it against the facts before you use it."
+)
+JUDGE_DOWN = (
+    "The title could not be checked: {error}. Rerun the command in a minute; if it keeps failing, "
+    "stop and tell the user — this gate needs ANTHROPIC_API_KEY and the Messages API."
 )
 UNREADABLE = "The body file `{path}` cannot be read as UTF-8 text ({error}). Rewrite it with the Write tool."
 
@@ -157,7 +164,10 @@ def flag_value(call: PrCall, flag_re: re.Pattern[str]) -> str | None:
     if flag is None:
         return None
     value = _FLAG_VALUE_RE.match(call.args, flag.end())
-    return value.group(1).strip("'\"") if value else "-"
+    if value is None:
+        return "-"
+    raw = value.group(1)
+    return raw[1:-1] if raw[:1] in "'\"" else raw  # only the outer pair: a title may end in a quote
 
 
 def _resolve(cwd: Path, path: str) -> Path:
@@ -189,19 +199,22 @@ def title_problems(call: PrCall, cwd: Path) -> list[str]:
     if title is None:
         return []
     path = flag_value(call, _BODY_FILE_FLAG_RE)
-    body = "" if path is None or path == "-" else _resolve(cwd, path).read_text(encoding="utf-8")
-    better = rewrite(title, body)
-    return [BAD_TITLE.format(title=title, better=better)] if better else []
+    body = "" if path is None else _resolve(cwd, path).read_text(encoding="utf-8")
+    try:
+        better = rewrite(title, body, cwd)
+    except JudgeUnavailableError as error:  # a crash would let the call run unchecked
+        return [JUDGE_DOWN.format(error=error)]
+    return [] if better is None else [BAD_TITLE.format(title=title, better=better)]
 
 
 def problems(command: str, cwd: Path) -> list[str]:
     """Everything wrong with the PR titles and bodies this Bash command would post."""
     if _API_WRITE_RE.search(command):
         return [API_WRITE]
-    found = []
-    for call in pr_calls(command):
-        found += body_problems(call, cwd) or title_problems(call, cwd)
-    return found
+    calls = pr_calls(command)
+    found = [problem for call in calls for problem in body_problems(call, cwd)]
+    # Titles cost a model call each, so they are judged only once every body has passed.
+    return found or [problem for call in calls for problem in title_problems(call, cwd)]
 
 
 def main() -> None:

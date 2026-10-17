@@ -72,16 +72,22 @@ class FakeMessagesApi:
     def __init__(self) -> None:
         self.requests: list[dict] = []
         self.verdict = {"passes": True, "rewrite": ""}
+        self.status = 200
         api = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
                 assert self.path == "/v1/messages"
                 assert self.headers["x-api-key"] == "test-key"
-                api.requests.append(json.loads(self.rfile.read(int(self.headers["content-length"]))))
-                reply = {"content": [{"type": "tool_use", "name": "verdict", "input": api.verdict}]}
+                request = json.loads(self.rfile.read(int(self.headers["content-length"])))
+                # The real API answers 400 when the forced tool is not declared; so must the fake.
+                forced = request["tool_choice"]["name"]
+                tool = next(tool for tool in request["tools"] if tool["name"] == forced)
+                assert tool["input_schema"]["required"] == ["passes", "rewrite"]
+                api.requests.append(request)
+                reply = {"content": [{"type": "tool_use", "name": forced, "input": api.verdict}]}
                 payload = json.dumps(reply).encode()
-                self.send_response(200)
+                self.send_response(api.status)
                 self.send_header("content-type", "application/json")
                 self.end_headers()
                 self.wfile.write(payload)
@@ -274,18 +280,56 @@ def test_a_title_that_needs_the_code_is_denied_with_a_rewrite(gate, api):
     api.verdict = {"passes": False, "rewrite": PLAIN}
     reason = reason_of(gate(f'gh pr create --title "{JARGON}" --body-file body.md', GOOD))
     assert f"The title `{JARGON}` needs the code to decode" in reason
-    assert f'--title "{PLAIN}"' in reason
-    # The judge sees the title and the opening of the body it is meant to describe.
-    content = api.requests[0]["messages"][0]["content"]
-    assert content.startswith(f"Title: {JARGON}\n\nBody (opening):\n## What was wrong")
-    assert api.requests[0]["tool_choice"] == {"type": "tool", "name": "verdict"}
+    assert f"For example:\n  {PLAIN}\n" in reason
+    # Sonnet, not Haiku, is the measured choice; it sees the title and the body it describes.
+    assert api.requests[0]["model"] == "claude-sonnet-5"
+    assert api.requests[0]["messages"][0]["content"] == f"Title: {JARGON}\n\nBody (opening):\n{GOOD}"
 
 
-def test_the_suggested_title_passes_without_asking_again(gate, api):
+def test_the_judge_sees_only_the_opening_of_a_long_body(gate, api):
+    long_body = GOOD + "x" * 3000
+    gate(f'gh pr create --title "{PLAIN}" --body-file body.md', long_body)
+    assert api.requests[0]["messages"][0]["content"] == f"Title: {PLAIN}\n\nBody (opening):\n{long_body[:1500]}"
+
+
+def test_the_suggested_title_is_accepted_once_without_asking_again(gate, api):
     api.verdict = {"passes": False, "rewrite": PLAIN}
-    gate(f"gh pr create --title '{JARGON}' --body-file body.md", GOOD)
-    assert gate(f"gh pr create --title '{PLAIN}' --body-file body.md") is None
+    assert PLAIN in reason_of(gate(f'gh pr create --title "{JARGON}" --body-file body.md', GOOD))
+    assert gate(f'gh pr create --title "{PLAIN}" --body-file body.md') is None
     assert len(api.requests) == 1
+    gate(f'gh pr create --title "{PLAIN}" --body-file body.md')  # the suggestion was used up
+    assert len(api.requests) == 2
+
+
+def test_a_title_ending_in_a_quote_reaches_the_judge_whole(gate, api):
+    gate("gh pr edit 12 --title 'Invoices show \"Paid\"'")
+    assert api.requests[0]["messages"][0]["content"].startswith('Title: Invoices show "Paid"\n')
+
+
+@pytest.mark.parametrize(
+    ("case", "error"),
+    [
+        ("no key", "ANTHROPIC_API_KEY is not set"),
+        ("api error", "Messages API call failed"),
+        ("empty rewrite", "the judge failed the title but gave no rewrite"),
+    ],
+)
+def test_a_judge_that_cannot_answer_denies_instead_of_letting_the_title_through(gate, api, monkeypatch, case, error):
+    if case == "no key":
+        monkeypatch.delenv("ANTHROPIC_API_KEY")
+    elif case == "api error":
+        api.status = 500
+    else:
+        api.verdict = {"passes": False, "rewrite": " "}
+    reason = reason_of(gate(f'gh pr edit 12 --title "{JARGON}"'))
+    assert f"The title could not be checked: {error}" in reason
+
+
+def test_a_rejected_body_in_one_call_is_not_lost_to_a_title_in_another(gate, api):
+    api.status = 500
+    reason = reason_of(gate(f'gh pr create --title A --body-file body.md; gh pr edit 5 --title "{JARGON}"', NARRATED))
+    assert "narrates the diff" in reason
+    assert api.requests == []
 
 
 def test_a_plain_title_passes(gate, api):

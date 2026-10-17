@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import TypedDict, cast
@@ -41,14 +42,18 @@ VERDICT_TOOL = {
                 "type": "string",
                 "description": "When it fails: the better title, at most 80 characters, in the "
                 "language of the original title (not of the body), using only facts from the input. "
-                "Empty when it passes.",
+                "Required when it fails; empty when it passes.",
             },
         },
         "required": ["passes", "rewrite"],
     },
 }
 BODY_CONTEXT = 1500  # the opening of the body says what the PR is about; the rest is detail
-SUGGESTIONS = Path.home() / ".cache" / "pr-flow" / "title-suggestions.txt"
+SUGGESTIONS = Path.home() / ".cache" / "pr-flow" / "title-suggestions.tsv"
+
+
+class JudgeUnavailableError(Exception):
+    """The judge gave no usable verdict: no key, the API failed, or the answer was malformed."""
 
 
 class Verdict(TypedDict):
@@ -59,6 +64,9 @@ class Verdict(TypedDict):
 
 
 def _verdict(title: str, body: str) -> Verdict:
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise JudgeUnavailableError("ANTHROPIC_API_KEY is not set")
     request = urllib.request.Request(  # noqa: S310 — the API URL, or the operator's own ANTHROPIC_BASE_URL
         os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages",
         data=json.dumps(
@@ -72,24 +80,42 @@ def _verdict(title: str, body: str) -> Verdict:
             }
         ).encode(),
         headers={
-            "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+            "x-api-key": key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
     )
-    with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
-        return cast("Verdict", json.load(response)["content"][0]["input"])
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
+            reply = json.load(response)
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise JudgeUnavailableError(f"Messages API call failed: {error}") from error
+    block = reply["content"][0]
+    if block["type"] != "tool_use":
+        raise JudgeUnavailableError(f"no verdict in the reply (stop_reason {reply.get('stop_reason')})")
+    verdict = cast("Verdict", block["input"])
+    if not verdict["passes"] and not verdict["rewrite"].strip():
+        raise JudgeUnavailableError("the judge failed the title but gave no rewrite")
+    return verdict
 
 
-def rewrite(title: str, body: str) -> str | None:
-    """The judge's better title when this one fails, None when it passes."""
-    if SUGGESTIONS.is_file() and title in SUGGESTIONS.read_text().splitlines():
+def _suggested(repo: Path) -> list[str]:
+    lines = SUGGESTIONS.read_text().splitlines() if SUGGESTIONS.is_file() else []
+    return [line for line in lines if line.startswith(f"{repo}\t")]
+
+
+def rewrite(title: str, body: str, repo: Path) -> str | None:
+    """The judge's better title when this one fails, None when it passes; raises JudgeUnavailableError."""
+    # A suggestion is accepted once, in the repo it was made for, then forgotten.
+    entry = f"{repo}\t{title}"
+    if entry in _suggested(repo):
+        SUGGESTIONS.write_text("".join(f"{line}\n" for line in SUGGESTIONS.read_text().splitlines() if line != entry))
         return None
     verdict = _verdict(title, body)
     if verdict["passes"]:
         return None
-    better = verdict["rewrite"]
+    better = verdict["rewrite"].strip()
     SUGGESTIONS.parent.mkdir(parents=True, exist_ok=True)
     with SUGGESTIONS.open("a") as file:
-        file.write(better + "\n")
+        file.write(f"{repo}\t{better}\n")
     return better
