@@ -58,7 +58,9 @@ measured numbers, or — when nothing existed before — a **mermaid diagram** o
 `hooks/pr_body_gate.py` enforces this and the What changed rule before the body is posted.
 
 A title is a claim about the outcome, not about the diff: `Stop the agent creating duplicate
-orders`, not `Update service_orders and add guard`.
+orders`, not `Update service_orders and add guard`. A teammate who has not read the code must get
+it from the title alone — `the agent decides a text's shop, or leaves it to both piles` fails,
+because "piles" and "a text's shop" only mean something inside the code. The gate checks this.
 
 ## Step 3 — diagram what prose explains badly
 
