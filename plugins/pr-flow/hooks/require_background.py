@@ -27,21 +27,13 @@ import json
 import re
 import sys
 
+from bash_command import blank_quotes, shell_bodies
+
 # The verbs that block. `status` and `logs` return immediately, so they belong in the foreground.
 BLOCKING_VERBS = ("wait", "merged", "deploy", "ship")
 
 # argparse puts the subcommand before its flags, so the verb is the word right after the script.
 _CI_VERB_RE = re.compile(rf"\bci\.py\s+({'|'.join(BLOCKING_VERBS)})(?![\w-])")
-# Quoted spans are blanked first: a command that merely *talks* about `ci.py ship` — an echo, a
-# commit message — is not a call and must not be denied.
-_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
-# …except the argument of `sh -c` / `eval`, which is a quoted span that *is* the command. Blanking
-# it would make the documented shape for a long job (`timeout N bash -c '…'`) the easiest way past
-# the gate. Flags may sit before the `-c` or be fused to it: `bash -lc '…'` is the commoner idiom
-# of the two, and a pattern that only matched a bare `-c` let it through.
-_SHELL_C_RE = re.compile(
-    r"(?:ba|z|da|fi)?sh\s+(?:-\S+\s+)*-[a-zA-Z]*c\s+(['\"])(.*?)\1|eval\s+(['\"])(.*?)\3", re.DOTALL
-)
 
 REASON = (
     "`ci.py {verb}` blocks until the branch gets there — a CI run is minutes, a merge waiting on a "
@@ -60,8 +52,7 @@ REASON = (
 
 def runnable_text(command: str) -> str:
     """The parts of a Bash call that actually run: quoted prose dropped, `sh -c` bodies kept."""
-    shelled = " ".join(found.group(2) or found.group(4) or "" for found in _SHELL_C_RE.finditer(command))
-    return _QUOTED_RE.sub(" ", command) + " " + shelled
+    return blank_quotes(command) + " " + " ".join(shell_bodies(command))
 
 
 def blocking_verb(data: dict[str, object]) -> str | None:

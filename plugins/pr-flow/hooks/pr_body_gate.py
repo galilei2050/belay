@@ -3,9 +3,9 @@
 
 The `pr-description` skill already says what a readable body is, and agents still post the diff
 narrated as a bullet list of identifiers — every line true, the point buried under them. This hook
-checks the three things that are mechanical: a before/after table or a mermaid diagram exists, the
-bullets are decisions rather than symbols, and the prose is not mostly inline code. Whether the
-numbers were measured or the checks really ran stays with the skill; a regex cannot know.
+checks the three things that are mechanical: a comparison table or a mermaid diagram exists, the
+bullets are decisions rather than symbols, and the prose carries no more than a handful of inline
+code spans per hundred words. Whether the numbers were measured stays with the skill.
 
 The body is read from the `--body-file` the skill mandates. An inline `--body`, a heredoc or stdin
 cannot be judged before it runs, so they are denied with the instruction to write a file first;
@@ -15,25 +15,31 @@ the same goes for `gh api` writing a PR body, which is the obvious way round thi
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
-# Quoted spans are blanked to the same length, so a match position in the blanked text indexes the
-# raw command too: a commit message that merely mentions `gh pr create` is prose, not a call.
-_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+from bash_command import blank_quotes, shell_bodies
+
 _PR_CALL_RE = re.compile(r"\bgh\s+pr\s+(create|edit)\b")
-_API_BODY_RE = re.compile(r"\bgh\s+api\b[^\n;&|]*\bpulls\b[^\n;&|]*\bbody=")
+# Matched on the raw command: a body is quoted (`-f "body=…"`), and blanking would hide it.
+_API_WRITE_RE = re.compile(
+    r"\bgh\s+api\b[^\n;&|]*(?:\bpulls\b[^\n;&|]*(?:\bbody=|--input)|\bgraphql\b[^\n;&|]*\bmutation\b)"
+)
 _SEGMENT_END_RE = re.compile(r"&&|\|\||[;|\n]")
-_BODY_FILE_RE = re.compile(r"(?:--body-file|-F)(?:=|\s+)(\"[^\"]*\"|'[^']*'|\S+)")
-_INLINE_BODY_RE = re.compile(r"(?:--body|-b)(?:=|\s)|--fill\b")
+# Flags are matched on the blanked arguments so `--title "drop -b flag"` is not a body flag; the
+# value is then read from the raw text at the same offset, quotes and spaces intact.
+_BODY_FILE_FLAG_RE = re.compile(r"(?<!\S)(?:--body-file|-F)(?=[=\s])")
+_FLAG_VALUE_RE = re.compile(r"(?:=|\s+)(\"[^\"]*\"|'[^']*'|\S+)")
+_INLINE_BODY_RE = re.compile(r"(?<!\S)(?:(?:--body|-b)(?:=|\s)|--fill\b)")
 
 _FENCE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
-_TABLE_RULE_RE = re.compile(r"^\s*\|(?:\s*:?-{3,}:?\s*\|)+\s*$", re.MULTILINE)
+_TABLE_RULE_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$", re.MULTILINE)
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.*)$", re.MULTILINE)
 # Checks list the exact commands that ran, as the skill requires — inline code is right there.
-_CHECKS_HEADING_RE = re.compile(r"check|verif|test|провер", re.IGNORECASE)
+_CHECKS_HEADING_RE = re.compile(r"^\W*(?:checks?|verification|tests?|testing|проверк\w*)\b", re.IGNORECASE)
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+(.*)$", re.MULTILINE)
 _CODE_SPAN_RE = re.compile(r"`[^`\n]+`")
 
@@ -48,9 +54,9 @@ DENY_PREFIX = (
     "is the problem, not the tool.\n\n"
 )
 NO_VISUAL = (
-    "No before/after. Add a markdown table `| | Before | After |` with the measured numbers of the "
-    "behaviour that changed. A new feature with no 'before' gets a mermaid diagram of the new flow "
-    "instead (```mermaid fence)."
+    "No before/after. Add a markdown table comparing before and after (`| | Before | After |`) "
+    "with the measured numbers of the behaviour that changed. A new feature with no 'before' gets a "
+    "mermaid diagram of the new flow instead (```mermaid fence)."
 )
 DIFF_NARRATION = (
     "The bullet list narrates the diff ({code} of {total} bullets are identifiers), e.g.:\n{quoted}\n"
@@ -68,36 +74,41 @@ NOT_A_FILE = (
     "An inline --body, a heredoc, stdin or --fill cannot be checked before it is posted, and the "
     "``` fences in a body break inside a shell string anyway."
 )
-MISSING_FILE = (
-    "The body file `{path}` does not exist yet. Write it with the Write tool in its own step, then "
-    "rerun this command — a file created earlier in the same Bash call is not there when this "
-    "check runs."
+API_WRITE = (
+    "Do not write a PR body through `gh api`: write it with the Write tool, then "
+    "`gh pr create --body-file <path>` or `gh pr edit <number> --body-file <path>`."
 )
+MISSING_FILE = (
+    "The body file `{path}` does not exist at `{resolved}`. Write it with the Write tool in its own "
+    "step, then rerun this command with an absolute path — a file created earlier in the same Bash "
+    "call is not there yet when this check runs, and a `cd` in the command is not followed."
+)
+UNREADABLE = "The body file `{path}` cannot be read as UTF-8 text ({error}). Rewrite it with the Write tool."
+
+
+class PrCall(NamedTuple):
+    """One `gh pr create|edit` invocation found in a Bash command."""
+
+    verb: Literal["create", "edit"]
+    args: str  # this call's own argument text, up to the next `&&`, `;`, `|` or newline
+    blanked: str  # the same text with quoted spans blanked; offsets match `args`
 
 
 def _clip(line: str) -> str:
     return line if len(line) <= QUOTE_WIDTH else line[: QUOTE_WIDTH - 1] + "…"
 
 
-def _blank_quotes(command: str) -> str:
-    return _QUOTED_RE.sub(lambda found: " " * len(found.group()), command)
-
-
-class PrCall(NamedTuple):
-    """One `gh pr create|edit` invocation found in a Bash command."""
-
-    verb: str  # create | edit
-    args: str  # this call's own argument text, up to the next `&&`, `;`, `|` or newline
-
-
-def pr_call(command: str) -> PrCall | None:
-    """The `gh pr create|edit` call in a Bash command, or None if it makes neither."""
-    blanked = _blank_quotes(command)
-    found = _PR_CALL_RE.search(blanked)
-    if found is None:
-        return None
-    end = _SEGMENT_END_RE.search(blanked, found.end())
-    return PrCall(found.group(1), command[found.end() : end.start() if end else len(command)])
+def pr_calls(command: str) -> list[PrCall]:
+    """Every `gh pr create|edit` call in a Bash command, including those inside `sh -c` / `eval`."""
+    calls = []
+    for source in (command, *shell_bodies(command)):
+        blanked = blank_quotes(source)
+        for found in _PR_CALL_RE.finditer(blanked):
+            end = _SEGMENT_END_RE.search(blanked, found.end())
+            stop = end.start() if end else len(source)
+            verb: Literal["create", "edit"] = "create" if found.group(1) == "create" else "edit"
+            calls.append(PrCall(verb, source[found.end() : stop], blanked[found.end() : stop]))
+    return calls
 
 
 def narrative(body: str) -> str:
@@ -122,8 +133,8 @@ def violations(body: str) -> list[str]:
     coded = [bullet for bullet in bullets if _CODE_SPAN_RE.search(bullet)]
     if len(bullets) >= MIN_LIST and len(coded) * 2 > len(bullets):
         # The most code-dense bullets are the ones that make the case; long ones are cut to a line.
-        worst = sorted(coded, key=lambda bullet: len(_CODE_SPAN_RE.findall(bullet)) / len(bullet.split()))
-        quoted = "\n".join(f"  - {_clip(bullet)}" for bullet in reversed(worst[-QUOTED_BULLETS:]))
+        worst = sorted(coded, key=lambda b: len(_CODE_SPAN_RE.findall(b)) / len(b.split()), reverse=True)
+        quoted = "\n".join(f"  - {_clip(bullet)}" for bullet in worst[:QUOTED_BULLETS])
         found.append(DIFF_NARRATION.format(code=len(coded), total=len(bullets), quoted=quoted))
     spans = len(_CODE_SPAN_RE.findall(prose))
     words = len(prose.split())
@@ -132,50 +143,46 @@ def violations(body: str) -> list[str]:
     return found
 
 
-def problems(command: str, cwd: Path) -> list[str]:
-    """Everything wrong with the PR body this Bash command would post; empty when it posts none."""
-    if _API_BODY_RE.search(_blank_quotes(command)):
-        return [NOT_A_FILE.format(verb="create")]
-    call = pr_call(command)
-    if call is None:
-        return []
-    verb, args = call
-    body_file = _BODY_FILE_RE.search(args)
-    if body_file is None:
+def body_problems(call: PrCall, cwd: Path) -> list[str]:
+    """What is wrong with the body this one `gh pr` call would post; empty when it posts none."""
+    flag = _BODY_FILE_FLAG_RE.search(call.blanked)
+    if flag is None:
         # A title, label or reviewer edit leaves the body alone; a create always posts one.
-        posts_body = verb == "create" or _INLINE_BODY_RE.search(args)
-        return [NOT_A_FILE.format(verb=verb)] if posts_body else []
-    path = body_file.group(1).strip("'\"")
-    if path == "-":
-        return [NOT_A_FILE.format(verb=verb)]
-    file = cwd / Path(path).expanduser()
-    return violations(file.read_text()) if file.is_file() else [MISSING_FILE.format(path=path)]
+        posts_body = call.verb == "create" or _INLINE_BODY_RE.search(call.blanked)
+        return [NOT_A_FILE.format(verb=call.verb)] if posts_body else []
+    value = _FLAG_VALUE_RE.match(call.args, flag.end())
+    path = value.group(1).strip("'\"") if value else "-"
+    if path == "-":  # stdin, or a flag with no value at all
+        return [NOT_A_FILE.format(verb=call.verb)]
+    file = cwd / Path(os.path.expandvars(path)).expanduser()
+    if not file.is_file():
+        return [MISSING_FILE.format(path=path, resolved=file)]
+    try:
+        body = file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:  # a gate that crashes lets the body through
+        return [UNREADABLE.format(path=path, error=error)]
+    return violations(body)
 
 
-def reason(command: str, cwd: Path) -> str | None:
-    """The deny reason for this Bash command, or None when it is fine to run."""
-    found = problems(command, cwd)
-    if not found:
-        return None
-    return DENY_PREFIX + "\n\n".join(f"{n}. {text}" for n, text in enumerate(found, start=1))
+def problems(command: str, cwd: Path) -> list[str]:
+    """Everything wrong with the PR bodies this Bash command would post."""
+    if _API_WRITE_RE.search(command):
+        return [API_WRITE]
+    return [problem for call in pr_calls(command) for problem in body_problems(call, cwd)]
 
 
 def main() -> None:
     """PreToolUse entry point: emit one deny, or nothing at all."""
     data = json.loads(sys.stdin.read())
-    tool_input = data.get("tool_input")
-    if data.get("hook_event_name") != "PreToolUse" or data.get("tool_name") != "Bash":
+    found = problems(data["tool_input"]["command"], Path(data["cwd"]))
+    if not found:
         return
-    if not isinstance(tool_input, dict):
-        return
-    denied = reason(str(tool_input.get("command", "")), Path(data["cwd"]))
-    if denied is None:
-        return
+    reason = DENY_PREFIX + "\n\n".join(f"{n}. {text}" for n, text in enumerate(found, start=1))
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": denied,
+            "permissionDecisionReason": reason,
         }
     }
     sys.stdout.write(json.dumps(output) + "\n")

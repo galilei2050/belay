@@ -42,20 +42,20 @@ Sections in this order. Drop any that has nothing real in it; never pad one to f
 | Section | Holds | Skip when |
 |---|---|---|
 | **What was wrong** | the failure, its mechanism, its measured size | the PR adds something new that never broke |
-| **What changed** | the decision and where the invariant now lives — not a file list | never |
+| **What changed** | the decisions, each with its reason, in the system's terms — not a file list | never |
 | **What the review found** | defects a review round caught that tests did not | no review round ran |
 | **Checks** | the commands you ran, each with its real outcome | never |
+| **Risk** | blast radius, the flag that limits it | it is no bigger than the diff |
 | **Open ends** | agreed-but-unimplemented, follow-ups, blocked checks | genuinely none |
 
-No rollback section: "revert this PR" is true of every PR and tells the reviewer nothing.
+No rollback line: "revert this PR" is true of every PR and tells the reviewer nothing.
 
 **What changed** is 2–4 bullets, each a decision and its reason in plain words. Names of files,
 classes and methods belong in the diff; a bullet that is mostly identifiers is the diff narrated.
 
-Every body carries a **before/after table** of the behaviour that changed, with measured numbers,
-or — when nothing existed before — a **mermaid diagram** of the new flow. `hooks/pr_body_gate.py`
-denies `gh pr create` / `gh pr edit` without one, a list narrating symbols, or prose dense with
-inline code outside Checks; its reason says which, quotes the offending lines and how to rewrite.
+Every body carries a **table comparing before and after** the behaviour that changed, with
+measured numbers, or — when nothing existed before — a **mermaid diagram** of the new flow.
+`hooks/pr_body_gate.py` enforces this and the What changed rule before the body is posted.
 
 A title is a claim about the outcome, not about the diff: `Stop the agent creating duplicate
 orders`, not `Update service_orders and add guard`.

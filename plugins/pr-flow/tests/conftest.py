@@ -26,10 +26,18 @@ class NudgePayload(TypedDict):
     additionalContext: str
 
 
-class HookOutput(TypedDict, total=False):
-    """Everything either hook can write: a PostToolUse nudge, or a blocked Stop."""
+class DenyPayload(TypedDict):
+    """The `hookSpecificOutput` half of a PreToolUse deny."""
 
-    hookSpecificOutput: NudgePayload
+    hookEventName: str
+    permissionDecision: str
+    permissionDecisionReason: str
+
+
+class HookOutput(TypedDict, total=False):
+    """Everything a hook here can write: a PostToolUse nudge, a PreToolUse deny, or a blocked Stop."""
+
+    hookSpecificOutput: NudgePayload | DenyPayload
     decision: str
     reason: str
 

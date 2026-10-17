@@ -51,8 +51,8 @@ NUDGES = {
     "open": (
         "`{branch}` is on the remote and has no open PR. Open one now with the `" + SKILL + "` "
         "skill — it produces a description a reviewer can act on: what was actually broken (with "
-        "the numbers you measured), a mermaid diagram of the mechanism, what changed, what you "
-        "verified, the risk and the rollback. A bullet list of commit subjects is not a PR "
+        "the numbers you measured), a before/after table or a mermaid diagram of the new flow, the "
+        "decisions made, what you verified. A bullet list of commit subjects is not a PR "
         "description; the diff already says that. Then find out what happens to it: " + CHAIN
     ),
     "update": (

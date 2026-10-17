@@ -125,7 +125,6 @@ bold line keeps the reviewer from believing the PR does something it does not.]*
 ## Риск
 
 - **Низкий** — `SERVICE_ORDER_CREATION_ENABLED` по-прежнему `False`, создание заказов выключено.
-- **Откат** — revert ветки; ни миграций, ни инфраструктуры.
 
 ## Хвосты
 
