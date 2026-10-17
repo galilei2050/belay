@@ -1008,6 +1008,10 @@
     "rules": [],
     "default": "allow"
   },
+  "tach": {
+    "rules": [],
+    "default": "allow"
+  },
   "mypy": {
     "rules": [],
     "default": "allow"
