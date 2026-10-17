@@ -1020,9 +1020,9 @@
   "ssh": {
     "rules": [
       {
-        "fn": "ssh_runs_local_code",
+        "fn": "ssh_has_local_effect",
         "decision": "deny",
-        "reason": "This ssh call has an option the ACL doesn't vet: `-F`/`-I`/`-E`, an unknown flag, or a `-o` keyword outside the connection basics (User, Port, ConnectTimeout, BatchMode, StrictHostKeyChecking, IdentityFile, ProxyJump, …). Options like ProxyCommand, LocalCommand, RemoteCommand, Match exec or SetEnv run code the ACL never sees. Use `-J <jump-host>` instead of ProxyCommand, run a local step as its own Bash call, or ask the user to put the setting in ~/.ssh/config."
+        "reason": "This ssh call has an option the ACL doesn't vet: `-F` (a config file), `-I` (loads a library), `-E` (writes a log to any path), a flag ssh doesn't have, or a `-o` keyword outside the connection basics (User, Port, ConnectTimeout, BatchMode, StrictHostKeyChecking, IdentityFile, ProxyJump, …). ProxyCommand, LocalCommand and Match exec run local code the ACL never sees; RemoteCommand and SetEnv change what runs on the host past the vetted command. Use `-J <jump-host>` instead of ProxyCommand, run a local step as its own Bash call, or ask the user to put the setting in ~/.ssh/config."
       },
       {
         "fn": "ssh_remote_not_literal",
@@ -1030,7 +1030,7 @@
         "reason": "The remote command contains `$` or a backtick, so the ACL can't vet what will actually run on the host. Write it fully literal (`~` instead of `$HOME`), or run each step as its own `ssh <host> '<cmd>'` call."
       },
       {
-        "fn": "ssh_without_remote_command",
+        "fn": "ssh_opens_shell",
         "decision": "deny",
         "reason": "ssh with no remote command opens a shell on the host, and whatever reaches its stdin runs there unvetted. Pass the command as an argument — `ssh <host> '<cmd>'` — so the ACL checks it; for a tunnel only, add `-N`."
       }

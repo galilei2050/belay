@@ -328,16 +328,15 @@ script as if typed directly. So `bash -c 'git status'` → allow, `bash -c 'rm -
 `ssh` is the same idea one hop away. ssh's own rules in `acl.json` run first, then
 `_inner_script` hands the remote command to the full pipeline as if typed locally —
 `ssh vm 'git status'` → allow, `ssh vm 'sudo reboot'` → deny. The wait-loop deny sees through
-both hops the same way. `SshCommandLine` reads argv as OpenSSH's getopt does (clusters like
-`-vl u`, options after the host, `--`), and the ssh rules deny:
+both hops the same way. `SshCommandLine` reads argv with stdlib `getopt` and OpenSSH's own
+optstring, re-entering it after the host as `ssh.c` does. The ssh rules in `hooks/acl.json`
+(`ssh_has_local_effect`, `ssh_remote_not_literal`, `ssh_opens_shell`) carry the reasons; the
+two non-obvious choices behind them:
 
-- an option that runs or loads code locally: `-F`/`-I`/`-E`, an unknown flag, or any `-o`
-  keyword outside `_SSH_SAFE_OPTIONS`. It's an allowlist because the list of keywords that
-  run code (ProxyCommand, LocalCommand, Match exec, PKCS11Provider, XAuthLocation, …) keeps
-  growing, and a denylist misses the next one;
-- a remote command with `$`/backtick (can't be vetted);
-- ssh with no remote command (unless `-N`/`-O`/`-G`/`-V`/`-W`): the remote shell then runs
-  whatever reaches stdin, e.g. `echo 'rm -rf ~' | ssh vm`.
+- `-o` is an allowlist (`_SSH_SAFE_OPTIONS`), not a denylist: the keywords that run local code
+  keep growing, and a denylist misses the next one.
+- ssh with an empty command line starts a shell fed from stdin, so `echo 'rm -rf ~' | ssh vm`
+  runs unvetted — "no command" is a deny, not a harmless login.
 
 Path-based rules resolve against the local project, so a remote `rm` is allowed only when
 its paths happen to fall under the local `.scratch/`. Otherwise it's denied, deliberately
@@ -349,6 +348,8 @@ erring strict.
 or write arbitrary files (`r`/`R`/`w`/`W`, the `w` flag). `sed_reaches_outside` denies
 those unless `--sandbox` is set, since sed then refuses them itself. `SedCommandLine` reads
 argv the way getopt does: clusters, unique long-option prefixes, and options after operands.
+Under `POSIXLY_CORRECT` parsing stops at the first operand, so a `--sandbox` past an operand
+doesn't count and that operand is scanned as a possible script too.
 `SedScript` parses the script the way sed does, including bracket expressions, text
 commands that run to the end of the line, and labels. Both **fail closed**: a `-f` script
 file, an unknown option, or syntax the scanner can't place counts as reaching outside. When
@@ -424,7 +425,9 @@ bootstrap: the hook sets up the project state its rules depend on.
   captures the intent (`curl_mutating_remote`, `all_paths_inside_project`).
   New `fn` predicates require editing `acl_hook.py` — keep them tiny and pure
   (the one impure predicate is `git_write_on_merged_branch`; read the network-call
-  paragraph at the top before adding a second).
+  paragraph at the top before adding a second). When a predicate has to parse a
+  program's argv or script (the ssh and sed ones), the parser is its own class and
+  the `fn` stays a one-line adapter over it.
 
 ## How to add a new rule
 

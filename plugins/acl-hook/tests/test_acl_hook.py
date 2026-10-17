@@ -733,10 +733,14 @@ def test_ssh_remote_command_gets_the_local_verdict(logger, cmd, remote):
         "ssh -E ~/.bashrc vm ls",
         "ssh -I /tmp/lib.so vm ls",
         "ssh -Z vm ls",
+        # -o is an allowlist: keywords no denylist would think to name are refused too
+        "ssh -o PKCS11Provider=/tmp/x.so vm ls",
+        "ssh -o XAuthLocation=/tmp/x vm ls",
+        "ssh -o Bogus=1 vm ls",
     ],
 )
-def test_ssh_option_that_runs_local_code_is_denied(logger, cmd):
-    assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_runs_local_code"))
+def test_ssh_option_with_local_effect_is_denied(logger, cmd):
+    assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_has_local_effect"))
 
 
 @pytest.mark.parametrize("cmd", ["ssh vm 'echo $HOME'", "ssh vm 'cat `id`'"])
@@ -744,16 +748,17 @@ def test_ssh_remote_command_with_expansion_is_denied(logger, cmd):
     assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_remote_not_literal"))
 
 
-@pytest.mark.parametrize("cmd", ["ssh vm", "ssh -t vm"])
-def test_ssh_without_remote_command_is_denied(logger, cmd):
-    assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_without_remote_command"))
+@pytest.mark.parametrize("cmd", ["ssh vm", "ssh -t vm", "ssh vm ''"])
+def test_ssh_that_opens_a_shell_is_denied(logger, cmd):
+    # `ssh vm ''` joins to an empty command line, for which ssh starts a shell, not an exec.
+    assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_opens_shell"))
 
 
 def test_ssh_fed_a_script_on_stdin_is_denied_via_main(monkeypatch, capsys):
     # With no command ssh runs a shell on the host fed from stdin, which the ACL never sees.
     out_hook = via_main(monkeypatch, capsys, "echo 'rm -rf ~' | ssh vm")["hookSpecificOutput"]
     assert out_hook["permissionDecision"] == "deny"
-    assert out_hook["permissionDecisionReason"] == rule_reason("ssh", "ssh_without_remote_command")
+    assert out_hook["permissionDecisionReason"] == rule_reason("ssh", "ssh_opens_shell")
 
 
 @pytest.mark.parametrize("cmd", ["ssh -N -L 8080:localhost:80 vm", "ssh -O exit vm", "ssh -G vm"])
@@ -783,7 +788,6 @@ def test_ssh_with_nothing_to_run_remotely_is_allowed(logger, cmd):
         "sed '# e id' f",
         "sed --posix -s -n p f",
         "sed --sandbox '1e id' f",
-        "sed -e 'e id' f --sandbox",
     ],
 )
 def test_sed_text_transform_is_allowed(logger, cmd):
@@ -810,6 +814,15 @@ def test_sed_text_transform_is_allowed(logger, cmd):
         "sed -l 5 'e id' f",
         "sed -ne 'e id' f",
         "sed -e 'e id' -- --sandbox f",
+        # -e pieces are joined with a newline, so `a` text ends before the next piece
+        "sed -e '1a x' -e 'e id' f",
+        # text and comments end at a newline
+        "sed '1a x\ne id' f",
+        "sed '# c\ne id' f",
+        # under POSIXLY_CORRECT getopt stops at the first operand: a later --sandbox is a file
+        # name, and the first operand is the script even when an -e follows
+        "POSIXLY_CORRECT=1 sed '1e id' f --sandbox",
+        "sed 'e id' f -e p",
         # a script the check can't see or doesn't follow
         "sed -f script.sed f",
         "sed -nf script.sed f",
