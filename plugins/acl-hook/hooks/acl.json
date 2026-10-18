@@ -866,6 +866,11 @@
         "reason": "Env files blocked"
       },
       {
+        "fn": "sed_reaches_outside",
+        "decision": "deny",
+        "reason": "This sed can run a shell command or read/write a file of its own (`e`, `r`/`R`, `w`/`W`, the `e`/`w` flag of `s`), rewrites with `-i` a file outside the project or a backup suffix containing `/`, or its script can't be read from the command line (`-f` script file, an unknown option, syntax the check doesn't follow). Pass the script inline with `-e`, add `--sandbox` (GNU sed then refuses e/r/w), keep `-i` to project files with a plain suffix like `.bak`, read other files with the Read tool and write them with Edit/Write."
+      },
+      {
         "fn": "sed_inline_long",
         "decision": "deny",
         "reason": "`sed -i` expression too long (>300 chars) — use the Edit tool instead. Edit shows a diff, doesn't risk regex mishaps, and the change is reviewable. If you genuinely need a long regex replacement, split it into multiple short `sed -e` expressions or use Edit with the new content."
@@ -1010,6 +1015,26 @@
   },
   "tach": {
     "rules": [],
+    "default": "allow"
+  },
+  "ssh": {
+    "rules": [
+      {
+        "fn": "ssh_has_local_effect",
+        "decision": "deny",
+        "reason": "This ssh call has an option the ACL doesn't vet: `-F` (a config file), `-I` (loads a library), `-E` (writes a log to any path), a flag ssh doesn't have, or a `-o` keyword outside the connection basics (User, Port, ConnectTimeout, BatchMode, StrictHostKeyChecking, IdentityFile, ProxyJump, …). ProxyCommand, LocalCommand and Match exec run local code the ACL never sees; RemoteCommand and SetEnv change what runs on the host past the vetted command. Use `-J <jump-host>` instead of ProxyCommand, run a local step as its own Bash call, or ask the user to put the setting in ~/.ssh/config."
+      },
+      {
+        "fn": "ssh_remote_not_literal",
+        "decision": "deny",
+        "reason": "The remote command contains `$` or a backtick, so the ACL can't vet what will actually run on the host. Write it fully literal (`~` instead of `$HOME`), or run each step as its own `ssh <host> '<cmd>'` call."
+      },
+      {
+        "fn": "ssh_opens_shell",
+        "decision": "deny",
+        "reason": "ssh with no remote command opens a shell on the host, and whatever reaches its stdin runs there unvetted. Pass the command as an argument — `ssh <host> '<cmd>'` — so the ACL checks it; for a tunnel only, add `-N`."
+      }
+    ],
     "default": "allow"
   },
   "mypy": {
