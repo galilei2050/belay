@@ -748,9 +748,10 @@ def test_ssh_remote_command_with_expansion_is_denied(logger, cmd):
     assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_remote_not_literal"))
 
 
-@pytest.mark.parametrize("cmd", ["ssh vm", "ssh -t vm", "ssh vm ''"])
+@pytest.mark.parametrize("cmd", ["ssh vm", "ssh -t vm", "ssh vm ''", "ssh -O proxy -o ControlPath=m vm"])
 def test_ssh_that_opens_a_shell_is_denied(logger, cmd):
-    # `ssh vm ''` joins to an empty command line, for which ssh starts a shell, not an exec.
+    # `ssh vm ''` joins to an empty command line, for which ssh starts a shell, not an exec;
+    # `-O proxy` opens a session through the master instead of just signalling it.
     assert decide(cmd, logger) == ("deny", rule_reason("ssh", "ssh_opens_shell"))
 
 
@@ -788,6 +789,9 @@ def test_ssh_with_nothing_to_run_remotely_is_allowed(logger, cmd):
         "sed '# e id' f",
         "sed --posix -s -n p f",
         "sed --sandbox '1e id' f",
+        "sed -i '$d' app/main.py",
+        "sed --in-place=.orig 's/a/b/' app/main.py",
+        "sed -i -e 's/a/b/' app/main.py tests/x.py",
     ],
 )
 def test_sed_text_transform_is_allowed(logger, cmd):
@@ -830,6 +834,12 @@ def test_sed_text_transform_is_allowed(logger, cmd):
         "sed --bogus 'p' f",
         "sed 's/a/b' f",
         "sed 'v' f",
+        # -i rewrites its operands, so they're held to the same boundary as a `>` redirect
+        "sed -i 's/a/b/' ~/.bashrc",
+        "sed -i -e 's/a/b/' app/main.py /etc/hosts",
+        # a suffix with `/` moves the backup to another directory (`*` is the file's name)
+        "sed -i'/home/u/.config/autostart/*' 's/a/a/' x.desktop",
+        "sed --in-place='/tmp/zz/*' 's/a/b/' app/main.py",
     ],
 )
 def test_sed_command_file_io_or_unreadable_script_is_denied(logger, cmd):

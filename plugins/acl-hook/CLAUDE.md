@@ -349,7 +349,9 @@ or write arbitrary files (`r`/`R`/`w`/`W`, the `w` flag). `sed_reaches_outside` 
 those unless `--sandbox` is set, since sed then refuses them itself. `SedCommandLine` reads
 argv the way getopt does: clusters, unique long-option prefixes, and options after operands.
 Under `POSIXLY_CORRECT` parsing stops at the first operand, so a `--sandbox` past an operand
-doesn't count and that operand is scanned as a possible script too.
+doesn't count and that operand is scanned as a possible script too. `-i` rewrites its file
+operands, so they're held to `write_escapes_project` like a `>` target; a backup suffix
+with `/` (`-i'dir/*'`) relocates the backup anywhere and is denied.
 `SedScript` parses the script the way sed does, including bracket expressions, text
 commands that run to the end of the line, and labels. Both **fail closed**: a `-f` script
 file, an unknown option, or syntax the scanner can't place counts as reaching outside. When

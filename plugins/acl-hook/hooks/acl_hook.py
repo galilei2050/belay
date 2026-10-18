@@ -556,6 +556,8 @@ class SedCommandLine:
         # turns up, but under POSIXLY_CORRECT option parsing stops at it and it IS the script.
         self.script_operand: str | None = None
         self.seen_operand = False
+        self.operands: list[str] = []
+        self.in_place = False
         self.sandbox = False
         rest = iter(args)
         for arg in rest:
@@ -579,6 +581,20 @@ class SedCommandLine:
         if not self.seen_operand and not self.expressions:
             self.script_operand = arg
         self.seen_operand = True
+        self.operands.append(arg)
+
+    def _in_place(self, suffix: str) -> None:
+        # A suffix with `/` puts the backup in another directory (`*` stands for the file's name),
+        # which can be anywhere on the machine.
+        if "/" in suffix:
+            raise _UnsafeSedError
+        self.in_place = True
+
+    def writes_outside_project(self) -> bool:
+        """True if `-i` rewrites an operand that lies outside the project."""
+        # Without any `-e` the first operand is the script, not a file sed rewrites.
+        files = self.operands[1:] if self.script_operand is not None and not self.expressions else self.operands
+        return self.in_place and any(write_escapes_project(operand) for operand in files)
 
     def _long(self, arg: str, rest: Iterator[str]) -> None:
         name, eq, value = arg.partition("=")
@@ -589,13 +605,16 @@ class SedCommandLine:
             self.sandbox = self.sandbox or not self.seen_operand
         elif option in ("--expression", "--line-length"):
             self._value(option, value if eq else next(rest, None))
+        elif option == "--in-place":
+            self._in_place(value)
         elif option in (None, "--file"):
             raise _UnsafeSedError
 
     def _short(self, cluster: str, rest: Iterator[str]) -> None:
         for at, flag in enumerate(cluster):
             if flag == "i":
-                return  # -i[SUFFIX]: the rest of the cluster is the backup suffix
+                self._in_place(cluster[at + 1 :])  # -i[SUFFIX]: the rest of the cluster is the suffix
+                return
             if flag in "el":
                 self._value(flag, cluster[at + 1 :] or next(rest, None))
                 return
@@ -610,10 +629,12 @@ class SedCommandLine:
 
 
 def sed_reaches_outside(args: list[str]) -> bool:
-    """True if an un-sandboxed sed could execute a command or touch a file, or its script can't be read."""
+    """True if sed could run a command or touch a file outside the project, or its script can't be read."""
     try:
         line = SedCommandLine(args)
     except _UnsafeSedError:
+        return True
+    if line.writes_outside_project():
         return True
     return not line.sandbox and any(SedScript(script).reaches_outside() for script in line.scripts)
 
@@ -681,7 +702,8 @@ class SshCommandLine(NamedTuple):
                 parsed += more
         except getopt.GetoptError:
             return None
-        flags = {flag[1] for flag, _ in parsed}
+        # `-O proxy` is the one control request that goes on to open a session through the master.
+        flags = {flag[1] for flag, value in parsed if (flag, value) != ("-O", "proxy")}
         return cls(flags, [value for flag, value in parsed if flag == "-o"], " ".join(command))
 
     def has_local_effect(self) -> bool:
