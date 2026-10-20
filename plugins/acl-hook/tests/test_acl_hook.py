@@ -1332,6 +1332,77 @@ def test_bare_interactive_claude_is_denied(logger):
     assert "claude -p" in reason
 
 
+def test_claude_positional_prompt_is_denied(logger):
+    # A positional prompt without -p still opens the TUI — same hang as bare `claude`.
+    assert decide('claude "implement the plan"', logger)[0] == "deny"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "claude --version",
+        "claude doctor",
+        "claude plugin list",
+        "claude plugin validate plugins/acl-hook",
+        "claude plugin eval plugins/acl-hook",
+        "claude plugin marketplace list",
+        "claude mcp list",
+        "claude mcp get perplexity",
+        "claude config list",
+        "claude config get theme",
+    ],
+)
+def test_claude_readonly_subcommands_are_allowed(cmd, logger):
+    assert decide(cmd, logger)[0] == "allow"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    ["claude plugin install foo@bar", "claude mcp add x cmd", "claude config set theme dark", "claude update"],
+)
+def test_claude_machine_state_subcommands_stay_denied(cmd, logger):
+    assert decide(cmd, logger)[0] == "deny"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'codex exec "fix the failing test"',
+        'codex exec --full-auto "fix the failing test"',
+        'codex e "fix the failing test"',
+        "codex review --base main",
+        "codex --version",
+        "codex doctor",
+        "codex login status",
+        "codex mcp list",
+    ],
+)
+def test_codex_headless_forms_are_allowed(cmd, logger):
+    assert decide(cmd, logger)[0] == "allow"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        'codex exec --dangerously-bypass-approvals-and-sandbox "go"',
+        'codex exec --yolo "go"',
+        'codex exec --sandbox danger-full-access "go"',
+        'codex exec --sandbox=danger-full-access "go"',
+    ],
+)
+def test_codex_blank_cheque_flags_are_denied(cmd, logger):
+    decision, reason = decide(cmd, logger)
+    assert decision == "deny"
+    assert "workspace-write" in reason
+
+
+@pytest.mark.parametrize("cmd", ["codex", 'codex "fix the failing test"', "codex login", "codex resume abc"])
+def test_codex_interactive_and_config_forms_are_denied(cmd, logger):
+    decision, reason = decide(cmd, logger)
+    assert decision == "deny"
+    assert "codex exec" in reason
+
+
 def test_iconv_is_allowed(logger):
     assert decide("iconv -f UTF-16 -t UTF-8 file.csv", logger)[0] == "allow"
 
