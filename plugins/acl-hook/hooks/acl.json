@@ -1934,6 +1934,60 @@
         "reason": "Confirm secret access"
       },
       {
+        "args": [
+          "run",
+          "services",
+          "delete"
+        ],
+        "decision": "ask",
+        "reason": "Deleting a Cloud Run service drops its URL and every revision — there is no undo. Confirm with the user; to take it out of rotation instead, `gcloud run services update-traffic` to another revision."
+      },
+      {
+        "args": [
+          "run",
+          "services",
+          "update"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "run",
+          "services",
+          "update-traffic"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "run",
+          "services",
+          "deploy"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "run",
+          "services",
+          "replace"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": [
+          "run",
+          "services",
+          "proxy"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
         "args_contain": [
           "deploy"
         ],
