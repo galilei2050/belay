@@ -1433,8 +1433,34 @@ def test_unknown_command_is_denied(logger):
 
 
 def test_gcloud_deploy_needs_confirmation(logger):
-    decision, _ = decide("gcloud run services deploy my-service --image gcr.io/proj/img", logger)
+    decision, _ = decide("gcloud functions deploy my-fn --source .", logger)
     assert decision == "ask"
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        "gcloud run services update backend --region=us-central1 --memory=2Gi",
+        "gcloud run services update-traffic backend --to-revisions=backend-00042=100",
+        "gcloud run services deploy my-service --image gcr.io/proj/img",
+        "gcloud run services replace service.yaml",
+        "gcloud run services proxy backend --port=8080",
+        "gcloud --project=p run services update backend --region=us-central1",
+    ],
+)
+def test_gcloud_run_services_changes_are_allowed(logger, cmd):
+    assert decide(cmd, logger)[0] == "allow"
+
+
+def test_gcloud_run_services_delete_still_asks(logger):
+    decision, reason = decide("gcloud run services delete backend --region=us-central1", logger)
+    assert decision == "ask"
+    assert "update-traffic" in reason
+
+
+def test_gcloud_run_services_iam_change_is_still_denied(logger):
+    cmd = "gcloud run services add-iam-policy-binding backend --member=allUsers --role=roles/run.invoker"
+    assert decide(cmd, logger)[0] == "deny"
 
 
 def test_gcloud_storage_download_is_allowed(logger):
