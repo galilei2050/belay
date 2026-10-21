@@ -88,6 +88,17 @@ def test_read_outside_project_asks(fix_project_dir):
     assert "cross-repo" in reason
 
 
+def test_reading_background_task_output_does_not_prompt():
+    """The harness writes it there and tells the agent to read it; an ask stalls every task."""
+    output = fs_acl_hook.HARNESS_TMP / "-home-x-proj" / "session" / "tasks" / "b1.output"
+    assert classify("Read", str(output)) == ("allow", "")
+
+
+def test_writing_background_task_output_is_still_denied():
+    decision, _ = decided("Write", str(fs_acl_hook.HARNESS_TMP / "tasks" / "b1.output"))
+    assert decision == "deny"
+
+
 # ── ~/.claude is the agent's own home ────────────────────────────────────────
 #
 # Driven through main() rather than classify(), so each case asserts the decision Claude Code

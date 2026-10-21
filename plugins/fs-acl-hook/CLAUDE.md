@@ -1,5 +1,7 @@
 # CLAUDE.md — fs-acl-hook
 
+Updated: 2026-10-20
+
 How to change `hooks/fs_acl_hook.py` without drifting from its purpose.
 
 ## Scope (don't expand it)
@@ -76,3 +78,11 @@ mypy plugins/
 
 Tests call `classify()` directly for per-rule assertions and `main()` via a synthesised
 stdin for the emit path. Add one positive and one negative per new rule.
+
+## Business decisions
+
+None at this level.
+
+## Technical decisions
+
+- **Reads under `HARNESS_TMP` (`<tmp>/claude-<uid>/`) are `allow`; writes there stay denied** — Claude Code writes background-task output there and its completion notice tells the agent to read it, so the out-of-project `ask` stalled every background task on a prompt. Rejected: a `permissions.allow` rule in settings, because a hook's `ask` overrides it.

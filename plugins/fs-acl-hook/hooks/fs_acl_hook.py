@@ -11,6 +11,7 @@ Decisions (first match wins):
   - credentials under `~/.claude`      → deny  (credential and env files, read AND write)
   - write to a guard file under `~/.claude` → ask (settings/ACL — the agent's own leash)
   - anything else under `~/.claude`    → allow (memory, logs, plans — the agent's own home)
+  - read under `<tmp>/claude-<uid>/`   → allow (the harness's own background-task output)
   - write under `.scratch/`            → allow (suppress prompt; the scratch zone)
   - write outside the project          → deny  (→ `.scratch/`, or cd into that repo)
   - read outside the project           → ask   (confirm a one-off cross-repo read)
@@ -25,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
@@ -43,6 +45,10 @@ CREDENTIAL_NAMES = frozenset({".credentials.json", ".env"})
 # Guards: the files that decide what the agent may do. Reading them is routine (the
 # update-config skill does), but a silent write would let the agent widen its own leash.
 GUARD_NAMES = frozenset({"settings.json", "settings.local.json", "acl.json"})
+
+# Where Claude Code writes background-task output and then tells the agent to read it, so a
+# read there is the harness's own instruction, not a cross-repo excursion. Writes stay denied.
+HARNESS_TMP = (Path(tempfile.gettempdir()) / f"claude-{os.getuid()}").resolve()
 
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 READ_TOOLS = {"Read"}
@@ -114,6 +120,8 @@ def classify(tool_name: str, file_path: str) -> Decision | None:
         return ("deny", _GIT_REASON)  # off-limits to both read and write
     if _under(CLAUDE_HOME, real):
         return _classify_claude_home(tool_name, real, file_path)
+    if tool_name in READ_TOOLS and _under(HARNESS_TMP, real):
+        return ("allow", "")
     if tool_name in WRITE_TOOLS:
         return _classify_write(project, real, file_path)
     return _classify_read(project, real, file_path)
