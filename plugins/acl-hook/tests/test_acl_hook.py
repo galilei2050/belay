@@ -1368,7 +1368,7 @@ def test_claude_machine_state_subcommands_stay_denied(cmd, logger):
     "cmd",
     [
         'codex exec "fix the failing test"',
-        'codex exec --full-auto "fix the failing test"',
+        'codex exec --sandbox workspace-write "fix the failing test"',
         'codex e "fix the failing test"',
         "codex review --base main",
         "codex --version",
