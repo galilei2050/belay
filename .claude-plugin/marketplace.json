@@ -13,7 +13,7 @@
     {
       "name": "comment-guard-hook",
       "source": "./plugins/comment-guard-hook",
-      "description": "PreToolUse file-tool gate: caps Python function and class docstrings (and own-line comment blocks) at 3 lines."
+      "description": "PreToolUse file-tool gate: caps Python function and class docstrings (and own-line comment blocks) at 3 lines; denies `name.py:N` references in comments and docstrings."
     },
     {
       "name": "no-shirk-hook",

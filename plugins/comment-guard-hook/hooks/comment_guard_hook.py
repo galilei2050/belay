@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Docstring-length gate for Claude Code file edits — three lines, then stop.
+"""Docstring gate for Claude Code file edits — three lines, and no `name.py:N` cross-references.
 
 A model asked to write a contract writes it in the docstrings, and an essay above a function reads
-as finished work long enough to survive review. No rule about *what* a comment may say can be
-enforced without judging meaning, which a hook cannot do. A line count can.
+as finished work long enough to survive review. A hook cannot judge what a comment means, so it
+checks form only: a line count, and a line-reference pattern recognisable from syntax alone.
 
 Only `deny` is ever emitted, and only for prose this very edit is answerable for.
 """
@@ -88,7 +88,7 @@ class Finding(NamedTuple):
 
 
 class LineRef(NamedTuple):
-    """One path-with-line-number reference found in a comment or docstring."""
+    """One `_LINE_REF` match in a comment or docstring."""
 
     line: int
     what: str
@@ -105,7 +105,8 @@ class Verdict(NamedTuple):
 class Docstring(NamedTuple):
     """A docstring with the inclusive source span of its string literal."""
 
-    node: ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    label: str
+    is_module: bool
     start: int
     end: int
     text: str
@@ -138,16 +139,16 @@ def _docstrings(tree: ast.AST, changed: frozenset[int]) -> list[Docstring]:
         if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         text = ast.get_docstring(node, clean=False)
+        # The isinstance only narrows for mypy (get_docstring already checked it); ruff bans assert here.
         if text is None or not isinstance(first := node.body[0], ast.Expr):
             continue
         start, end = first.value.lineno, first.value.end_lineno or first.value.lineno
-        if _touched(start, end, changed):
-            out.append(Docstring(node, start, end, text))
+        if not _touched(start, end, changed):
+            continue
+        is_module = isinstance(node, ast.Module)
+        label = "module docstring" if isinstance(node, ast.Module) else f"docstring of `{node.name}`"
+        out.append(Docstring(label, is_module, start, end, text))
     return out
-
-
-def _label(doc: Docstring) -> str:
-    return "module docstring" if isinstance(doc.node, ast.Module) else f"docstring of `{doc.node.name}`"
 
 
 def _docstring_findings(docs: list[Docstring]) -> list[Finding]:
@@ -156,24 +157,28 @@ def _docstring_findings(docs: list[Docstring]) -> list[Finding]:
     One orientation paragraph per file is the cheapest context a reader gets, and unlike a method's
     it sits on no signature that could have carried the information instead.
     """
-    capped = (d for d in docs if not isinstance(d.node, ast.Module))
-    return [Finding(d.start, _label(d), _prose_lines(d.text)) for d in capped if _prose_lines(d.text) > MAX_LINES]
+    capped = (d for d in docs if not d.is_module)
+    return [Finding(d.start, d.label, _prose_lines(d.text)) for d in capped if _prose_lines(d.text) > MAX_LINES]
 
 
 def _line_refs(docs: list[Docstring], source: str, changed: frozenset[int]) -> list[LineRef]:
     """Every `_LINE_REF` match in a touched docstring, module ones included, or touched comment.
 
-    Trailing comments count too: this is about what the text points at, not how long it runs.
+    Scans source lines, not the decoded docstring, whose escapes would shift the reported line.
     """
+    lines = source.splitlines()
     refs = [
-        LineRef(doc.start + offset, _label(doc), ref)
+        LineRef(n, doc.label, ref)
         for doc in docs
-        for offset, line in enumerate(doc.text.splitlines())
-        for ref in _LINE_REF.findall(line)
+        for n in range(doc.start, doc.end + 1)
+        for ref in _LINE_REF.findall(lines[n - 1])
     ]
-    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-    comments = (t for t in tokens if t.type == tokenize.COMMENT and t.start[0] in changed)
+    comments = (t for t in _comment_tokens(source) if t.start[0] in changed)
     return refs + [LineRef(t.start[0], "comment", ref) for t in comments for ref in _LINE_REF.findall(t.string)]
+
+
+def _comment_tokens(source: str) -> list[tokenize.TokenInfo]:
+    return [t for t in tokenize.generate_tokens(io.StringIO(source).readline) if t.type == tokenize.COMMENT]
 
 
 def own_line_comments(source: str) -> list[CommentLine]:
@@ -182,8 +187,7 @@ def own_line_comments(source: str) -> list[CommentLine]:
     A trailing comment annotates its own line of code rather than forming a block, and a directive
     is machine input with no shorter legal form.
     """
-    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-    alone = (t for t in tokens if t.type == tokenize.COMMENT and t.line.lstrip().startswith("#"))
+    alone = (t for t in _comment_tokens(source) if t.line.lstrip().startswith("#"))
     return [CommentLine(t.start[0], t.string) for t in alone if not _DIRECTIVE.match(t.string)]
 
 

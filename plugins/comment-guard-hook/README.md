@@ -1,9 +1,10 @@
 # comment-guard-hook
 
 PreToolUse gate on `Write`/`Edit`/`MultiEdit`. A Python function or class docstring may run to
-**3 non-blank lines**. Past that the edit is denied.
+**3 non-blank lines**. Past that the edit is denied, and so is any comment or docstring citing
+`name.py:N`.
 
-## Why a line count and not a rule about content
+## Why form and not meaning
 
 The failure it exists to stop is the essay: a model asked to write a contract writes the contract
 into the docstrings, and sixteen lines of design above a stub reads as finished work long enough
@@ -11,6 +12,10 @@ to survive review. Every attempt to catch that by *meaning* — narration, resta
 questions, duplicated facts — needs judgement, and a hook cannot judge; regexes match phrases and
 miss the point. A line count needs no judgement. It measures, and the only things it excludes are
 mechanical: blank lines, trailing comments, and header directives that have no shorter legal form.
+
+The one pattern it matches, `\w+\.py:\d+`, is fixed syntax too, not a phrase: a line number goes
+stale on the next commit whatever the sentence around it says, and the reference means the text
+describes its neighbour instead of the thing it sits on.
 
 What survives the cap is what a docstring is for: **how to call the thing, and what you get back.**
 
@@ -44,7 +49,8 @@ old file to change one line is never denied over prose written years ago.
 
 ## What the deny says
 
-It names each offender with its length, then gives the ladder: name it better, say it shorter,
+Each line reference is listed with the matched text, and sent to the commit message. Each over-cap
+block is listed with its length, followed by the ladder: name it better, say it shorter,
 and if it still will not fit, the function is doing more than one thing — refactor. Plus where the
 overflow actually belongs: CLAUDE.md for rules and decisions, a line comment for one non-obvious
 line, the commit message for why this change.

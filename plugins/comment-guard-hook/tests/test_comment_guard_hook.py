@@ -360,7 +360,9 @@ class Call:
 
 
 def test_line_reference_in_a_docstring_is_denied(monkeypatch, capsys, tmp_path):
-    reason = denied_lines(write_py(monkeypatch, capsys, tmp_path, PR_816))
+    out = write_py(monkeypatch, capsys, tmp_path, PR_816)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    reason = denied_lines(out)
     assert "2 line reference(s) in a comment or docstring in this Write" in reason
     assert "line 4 — docstring of `met`: `thread.py:305`" in reason
     assert "line 7 — docstring of `met`: `calls_repository.py:166`" in reason
@@ -388,6 +390,20 @@ def test_line_reference_outside_the_cap_still_counts(monkeypatch, capsys, tmp_pa
 
 def test_line_reference_in_an_ordinary_string_passes(monkeypatch, capsys, tmp_path):
     assert write_py(monkeypatch, capsys, tmp_path, 'LOCATION = "thread.py:305"\n') is None
+
+
+def test_edit_adding_a_line_reference_is_denied(monkeypatch, capsys, tmp_path):
+    target = tmp_path / "mod.py"
+    target.write_text('def f():\n    """Route a call."""\n', encoding="utf-8")
+    out = via_main(monkeypatch, capsys, "Edit", target, old_string="a call.", new_string="a call, see thread.py:305.")
+    assert "line 2 — docstring of `f`: `thread.py:305`" in denied_lines(out)
+
+
+def test_line_reference_is_reported_on_its_source_line_despite_escapes(monkeypatch, capsys, tmp_path):
+    """A backslash-newline drops a line from the decoded docstring; the report must not."""
+    source = 'def f():\n    """\\\n    Summary.\n    See thread.py:3.\n    """\n'
+    out = via_main(monkeypatch, capsys, "Write", tmp_path / "mod.py", content=source)
+    assert "line 4 — docstring of `f`: `thread.py:3`" in denied_lines(out)
 
 
 def test_untouched_line_reference_passes(monkeypatch, capsys, tmp_path):
