@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Docstring-length gate for Claude Code file edits — three lines, then stop.
+"""Docstring gate for Claude Code file edits — three lines, and no `name.py:N` cross-references.
 
 A model asked to write a contract writes it in the docstrings, and an essay above a function reads
-as finished work long enough to survive review. No rule about *what* a comment may say can be
-enforced without judging meaning, which a hook cannot do. A line count can.
+as finished work long enough to survive review. A hook cannot judge what a comment means, so it
+checks form only: a line count, and a line-reference pattern recognisable from syntax alone.
 
 Only `deny` is ever emitted, and only for prose this very edit is answerable for.
 """
@@ -61,6 +61,15 @@ _REASON = (
     "  - why this change, and what it replaced -> the commit message"
 )
 
+_LINE_REF = re.compile(r"\w+\.py:\d+")
+
+_REF_REASON = (
+    "{count} line reference(s) in a comment or docstring in this {tool}:\n\n{listed}\n\n"
+    "A line number goes stale on the next commit, and pointing at another file's lines means the "
+    "text describes the neighbour, not the thing it sits on. Say what this code is; the "
+    "cross-reference belongs in the commit message."
+)
+
 
 class Replacement(TypedDict):
     """One search-and-replace, as `Edit` sends it and as each entry of `MultiEdit`'s list does."""
@@ -76,6 +85,31 @@ class Finding(NamedTuple):
     line: int
     what: str
     length: int
+
+
+class LineRef(NamedTuple):
+    """One `_LINE_REF` match in a comment or docstring."""
+
+    line: int
+    what: str
+    ref: str
+
+
+class Verdict(NamedTuple):
+    """Everything one edit is denied for: blocks over the cap, and line references."""
+
+    findings: list[Finding]
+    refs: list[LineRef]
+
+
+class Docstring(NamedTuple):
+    """A docstring with the inclusive source span of its string literal."""
+
+    label: str
+    is_module: bool
+    start: int
+    end: int
+    text: str
 
 
 class CommentLine(NamedTuple):
@@ -98,24 +132,53 @@ def _prose_lines(text: str) -> int:
     return sum(1 for line in text.splitlines() if line.strip())
 
 
-def _docstring_findings(tree: ast.AST, changed: frozenset[int]) -> list[Finding]:
+def _docstrings(tree: ast.AST, changed: frozenset[int]) -> list[Docstring]:
+    """Every module, class and function docstring whose span this edit touched."""
+    out = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        text = ast.get_docstring(node, clean=False)
+        # The isinstance only narrows for mypy (get_docstring already checked it); ruff bans assert here.
+        if text is None or not isinstance(first := node.body[0], ast.Expr):
+            continue
+        start, end = first.value.lineno, first.value.end_lineno or first.value.lineno
+        if not _touched(start, end, changed):
+            continue
+        is_module = isinstance(node, ast.Module)
+        label = "module docstring" if isinstance(node, ast.Module) else f"docstring of `{node.name}`"
+        out.append(Docstring(label, is_module, start, end, text))
+    return out
+
+
+def _docstring_findings(docs: list[Docstring]) -> list[Finding]:
     """Function and class docstrings over the cap. Module docstrings are deliberately absent.
 
     One orientation paragraph per file is the cheapest context a reader gets, and unlike a method's
     it sits on no signature that could have carried the information instead.
     """
-    out = []
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        text = ast.get_docstring(node, clean=False)
-        first = node.body[0]
-        if text is None or not isinstance(first, ast.Expr):
-            continue
-        start, end = first.value.lineno, first.value.end_lineno or first.value.lineno
-        if _touched(start, end, changed) and _prose_lines(text) > MAX_LINES:
-            out.append(Finding(start, f"docstring of `{node.name}`", _prose_lines(text)))
-    return out
+    capped = (d for d in docs if not d.is_module)
+    return [Finding(d.start, d.label, _prose_lines(d.text)) for d in capped if _prose_lines(d.text) > MAX_LINES]
+
+
+def _line_refs(docs: list[Docstring], source: str, changed: frozenset[int]) -> list[LineRef]:
+    """Every `_LINE_REF` match in a touched docstring, module ones included, or touched comment.
+
+    Scans source lines, not the decoded docstring, whose escapes would shift the reported line.
+    """
+    lines = source.splitlines()
+    refs = [
+        LineRef(n, doc.label, ref)
+        for doc in docs
+        for n in range(doc.start, doc.end + 1)
+        for ref in _LINE_REF.findall(lines[n - 1])
+    ]
+    comments = (t for t in _comment_tokens(source) if t.start[0] in changed)
+    return refs + [LineRef(t.start[0], "comment", ref) for t in comments for ref in _LINE_REF.findall(t.string)]
+
+
+def _comment_tokens(source: str) -> list[tokenize.TokenInfo]:
+    return [t for t in tokenize.generate_tokens(io.StringIO(source).readline) if t.type == tokenize.COMMENT]
 
 
 def own_line_comments(source: str) -> list[CommentLine]:
@@ -124,8 +187,7 @@ def own_line_comments(source: str) -> list[CommentLine]:
     A trailing comment annotates its own line of code rather than forming a block, and a directive
     is machine input with no shorter legal form.
     """
-    tokens = tokenize.generate_tokens(io.StringIO(source).readline)
-    alone = (t for t in tokens if t.type == tokenize.COMMENT and t.line.lstrip().startswith("#"))
+    alone = (t for t in _comment_tokens(source) if t.line.lstrip().startswith("#"))
     return [CommentLine(t.start[0], t.string) for t in alone if not _DIRECTIVE.match(t.string)]
 
 
@@ -151,8 +213,8 @@ def _run_finding(run: list[CommentLine], changed: frozenset[int]) -> Finding | N
     return Finding(run[0].line, "comment block", length)
 
 
-def check(source: str, changed: frozenset[int]) -> list[Finding]:
-    """Every docstring and comment block over the cap that overlaps `changed`, in source order.
+def check(source: str, changed: frozenset[int]) -> Verdict:
+    """Blocks over the cap and line references that overlap `changed`, each in source order.
 
     Source that does not parse yields nothing; `judged_lines` is what stops that from becoming a
     way to land an essay beside a syntax error and never have it looked at again.
@@ -160,8 +222,10 @@ def check(source: str, changed: frozenset[int]) -> list[Finding]:
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return []
-    return sorted(_docstring_findings(tree, changed) + _comment_findings(source, changed))
+        return Verdict([], [])
+    docs = _docstrings(tree, changed)
+    findings = sorted(_docstring_findings(docs) + _comment_findings(source, changed))
+    return Verdict(findings, sorted(_line_refs(docs, source, changed)))
 
 
 def _parses(source: str) -> bool:
@@ -221,10 +285,16 @@ def _emit(reason: str) -> None:
     )
 
 
-def reason_for(findings: list[Finding], tool_name: str) -> str:
-    """The deny text: every offending block with its length, then what to do about it."""
-    listed = "\n".join(f"  line {f.line} — {f.what}: {f.length} lines" for f in findings)
-    return _REASON.format(count=len(findings), tool=tool_name, limit=MAX_LINES, listed=listed)
+def reason_for(verdict: Verdict, tool_name: str) -> str:
+    """The deny text: each offender with what is wrong with it, then what to do about it."""
+    parts = []
+    if verdict.findings:
+        listed = "\n".join(f"  line {f.line} — {f.what}: {f.length} lines" for f in verdict.findings)
+        parts.append(_REASON.format(count=len(verdict.findings), tool=tool_name, limit=MAX_LINES, listed=listed))
+    if verdict.refs:
+        listed = "\n".join(f"  line {r.line} — {r.what}: `{r.ref}`" for r in verdict.refs)
+        parts.append(_REF_REASON.format(count=len(verdict.refs), tool=tool_name, listed=listed))
+    return "\n\n".join(parts)
 
 
 def main() -> None:
@@ -242,9 +312,9 @@ def main() -> None:
     before = path.read_text(encoding="utf-8") if path.is_file() else ""
     # An `Edit` is a `MultiEdit` of one, so both take the same path.
     after = tool_input["content"] if tool_name == "Write" else replay(tool_input.get("edits", [tool_input]), before)
-    findings = check(after, judged_lines(before, after))
-    if findings:
-        _emit(reason_for(findings, tool_name))
+    verdict = check(after, judged_lines(before, after))
+    if verdict.findings or verdict.refs:
+        _emit(reason_for(verdict, tool_name))
 
 
 if __name__ == "__main__":

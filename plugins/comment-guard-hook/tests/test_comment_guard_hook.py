@@ -345,6 +345,73 @@ def test_every_offender_is_listed_with_its_length(monkeypatch, capsys, tmp_path)
     assert "2 docstring(s)/comment(s)" in reason
 
 
+# ── line references ──────────────────────────────────────────────────────────
+
+# clarity-auto-care PR #816, verbatim: at the cap, so only the reference is wrong with it.
+PR_816 = '''
+class Call:
+    def met(self) -> CallMet:
+        """What the caller met on this call, which held no conversation (app/conversations/thread.py:305-316).
+
+        Ring time is the longest ring on the caller's phone legs in this call's window, never stored
+        (app/dialpad/calls_repository.py:166); a leg that cannot say is RING_UNKNOWN, zero is ABANDONED.
+        """
+'''
+
+
+def test_line_reference_in_a_docstring_is_denied(monkeypatch, capsys, tmp_path):
+    out = write_py(monkeypatch, capsys, tmp_path, PR_816)
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"
+    reason = denied_lines(out)
+    assert "2 line reference(s) in a comment or docstring in this Write" in reason
+    assert "line 4 — docstring of `met`: `thread.py:305`" in reason
+    assert "line 7 — docstring of `met`: `calls_repository.py:166`" in reason
+    assert "past 3 lines" not in reason
+
+
+def test_line_reference_and_the_cap_are_reported_in_one_deny(monkeypatch, capsys, tmp_path):
+    over = PR_816.replace("ABANDONED.\n", "ABANDONED.\n        Fourth line.\n")
+    reason = denied_lines(write_py(monkeypatch, capsys, tmp_path, over))
+    assert "line 4 — docstring of `met`: 4 lines" in reason
+    assert "line 4 — docstring of `met`: `thread.py:305`" in reason
+
+
+@pytest.mark.parametrize(
+    ("source", "rendered"),
+    [
+        ('"""Orientation, see thread.py:305."""\n', "line 1 — module docstring: `thread.py:305`"),
+        ("x = 1  # mirrors thread.py:305\n", "line 1 — comment: `thread.py:305`"),
+    ],
+)
+def test_line_reference_outside_the_cap_still_counts(monkeypatch, capsys, tmp_path, source, rendered):
+    """Module docstrings and trailing comments are exempt from the cap, not from this."""
+    assert rendered in denied_lines(write_py(monkeypatch, capsys, tmp_path, source))
+
+
+def test_line_reference_in_an_ordinary_string_passes(monkeypatch, capsys, tmp_path):
+    assert write_py(monkeypatch, capsys, tmp_path, 'LOCATION = "thread.py:305"\n') is None
+
+
+def test_edit_adding_a_line_reference_is_denied(monkeypatch, capsys, tmp_path):
+    target = tmp_path / "mod.py"
+    target.write_text('def f():\n    """Route a call."""\n', encoding="utf-8")
+    out = via_main(monkeypatch, capsys, "Edit", target, old_string="a call.", new_string="a call, see thread.py:305.")
+    assert "line 2 — docstring of `f`: `thread.py:305`" in denied_lines(out)
+
+
+def test_line_reference_is_reported_on_its_source_line_despite_escapes(monkeypatch, capsys, tmp_path):
+    """A backslash-newline drops a line from the decoded docstring; the report must not."""
+    source = 'def f():\n    """\\\n    Summary.\n    See thread.py:3.\n    """\n'
+    out = via_main(monkeypatch, capsys, "Write", tmp_path / "mod.py", content=source)
+    assert "line 4 — docstring of `f`: `thread.py:3`" in denied_lines(out)
+
+
+def test_untouched_line_reference_passes(monkeypatch, capsys, tmp_path):
+    target = tmp_path / "mod.py"
+    target.write_text("# mirrors thread.py:305\nx = 1\n", encoding="utf-8")
+    assert via_main(monkeypatch, capsys, "Edit", target, old_string="x = 1", new_string="x = 2") is None
+
+
 # ── the holes the review panel found ─────────────────────────────────────────
 
 

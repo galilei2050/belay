@@ -27,6 +27,8 @@ for u in users:
 ```
 Never write a comment about what you just changed, what the code used to do, or why you're touching it. That belongs in the commit, not the file.
 
+The same goes for a cross-reference with a line number (`see thread.py:305-316`): it goes stale on the next commit, and it means the comment describes its neighbour, not the code it sits on. Say what this code is; the pointer belongs in the commit message.
+
 **3. Ceremony** (≈24%) — divider banners and trivial docstrings that echo the signature.
 ```python
 # BAD
@@ -80,8 +82,8 @@ Doesn't fit? In this order:
 
 Module docstrings are exempt — one orientation paragraph per file sits on no signature that could
 have carried it instead. `comment-guard-hook` is the enforcement half: it denies the Write/Edit
-that would land the essay, so this cap is the one part of this file you meet as a `deny` rather
-than as advice.
+that would land the essay or a `name.py:N` reference, so those two are the parts of this file you
+meet as a `deny` rather than as advice.
 
 ## Why this rule exists
 

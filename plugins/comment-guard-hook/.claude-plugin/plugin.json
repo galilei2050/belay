@@ -1,7 +1,7 @@
 {
   "name": "comment-guard-hook",
-  "version": "0.1.0",
-  "description": "PreToolUse file-tool gate: caps a Python function or class docstring, and a run of own-line # comments, at 3 non-blank lines.",
+  "version": "0.2.0",
+  "description": "PreToolUse file-tool gate: caps a Python function or class docstring, and a run of own-line # comments, at 3 non-blank lines, and denies a path-with-line-number reference in any comment or docstring.",
   "author": {
     "name": "galilei2050"
   }
