@@ -1196,14 +1196,119 @@
       {
         "args_contain": [
           "-p",
-          "--print"
+          "--print",
+          "--version",
+          "-v",
+          "--help",
+          "-h"
+        ],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["doctor"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["plugin", "list"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["plugin", "validate"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["plugin", "eval"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["plugin", "marketplace", "list"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["mcp", "list"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["mcp", "get"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["config", "list"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["config", "get"],
+        "decision": "allow",
+        "reason": ""
+      }
+    ],
+    "default": "deny",
+    "reason": "Bare/interactive `claude` (with or without a positional prompt) can't run under the agent at all — no TTY, so it just hangs; and `mcp add/remove`, `config set`, `update` change machine state. Run it headless instead: `claude -p \"<prompt>\"` (add `--permission-mode acceptEdits` for autonomous edits). Read-only forms are allowed as-is: `--version`, `--help`, `doctor`, `plugin list|validate|eval`, `plugin marketplace list`, `mcp list|get`, `config list|get`. For an interactive or config/update command, ask the user to run it in their own terminal."
+  },
+  "codex": {
+    "rules": [
+      {
+        "args_contain": [
+          "--dangerously-bypass-approvals-and-sandbox",
+          "--yolo",
+          "danger-full-access",
+          "*=danger-full-access"
+        ],
+        "decision": "deny",
+        "reason": "`--dangerously-bypass-approvals-and-sandbox` / `--yolo` / `--sandbox danger-full-access` turn off Codex's own approval gate and sandbox, so the nested agent runs shell completely unchecked — an agent must not hand another agent a blank cheque. Drop the flag: `codex exec` already runs non-interactively inside its sandbox, and `--sandbox workspace-write` lets it edit the repo without opening the whole machine."
+      },
+      {
+        "args": ["exec"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["e"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["review"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["doctor"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["login", "status"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args": ["mcp", "list"],
+        "decision": "allow",
+        "reason": ""
+      },
+      {
+        "args_contain": [
+          "--version",
+          "-V",
+          "--help",
+          "-h"
         ],
         "decision": "allow",
         "reason": ""
       }
     ],
     "default": "deny",
-    "reason": "Bare/interactive `claude` can't run under the agent at all — no TTY, so it just hangs; and subcommands like `mcp`/`config`/`update` change machine state. Run it headless instead: `claude -p \"<prompt>\"` (add `--permission-mode acceptEdits` for autonomous edits). For an interactive or config/update command, ask the user to run it in their own terminal."
+    "reason": "Bare `codex` (with or without a positional prompt) launches the interactive TUI — no TTY under the agent, so it hangs; and `login`, `logout`, `update`, `mcp add/remove` change machine state. Run it headless instead: `codex exec \"<prompt>\"` (add `--sandbox workspace-write` for autonomous edits inside the sandbox) or `codex review`. Read-only forms are allowed as-is: `--version`, `--help`, `doctor`, `login status`, `mcp list`. For `codex login` or any other interactive/config command, ask the user to run it in their own terminal."
   },
   "docker": {
     "rules": [
