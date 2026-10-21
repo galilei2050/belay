@@ -79,13 +79,20 @@ def test_edit_sibling_repo_via_traversal_is_denied(fix_project_dir):
     assert "cd into" in reason
 
 
-# ── reads outside the project ask (guardrail + escape) ───────────────────────
+# ── reads outside the project: temp dir allowed, the rest deferred ───────────
 
 
-def test_read_outside_project_asks(fix_project_dir):
-    decision, reason = decided("Read", str(fix_project_dir / ".." / "baski" / "core.py"))
-    assert decision == "ask"
-    assert "cross-repo" in reason
+@pytest.mark.parametrize(
+    "name",
+    ["claude-1000/-home-x-proj/session/tasks/b1.output", "panel_divider_full.png"],
+)
+def test_read_under_the_temp_dir_does_not_prompt(name):
+    assert classify("Read", str(fs_acl_hook.TEMP_DIR / name)) == ("allow", "")
+
+
+def test_read_in_another_repo_defers_to_claude_code():
+    """Claude Code then asks, or reads silently once the user connects the folder."""
+    assert classify("Read", str(Path.home() / "Projects" / "baski" / "core.py")) is None
 
 
 # ── ~/.claude is the agent's own home ────────────────────────────────────────

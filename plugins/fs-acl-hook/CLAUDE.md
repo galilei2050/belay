@@ -1,5 +1,7 @@
 # CLAUDE.md — fs-acl-hook
 
+Updated: 2026-10-20
+
 How to change `hooks/fs_acl_hook.py` without drifting from its purpose.
 
 ## Scope (don't expand it)
@@ -19,11 +21,11 @@ bundled-default + version-sync pattern).
 
 Same three buckets as acl-hook, by path:
 
-- **`allow`** — suppresses the prompt. Use ONLY for the scratch zone, where the agent's
-  own throwaways belong. Don't `allow` real source edits — those **defer** (return
-  `None`, emit nothing) so the user's acceptEdits / review choice still applies.
-- **`ask`** — a legitimate but boundary-crossing op the human should sign off: reading
-  another repo. Never `ask` on the agent's own scratch.
+- **`allow`** — suppresses the prompt. Use for the scratch zone and for reads under the
+  temp dir. Don't `allow` real source edits — those **defer** (return `None`, emit nothing)
+  so the user's acceptEdits / review choice still applies.
+- **`ask`** — only for a write the human must see: the agent's own permission files.
+  Never `ask` on a read.
 - **`deny`** — off-limits regardless of context: `.git/` (read or write), writes
   outside the project, and secrets under `~/.claude`. The reason must redirect
   (`.scratch/`, the memory dir, or cd into the repo).
@@ -54,8 +56,8 @@ scratch or `.git`. Don't turn defers into `allow`; that would override the harne
 ## Every deny / ask reason must be actionable
 
 The agent reads `permissionDecisionReason`. Each one names what's wrong and prescribes
-the fix — see the three `_*_REASON` strings. A reason that doesn't tell the agent where
-to go instead (`.scratch/`, `git` commands, cd into the repo, confirm the read) isn't
+the fix — see the `_*_REASON` strings. A reason that doesn't tell the agent where
+to go instead (`.scratch/`, `git` commands, cd into the repo) isn't
 done. Mirror acl-hook's bar.
 
 ## Why JSON output, not exit codes
@@ -76,3 +78,11 @@ mypy plugins/
 
 Tests call `classify()` directly for per-rule assertions and `main()` via a synthesised
 stdin for the emit path. Add one positive and one negative per new rule.
+
+## Business decisions
+
+None at this level.
+
+## Technical decisions
+
+- **Reads under `TEMP_DIR` are `allow`; other out-of-project reads defer** — background-task output (`/tmp/claude-<uid>/…/tasks/`) and subagent screenshots land in the temp dir, and a prompt on them stalled background work; the hook's `allow` also skips Claude Code's own out-of-directory prompt. A sibling repo stays gated by the user: deferring lets Claude Code ask, or read silently once the folder is in `permissions.additionalDirectories`. Rejected: `ask` from the hook, which overrides a connected folder so connecting never helped; `allow` for every outside read, since the user wants other repos gated.
