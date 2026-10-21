@@ -11,10 +11,9 @@ Decisions (first match wins):
   - credentials under `~/.claude`      → deny  (credential and env files, read AND write)
   - write to a guard file under `~/.claude` → ask (settings/ACL — the agent's own leash)
   - anything else under `~/.claude`    → allow (memory, logs, plans — the agent's own home)
-  - read under `<tmp>/claude-<uid>/`   → allow (the harness's own background-task output)
   - write under `.scratch/`            → allow (suppress prompt; the scratch zone)
   - write outside the project          → deny  (→ `.scratch/`, or cd into that repo)
-  - read outside the project           → ask   (confirm a one-off cross-repo read)
+  - read outside the project           → allow (a read changes nothing)
   - anything else (in-project)         → defer to the normal permission flow (emit nothing)
 
 Emits the PreToolUse `hookSpecificOutput` JSON (not exit codes) because `allow` must
@@ -26,7 +25,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
@@ -46,10 +44,6 @@ CREDENTIAL_NAMES = frozenset({".credentials.json", ".env"})
 # update-config skill does), but a silent write would let the agent widen its own leash.
 GUARD_NAMES = frozenset({"settings.json", "settings.local.json", "acl.json"})
 
-# Where Claude Code writes background-task output and then tells the agent to read it, so a
-# read there is the harness's own instruction, not a cross-repo excursion. Writes stay denied.
-HARNESS_TMP = (Path(tempfile.gettempdir()) / f"claude-{os.getuid()}").resolve()
-
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 READ_TOOLS = {"Read"}
 
@@ -64,11 +58,6 @@ _OUT_OF_PROJECT_WRITE_REASON = (
     "/tmp or edit across repos with `../`. Throwaways go in `.scratch/` (in-tree, gitignored, no "
     "prompt). To work on another project, cd into it / open it as its own session so its files "
     "are in scope."
-)
-_OUT_OF_PROJECT_READ_REASON = (
-    "Reading `{path}` is outside the current project (`{project}`). If you mean to work in that "
-    "repo, cd into it / open it as its own session. Otherwise confirm this one-off cross-repo "
-    "read, or ask the user to connect the directory (permissions.additionalDirectories)."
 )
 _CLAUDE_CREDENTIALS_REASON = (
     "`{path}` holds credentials — off-limits to both read and write. Nothing you are asked to do "
@@ -97,12 +86,6 @@ def _classify_write(project: Path, real: Path, file_path: str) -> Decision | Non
     return None  # in-project source write → normal flow (acceptEdits / review)
 
 
-def _classify_read(project: Path, real: Path, file_path: str) -> Decision | None:
-    if not _under(project, real):
-        return ("ask", _OUT_OF_PROJECT_READ_REASON.format(path=file_path, project=PROJECT_DIR))
-    return None  # in-project read → normal flow
-
-
 def _classify_claude_home(tool_name: str, real: Path, file_path: str) -> Decision:
     """Decide for a path inside `~/.claude`: deny credentials, ask on guards, allow the rest."""
     if real.name in CREDENTIAL_NAMES:
@@ -120,11 +103,11 @@ def classify(tool_name: str, file_path: str) -> Decision | None:
         return ("deny", _GIT_REASON)  # off-limits to both read and write
     if _under(CLAUDE_HOME, real):
         return _classify_claude_home(tool_name, real, file_path)
-    if tool_name in READ_TOOLS and _under(HARNESS_TMP, real):
-        return ("allow", "")
     if tool_name in WRITE_TOOLS:
         return _classify_write(project, real, file_path)
-    return _classify_read(project, real, file_path)
+    # A read changes nothing, and Claude Code's own out-of-directory prompt stalls background work
+    # on task output and screenshots under /tmp — so an outside read is allowed, not asked.
+    return None if _under(project, real) else ("allow", "")
 
 
 def _emit(decision: str, reason: str) -> None:

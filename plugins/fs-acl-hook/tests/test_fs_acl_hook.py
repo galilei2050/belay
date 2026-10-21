@@ -79,24 +79,19 @@ def test_edit_sibling_repo_via_traversal_is_denied(fix_project_dir):
     assert "cd into" in reason
 
 
-# ── reads outside the project ask (guardrail + escape) ───────────────────────
+# ── reads outside the project are allowed: a read changes nothing ────────────
 
 
-def test_read_outside_project_asks(fix_project_dir):
-    decision, reason = decided("Read", str(fix_project_dir / ".." / "baski" / "core.py"))
-    assert decision == "ask"
-    assert "cross-repo" in reason
-
-
-def test_reading_background_task_output_does_not_prompt():
-    """The harness writes it there and tells the agent to read it; an ask stalls every task."""
-    output = fs_acl_hook.HARNESS_TMP / "-home-x-proj" / "session" / "tasks" / "b1.output"
-    assert classify("Read", str(output)) == ("allow", "")
-
-
-def test_writing_background_task_output_is_still_denied():
-    decision, _ = decided("Write", str(fs_acl_hook.HARNESS_TMP / "tasks" / "b1.output"))
-    assert decision == "deny"
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/tmp/claude-1000/-home-x-proj/session/tasks/b1.output",  # background-task output
+        "/tmp/panel_divider_full.png",  # a subagent's own screenshot
+        "../baski/core.py",  # a sibling repo
+    ],
+)
+def test_read_outside_project_does_not_prompt(fix_project_dir, path):
+    assert classify("Read", str(fix_project_dir / path)) == ("allow", "")
 
 
 # ── ~/.claude is the agent's own home ────────────────────────────────────────

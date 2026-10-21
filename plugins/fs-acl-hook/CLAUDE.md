@@ -21,11 +21,11 @@ bundled-default + version-sync pattern).
 
 Same three buckets as acl-hook, by path:
 
-- **`allow`** — suppresses the prompt. Use ONLY for the scratch zone, where the agent's
-  own throwaways belong. Don't `allow` real source edits — those **defer** (return
-  `None`, emit nothing) so the user's acceptEdits / review choice still applies.
-- **`ask`** — a legitimate but boundary-crossing op the human should sign off: reading
-  another repo. Never `ask` on the agent's own scratch.
+- **`allow`** — suppresses the prompt. Use for the scratch zone and for reads outside the
+  project. Don't `allow` real source edits — those **defer** (return `None`, emit nothing)
+  so the user's acceptEdits / review choice still applies.
+- **`ask`** — only for a write the human must see: the agent's own permission files.
+  Never `ask` on a read.
 - **`deny`** — off-limits regardless of context: `.git/` (read or write), writes
   outside the project, and secrets under `~/.claude`. The reason must redirect
   (`.scratch/`, the memory dir, or cd into the repo).
@@ -56,8 +56,8 @@ scratch or `.git`. Don't turn defers into `allow`; that would override the harne
 ## Every deny / ask reason must be actionable
 
 The agent reads `permissionDecisionReason`. Each one names what's wrong and prescribes
-the fix — see the three `_*_REASON` strings. A reason that doesn't tell the agent where
-to go instead (`.scratch/`, `git` commands, cd into the repo, confirm the read) isn't
+the fix — see the `_*_REASON` strings. A reason that doesn't tell the agent where
+to go instead (`.scratch/`, `git` commands, cd into the repo) isn't
 done. Mirror acl-hook's bar.
 
 ## Why JSON output, not exit codes
@@ -85,4 +85,4 @@ None at this level.
 
 ## Technical decisions
 
-- **Reads under `HARNESS_TMP` (`<tmp>/claude-<uid>/`) are `allow`; writes there stay denied** — Claude Code writes background-task output there and its completion notice tells the agent to read it, so the out-of-project `ask` stalled every background task on a prompt. Rejected: a `permissions.allow` rule in settings, because a hook's `ask` overrides it.
+- **Reads outside the project are `allow`, not `ask`** — a read changes nothing, and the prompt stalled background work: task output under `/tmp/claude-<uid>/`, a subagent's screenshot in `/tmp`. The hook's `allow` also skips Claude Code's own out-of-directory prompt. `.git/` and credentials stay denied, and writes outside the project stay denied. Rejected: a carve-out for the task-output directory only, since screenshots and other `/tmp` reads hit the same prompt; a `permissions.allow` rule in settings, which a hook's `ask` overrides.
