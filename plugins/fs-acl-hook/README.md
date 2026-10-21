@@ -18,7 +18,8 @@ For every `Write` / `Edit` / `Read` (first match wins):
 | anything else under `~/.claude` | **allow** (read *and* write) | the agent's own home: memory, logs, plans, job scratch |
 | write under `.scratch/` | **allow** (no prompt) | the sanctioned scratch zone (acl-hook creates & gitignores it) |
 | write outside the project | **deny** | no `/tmp` scatter, no `Edit(../other-repo/…)` — put throwaways in `.scratch/`, or cd into that repo |
-| read outside the project | **allow** | a read changes nothing; asking stalled background work on task output and screenshots under `/tmp` |
+| read under the temp dir (`/tmp`) | **allow** | background-task output and subagent screenshots; a prompt there stalled background work |
+| read elsewhere outside the project | *defer* | Claude Code asks, or reads silently once the folder is connected (`permissions.additionalDirectories`) |
 | anything else (in-project) | *defer* | normal permission flow (your acceptEdits / review choice) |
 
 The commit-message pattern it nudges: `Write .scratch/COMMIT_MSG` → `git commit -F .scratch/COMMIT_MSG`

@@ -13,7 +13,8 @@ Decisions (first match wins):
   - anything else under `~/.claude`    → allow (memory, logs, plans — the agent's own home)
   - write under `.scratch/`            → allow (suppress prompt; the scratch zone)
   - write outside the project          → deny  (→ `.scratch/`, or cd into that repo)
-  - read outside the project           → allow (a read changes nothing)
+  - read under the temp dir            → allow (task output, screenshots — a prompt stalls them)
+  - read elsewhere outside the project → defer (Claude Code asks unless the folder is connected)
   - anything else (in-project)         → defer to the normal permission flow (emit nothing)
 
 Emits the PreToolUse `hookSpecificOutput` JSON (not exit codes) because `allow` must
@@ -25,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 PROJECT_DIR = str(Path(os.environ.get("CLAUDE_PROJECT_DIR") or Path.cwd()).resolve())
@@ -43,6 +45,10 @@ CREDENTIAL_NAMES = frozenset({".credentials.json", ".env"})
 # Guards: the files that decide what the agent may do. Reading them is routine (the
 # update-config skill does), but a silent write would let the agent widen its own leash.
 GUARD_NAMES = frozenset({"settings.json", "settings.local.json", "acl.json"})
+
+# Background-task output and subagent screenshots land here, and a prompt on reading them stalls
+# background work. Other outside reads defer, so a folder the user connected reads silently.
+TEMP_DIR = Path(tempfile.gettempdir()).resolve()
 
 WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 READ_TOOLS = {"Read"}
@@ -105,9 +111,9 @@ def classify(tool_name: str, file_path: str) -> Decision | None:
         return _classify_claude_home(tool_name, real, file_path)
     if tool_name in WRITE_TOOLS:
         return _classify_write(project, real, file_path)
-    # A read changes nothing, and Claude Code's own out-of-directory prompt stalls background work
-    # on task output and screenshots under /tmp — so an outside read is allowed, not asked.
-    return None if _under(project, real) else ("allow", "")
+    if _under(TEMP_DIR, real) and not _under(project, real):
+        return ("allow", "")
+    return None
 
 
 def _emit(decision: str, reason: str) -> None:

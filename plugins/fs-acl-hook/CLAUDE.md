@@ -21,8 +21,8 @@ bundled-default + version-sync pattern).
 
 Same three buckets as acl-hook, by path:
 
-- **`allow`** — suppresses the prompt. Use for the scratch zone and for reads outside the
-  project. Don't `allow` real source edits — those **defer** (return `None`, emit nothing)
+- **`allow`** — suppresses the prompt. Use for the scratch zone and for reads under the
+  temp dir. Don't `allow` real source edits — those **defer** (return `None`, emit nothing)
   so the user's acceptEdits / review choice still applies.
 - **`ask`** — only for a write the human must see: the agent's own permission files.
   Never `ask` on a read.
@@ -85,4 +85,4 @@ None at this level.
 
 ## Technical decisions
 
-- **Reads outside the project are `allow`, not `ask`** — a read changes nothing, and the prompt stalled background work: task output under `/tmp/claude-<uid>/`, a subagent's screenshot in `/tmp`. The hook's `allow` also skips Claude Code's own out-of-directory prompt. `.git/` and credentials stay denied, and writes outside the project stay denied. Rejected: a carve-out for the task-output directory only, since screenshots and other `/tmp` reads hit the same prompt; a `permissions.allow` rule in settings, which a hook's `ask` overrides.
+- **Reads under `TEMP_DIR` are `allow`; other out-of-project reads defer** — background-task output (`/tmp/claude-<uid>/…/tasks/`) and subagent screenshots land in the temp dir, and a prompt on them stalled background work; the hook's `allow` also skips Claude Code's own out-of-directory prompt. A sibling repo stays gated by the user: deferring lets Claude Code ask, or read silently once the folder is in `permissions.additionalDirectories`. Rejected: `ask` from the hook, which overrides a connected folder so connecting never helped; `allow` for every outside read, since the user wants other repos gated.

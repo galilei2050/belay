@@ -79,19 +79,20 @@ def test_edit_sibling_repo_via_traversal_is_denied(fix_project_dir):
     assert "cd into" in reason
 
 
-# ── reads outside the project are allowed: a read changes nothing ────────────
+# ── reads outside the project: temp dir allowed, the rest deferred ───────────
 
 
 @pytest.mark.parametrize(
-    "path",
-    [
-        "/tmp/claude-1000/-home-x-proj/session/tasks/b1.output",  # background-task output
-        "/tmp/panel_divider_full.png",  # a subagent's own screenshot
-        "../baski/core.py",  # a sibling repo
-    ],
+    "name",
+    ["claude-1000/-home-x-proj/session/tasks/b1.output", "panel_divider_full.png"],
 )
-def test_read_outside_project_does_not_prompt(fix_project_dir, path):
-    assert classify("Read", str(fix_project_dir / path)) == ("allow", "")
+def test_read_under_the_temp_dir_does_not_prompt(name):
+    assert classify("Read", str(fs_acl_hook.TEMP_DIR / name)) == ("allow", "")
+
+
+def test_read_in_another_repo_defers_to_claude_code():
+    """Claude Code then asks, or reads silently once the user connects the folder."""
+    assert classify("Read", str(Path.home() / "Projects" / "baski" / "core.py")) is None
 
 
 # ── ~/.claude is the agent's own home ────────────────────────────────────────
