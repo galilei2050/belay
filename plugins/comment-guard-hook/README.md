@@ -36,6 +36,7 @@ whose name and signature carry their weight has almost none of it applicable.
 | Trailing `# …` on a code line | not a block; each annotates its own line |
 | Blank lines inside a docstring | not counted, so PEP 257's summary-blank-body shape is free |
 | Non-`.py` files | ignored |
+| `name.py:N` in any comment or docstring, module and trailing included | denied: the line number goes stale on the next commit, and the reference means the text describes its neighbour. The cross-reference belongs in the commit message |
 
 Only lines **this edit touches** are judged, by the whole span of the block rather than its first
 line — an essay grows by appending to a docstring whose opening quote has not moved. Opening an
