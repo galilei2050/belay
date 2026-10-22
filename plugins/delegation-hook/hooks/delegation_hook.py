@@ -96,6 +96,12 @@ _PICK_THE_MODEL = (
     "shallow on anything needing judgment."
 )
 
+_MODEL_DENIED = (
+    "Name the subagent's model — pass `model` as `opus`, `sonnet` or `haiku` and call it again. "
+    "Without it the agent falls back to its definition or the session model, which here is Fable, "
+    "the most expensive tier; `fable` itself is not for subagents.\n" + _PICK_THE_MODEL
+)
+
 _WRAP_UP = (
     "every further tool call is blocked, and retrying will not unblock it. Write your final message "
     "now: give the answer from what you already have, and state plainly which parts you did not get "
@@ -191,6 +197,17 @@ class Verdict(NamedTuple):
     context: list[str]
 
 
+def judge_spawn(tool_input: dict[str, object]) -> Verdict:
+    """Decide one `Agent` call: foreground and Fable-priced spawns are denied, the rest are briefed."""
+    # Absent means background: the Agent tool detaches by default, so only an explicit false
+    # counts as foreground — and that is the one shape denied.
+    if tool_input.get("run_in_background") is False:
+        return Verdict(_FOREGROUND_DENIED, [])
+    if tool_input.get("model") in (None, "fable"):
+        return Verdict(_MODEL_DENIED, [])
+    return Verdict(None, [_SLICE_THE_TASK, _PICK_THE_MODEL])
+
+
 def judge(data: dict[str, object]) -> Verdict:
     """Decide one PreToolUse payload.
 
@@ -202,13 +219,7 @@ def judge(data: dict[str, object]) -> Verdict:
 
     tool_input = data.get("tool_input")
     if data.get("tool_name") == "Agent" and isinstance(tool_input, dict):
-        # Absent means background: the Agent tool detaches by default, so only an explicit false
-        # counts as foreground — and that is the one shape denied.
-        if tool_input.get("run_in_background") is False:
-            deny = _FOREGROUND_DENIED
-        else:
-            context.append(_SLICE_THE_TASK)
-            context.append(_PICK_THE_MODEL)
+        deny, context = judge_spawn(tool_input)
 
     agent_id = data.get("agent_id")
     if isinstance(agent_id, str):  # absent in the main thread — the budgets are a subagent rule
