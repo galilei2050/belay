@@ -33,7 +33,7 @@
     {
       "name": "delegation-hook",
       "source": "./plugins/delegation-hook",
-      "description": "PreToolUse delegation gate: subagents run in the background so the session is never frozen waiting for one, and each gets a 250k-token context / 7-minute budget before its tools are cut off."
+      "description": "PreToolUse delegation gate: subagents run in the background so the session is never frozen waiting for one, never on Fable (an explicit cheaper `model` is required), and each gets a 250k-token context / 7-minute budget before its tools are cut off."
     },
     {
       "name": "review-panel",

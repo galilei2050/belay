@@ -59,11 +59,13 @@ def via_main(monkeypatch, capsys, **payload):
     return json.loads(out)["hookSpecificOutput"] if out.strip() else None
 
 
-def spawn(background):
+def spawn(background, model="sonnet"):
     """A main-thread `Agent` payload — no agent_id, since the main thread never carries one."""
     tool_input = {"prompt": "read auth.py, answer whether the token is refreshed"}
     if background is not None:
         tool_input["run_in_background"] = background
+    if model is not None:
+        tool_input["model"] = model
     return {"tool_name": "Agent", "tool_input": tool_input}
 
 
@@ -117,6 +119,24 @@ def test_the_denial_does_not_send_the_agent_to_poll(monkeypatch, capsys):
     """Waiting in a loop is the failure this plugin exists to prevent, in either direction."""
     reason = via_main(monkeypatch, capsys, **spawn(background=False))["permissionDecisionReason"]
     assert "poll" in reason.lower()
+
+
+# ── subagents name a model, and it is not Fable ──────────────────────────────
+
+
+@pytest.mark.parametrize("model", [None, "fable"])
+def test_spawn_without_a_cheaper_model_denied(monkeypatch, capsys, model):
+    """Omitted `model` inherits the Fable session; explicit `fable` is the same bill."""
+    out = via_main(monkeypatch, capsys, **spawn(background=None, model=model))
+    assert out["permissionDecision"] == "deny"
+    for tier in ("`opus`", "`sonnet`", "`haiku`"):
+        assert tier in out["permissionDecisionReason"]
+
+
+@pytest.mark.parametrize("model", ["opus", "sonnet", "haiku"])
+def test_spawn_with_a_named_cheaper_model_runs(monkeypatch, capsys, model):
+    out = via_main(monkeypatch, capsys, **spawn(background=None, model=model))
+    assert "permissionDecision" not in out
 
 
 def test_non_agent_tool_in_main_thread_is_silent(monkeypatch, capsys):
