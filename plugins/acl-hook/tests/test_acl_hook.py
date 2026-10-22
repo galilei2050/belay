@@ -591,6 +591,49 @@ def test_dangerous_command_inside_substitution_or_subshell_is_denied(logger, cmd
 
 
 @pytest.mark.parametrize(
+    ("cmd", "pieces"),
+    [
+        (
+            "gcloud run revisions describe $(gcloud run services describe backend --format='value(x)')"
+            " --region us-central1 --format='value(metadata.creationTimestamp)'",
+            [
+                "gcloud run services describe backend --format='value(x)'",
+                "gcloud run revisions describe  --region us-central1 --format='value(metadata.creationTimestamp)'",
+            ],
+        ),
+        (
+            "git merge-tree --name-only $(git merge-base HEAD origin/master) HEAD origin/master 2>&1 | grep -i conflict",
+            [
+                "git merge-base HEAD origin/master",
+                "git merge-tree --name-only  HEAD origin/master 2>&1",
+                "grep -i conflict",
+            ],
+        ),
+        (
+            "grep -c '' $(ls -t *.jsonl | head 20) 2>/dev/null | sort",
+            ["ls -t *.jsonl", "head 20", "grep -c ''  2>/dev/null", "sort"],
+        ),
+        (
+            "diff <(grep -v R35 .scratch/lint1.txt) .scratch/lint2.txt",
+            ["grep -v R35 .scratch/lint1.txt", "diff  .scratch/lint2.txt"],
+        ),
+        ("wc -l $(cat $(ls *.list)) --total", ["ls *.list", "cat", "wc -l  --total"]),
+        ("case $x in a) ls;; esac", ["case $x in a", "ls", "esac"]),
+    ],
+)
+def test_outer_command_around_substitution_stays_one_piece(cmd, pieces):
+    assert acl_hook.split_chained_commands(cmd) == pieces
+
+
+@pytest.mark.parametrize(
+    "cmd",
+    ["wc -l $(find app -name '*.py') --total", "diff <(grep -v R35 .scratch/a.txt) .scratch/b.txt"],
+)
+def test_outer_command_tail_after_substitution_is_allowed(logger, cmd):
+    assert acl_hook._decide(cmd, logger, "test")[0] == "allow"
+
+
+@pytest.mark.parametrize(
     "cmd",
     [
         "node --version",
