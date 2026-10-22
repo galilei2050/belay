@@ -175,7 +175,7 @@ def _syntax_indices(command: str) -> Iterator[int]:
 
 
 def _separator_spans(command: str) -> Iterator[Span]:
-    r"""Yield every unquoted `&&` / `;` / `|` / newline / `(` / `$(` / `)` as a Span.
+    r"""Yield every unquoted `&&` / `;` / `|` / newline / `(` / `$(` / `<(` / `>(` / `)` as a Span.
 
     Parens split so `$(…)` and `( … )` bodies are checked as commands, not as arguments of the outer one.
     """
@@ -183,21 +183,39 @@ def _separator_spans(command: str) -> Iterator[Span]:
     for i in _syntax_indices(command):
         if i < consumed:
             continue
-        if command[i : i + 2] in {"&&", "$("}:
+        if command[i : i + 2] in {"&&", "$(", "<(", ">("}:
             yield Span(i, i + 2)
             consumed = i + 2
         elif command[i] in "|;\n()":
             yield Span(i, i + 1)
 
 
+_SUBSTITUTION_OPENERS = frozenset({"(", "$(", "<(", ">("})
+
+
 def split_chained_commands(command: str) -> list[str]:
-    """Split a Bash command at every `_separator_spans` separator — respecting quotes and backslashes."""
+    """Split a Bash command into the commands bash runs — respecting quotes, backslashes and `$(…)` nesting.
+
+    A substitution body is its own piece; the outer command around it stays one piece: `wc -l $(find app) --total`
+    gives `find app` and `wc -l  --total`. An unmatched `)` (a `case` pattern) is a plain separator.
+    """
+    outer: list[str] = [""]
     pieces: list[str] = []
     cursor = 0
     for start, end in _separator_spans(command):
-        pieces.append(command[cursor:start])
+        outer[-1] += command[cursor:start]
         cursor = end
-    pieces.append(command[cursor:])
+        separator = command[start:end]
+        if separator in _SUBSTITUTION_OPENERS:
+            outer.append("")
+            continue
+        pieces.append(outer[-1])
+        if separator == ")" and len(outer) > 1:
+            outer.pop()
+        else:
+            outer[-1] = ""
+    outer[-1] += command[cursor:]
+    pieces.extend(outer)
     return [p.strip() for p in pieces if p.strip()]
 
 
