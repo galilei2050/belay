@@ -163,6 +163,9 @@ def _syntax_indices(command: str) -> Iterator[int]:
         c = command[i]
         if c == "\\" and not in_single:
             # `\"`, `\|`, `\;` are literal characters to bash, never a quote or a separator.
+            # `\⏎` is the one pair bash removes outright (inside double quotes too).
+            if command[i + 1 : i + 2] == "\n":
+                yield i
             i += 2
             continue
         if c == "'" and not in_double:
@@ -174,8 +177,11 @@ def _syntax_indices(command: str) -> Iterator[int]:
         i += 1
 
 
+_LINE_CONTINUATION = "\\\n"
+
+
 def _separator_spans(command: str) -> Iterator[Span]:
-    r"""Yield every unquoted `&&` / `;` / `|` / newline / `(` / `$(` / `<(` / `>(` / `)` as a Span.
+    r"""Yield every unquoted `&&` / `;` / `|` / newline / `(` / `$(` / `<(` / `>(` / `)` / `\⏎` as a Span.
 
     Parens split so `$(…)` and `( … )` bodies are checked as commands, not as arguments of the outer one.
     """
@@ -183,7 +189,7 @@ def _separator_spans(command: str) -> Iterator[Span]:
     for i in _syntax_indices(command):
         if i < consumed:
             continue
-        if command[i : i + 2] in {"&&", "$(", "<(", ">("}:
+        if command[i : i + 2] in {"&&", "$(", "<(", ">(", _LINE_CONTINUATION}:
             yield Span(i, i + 2)
             consumed = i + 2
         elif command[i] in "|;\n()":
@@ -194,10 +200,10 @@ _SUBSTITUTION_OPENERS = frozenset({"(", "$(", "<(", ">("})
 
 
 def split_chained_commands(command: str) -> list[str]:
-    """Split a Bash command into the commands bash runs — respecting quotes, backslashes and `$(…)` nesting.
+    r"""Split a Bash command into the commands bash runs — respecting quotes, backslashes and `$(…)` nesting.
 
     A substitution body is its own piece; the outer command around it stays one piece: `wc -l $(find app) --total`
-    gives `find app` and `wc -l  --total`. An unmatched `)` (a `case` pattern) is a plain separator.
+    gives `find app` and `wc -l  --total`. An unmatched `)` (a `case` pattern) is a plain separator; `\⏎` joins lines.
     """
     outer: list[str] = [""]
     pieces: list[str] = []
@@ -206,6 +212,8 @@ def split_chained_commands(command: str) -> list[str]:
         outer[-1] += command[cursor:start]
         cursor = end
         separator = command[start:end]
+        if separator == _LINE_CONTINUATION:
+            continue
         if separator in _SUBSTITUTION_OPENERS:
             outer.append("")
             continue
