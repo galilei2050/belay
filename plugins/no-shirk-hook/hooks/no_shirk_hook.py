@@ -19,14 +19,23 @@ import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import IO, NamedTuple
+from typing import IO, NamedTuple, NotRequired, TypedDict
+
+
+class StopPayload(TypedDict):
+    """The fields of Claude Code's Stop hook stdin payload this hook reads."""
+
+    transcript_path: str
+    last_assistant_message: str
+    stop_hook_active: NotRequired[bool]
 
 
 class Match(NamedTuple):
-    """A successful shirk-pattern hit on the tail of the assistant text."""
+    """A pattern hit: its group, the matched text, and the text the guards judge it by."""
 
     group: str
     snippet: str
+    scope: str
 
 
 class Classification(NamedTuple):
@@ -201,7 +210,8 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
 # the punt usually sits mid-report in an option list, not in the closing question.
 OFFLOAD_CHECK_PATTERNS = [
     r"\b(нужно|надо|стоит|придётся|придется|следует)\s+(спросить|уточнить|связаться)\b",
-    r"\bспросить\s+(у\s+)?(?-i:[A-ZА-ЯЁ])\w*",  # capitalized object = a named third party, not the user
+    # capitalized object = a named third party, not the user; "how to ask X" is a question, not a punt
+    r"(?<!как\s)\bспросить\s+(у\s+)?(?-i:[A-ZА-ЯЁ])\w*",
     r"\b(спроси|уточни|узнай)(те)?\s+у\b",
     r"\b(need|have|ought)\s+to\s+(ask|check\s+with|contact|reach\s+out\s+to)\b",
     # sentence-initial imperative only — "I'll ask Master whether…" is the agent acting, not a punt
@@ -305,18 +315,25 @@ def setup_logging() -> logging.Logger:
 FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"`[^`]*`")
 QUOTE_LINE_RE = re.compile(r"^>.*$", re.MULTILINE)
-# Background-job status line — always last, so without stripping it hides the real closing question.
+# Background-job status line — always last, so as the tail on its own it hides the real closing question.
 STATUS_LINE_RE = re.compile(r"^(result|failed|needs input):.*$", re.MULTILINE | re.IGNORECASE)
-SOURCES_PARAGRAPH_RE = re.compile(r"^\**(источники|ссылки|sources|links|references)\**\s*:", re.IGNORECASE)
+GUILLEMET_QUOTE_RE = re.compile(r"«[^»]*»")
+SOURCES_PARAGRAPH_RE = re.compile(r"^\**(источники|sources)\**\s*:", re.IGNORECASE)
 
 
 def normalize(text: str) -> str:
-    """Strip code, quoted lines, and status lines — those don't count as shirking."""
+    """Strip code blocks, inline code, and quoted lines — those don't count as shirking."""
     text = FENCED_BLOCK_RE.sub("", text)
     text = INLINE_CODE_RE.sub("", text)
     text = QUOTE_LINE_RE.sub("", text)
-    text = STATUS_LINE_RE.sub("", text)
     return text.strip()
+
+
+def closing_text(text: str) -> str:
+    """Return the closing paragraph above any status lines, followed by those status lines."""
+    status = [m.group(0) for m in STATUS_LINE_RE.finditer(text)]
+    tail = extract_tail(STATUS_LINE_RE.sub("", text))
+    return "\n\n".join(p for p in (tail, *status) if p)
 
 
 def extract_tail(text: str) -> str:
@@ -391,22 +408,30 @@ def last_user_text(events: list[dict[str, object]]) -> str:
 # ── classifier ───────────────────────────────────────────────────────────────
 
 
+def _first_match(patterns: list[str], text: str, group: str) -> Match | None:
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            return Match(group, m.group(0).lstrip(".!?:;—- "), text)
+    return None
+
+
 def match_shirk(tail: str) -> Match | None:
     """Return the first shirking pattern that matches the tail (or None)."""
     for group, patterns in SHIRK_PATTERNS.items():
-        for pattern in patterns:
-            m = re.search(pattern, tail, flags=re.IGNORECASE | re.MULTILINE)
-            if m:
-                return Match(group, m.group(0))
+        hit = _first_match(patterns, tail, group)
+        if hit:
+            return hit
     return None
 
 
 def match_offload_check(text: str) -> Match | None:
-    """Return the first send-the-user-to-ask hit anywhere in the text (or None)."""
-    for pattern in OFFLOAD_CHECK_PATTERNS:
-        m = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
-        if m:
-            return Match("offload_check", m.group(0).lstrip(".!?:;—- "))
+    """Return the first send-the-user-to-ask hit anywhere in the text, scoped to its paragraph."""
+    for paragraph in re.split(r"\n\s*\n", text):
+        # «…» quotes a phrase under discussion; the punt is never written in quotes
+        hit = _first_match(OFFLOAD_CHECK_PATTERNS, GUILLEMET_QUOTE_RE.sub("", paragraph), "offload_check")
+        if hit:
+            return hit
     return None
 
 
@@ -438,17 +463,18 @@ def user_asked_open_question(user_text: str) -> bool:
     return bool(text) and text.endswith("?") and len(text) < _USER_Q_MAX_LEN
 
 
-def _firing_guard(tail: str, user_text: str, group: str) -> str | None:
+def _firing_guard(scope: str, user_text: str, group: str) -> str | None:
     # A read-only "want me to look?" offer is never the destructive act — looking is exactly what to
     # just do, even (especially) when a deploy is downstream. So this group skips the destructive guard.
     if group != "offer_to_investigate":
-        if _any_match(HARD_DESTRUCTIVE_KEYWORDS, tail):
+        if _any_match(HARD_DESTRUCTIVE_KEYWORDS, scope):
             return "destructive"
-        if _any_match(SOFT_DEPLOY_KEYWORDS, tail) and not offers_reversible(tail):
+        if _any_match(SOFT_DEPLOY_KEYWORDS, scope) and not offers_reversible(scope):
             return "destructive"
-    if has_business_ambiguity(tail):
+    if has_business_ambiguity(scope):
         return "ambiguity"
-    if user_asked_open_question(user_text):
+    # "Ask the vendor" in reply to the user's own question is the very punt offload_check exists for.
+    if user_asked_open_question(user_text) and group != "offload_check":
         return "user_question"
     return None
 
@@ -456,11 +482,10 @@ def _firing_guard(tail: str, user_text: str, group: str) -> str | None:
 def classify(assistant_text: str, user_text: str) -> Classification:
     """Classify an assistant turn as ok / shirk / guarded."""
     text = normalize(assistant_text)
-    tail = extract_tail(text)
-    hit = match_shirk(tail) or match_offload_check(text)
+    hit = match_shirk(closing_text(text)) or match_offload_check(text)
     if hit is None:
         return Classification("ok", None, None)
-    guard = _firing_guard(tail, user_text, hit.group)
+    guard = _firing_guard(hit.scope, user_text, hit.group)
     verdict = f"guard:{guard}" if guard else "shirk"
     return Classification(verdict, hit.group, hit.snippet)
 
@@ -501,11 +526,13 @@ def build_reason(snippet: str, group: str) -> str:
 # ── main ─────────────────────────────────────────────────────────────────────
 
 
-def _load_payload() -> dict[str, object] | None:
+def _load_payload() -> StopPayload | None:
     """Parse the Stop payload; None when the hook should exit silently (bad input, loop guard)."""
     raw = sys.stdin.read()
+    if not raw.strip():
+        return None
     try:
-        data = json.loads(raw) if raw.strip() else {}
+        data: StopPayload = json.loads(raw)
     except json.JSONDecodeError:
         return None
     if data.get("stop_hook_active"):
@@ -529,15 +556,15 @@ def _log_verdict(
 
 
 def main() -> None:
-    """Stop-hook entry point: read transcript, classify, emit block decision if needed."""
+    """Stop-hook entry point: classify the payload's final assistant message, emit a block if needed."""
     data = _load_payload()
     if data is None:
         return
     # The transcript is written asynchronously and can still lack this turn's final message.
-    assistant_text = str(data["last_assistant_message"])
+    assistant_text = data["last_assistant_message"]
     if not assistant_text.strip():
         return
-    user_text = last_user_text(read_transcript(str(data["transcript_path"])))
+    user_text = last_user_text(read_transcript(data["transcript_path"]))
     result = classify(assistant_text, user_text)
     _log_verdict(setup_logging(), result, assistant_text)
     verdict, group, snippet = result

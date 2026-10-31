@@ -537,6 +537,8 @@ def test_offload_check_triggers_anywhere(text):
         "Хук срабатывает на фразу `нужно спросить у Yelp` — пример в коде.",
         "Если что-то будет непонятно — спросить у тебя по ходу не придётся, всё решено.",
         "Neither has hits today, but I'll ask Master whether R25 should skip use cases.",
+        "Защита пропускает «нужно спросить у Yelp», а ровно этот случай и должна ловить.",
+        "needs input: domain или рядом с use case; и как спросить Gemini.",
     ],
 )
 def test_offload_check_does_not_overmatch(text):
@@ -544,14 +546,39 @@ def test_offload_check_does_not_overmatch(text):
     assert verdict == "ok"
 
 
+def test_offload_check_is_not_excused_by_user_question():
+    text = "Не знаю точную цену. Нужно спросить у Yelp, сколько стоит лид."
+    assert classify(text, user_text="Сколько Yelp берёт за лид?") == ("shirk", "offload_check", "Нужно спросить")
+
+
+def test_offload_check_ignores_deploy_in_an_unrelated_tail():
+    text = "Отчёт.\n\nДальше нужно спросить у Yelp про цену лида.\n\nЗадеплоил на прод, всё работает."
+    assert classify(text, user_text="") == ("shirk", "offload_check", "нужно спросить")
+
+
+def test_offload_check_guarded_by_destructive_context_in_its_own_paragraph():
+    text = (
+        "Отчёт о миграции схемы.\n\n"
+        "Перед тем как деплоить в прод, нужно уточнить у DBA, не конфликтует ли колонка с их скриптом.\n\n"
+        "Остальное готово: тесты зелёные, линт чист."
+    )
+    verdict, group, _ = classify(text, user_text="")
+    assert (verdict, group) == ("guard:destructive", "offload_check")
+
+
+def test_question_inside_status_line_is_still_caught():
+    verdict, group, _ = classify("Починил.\n\nresult: починил импорт. Хочешь, запушу?", user_text="")
+    assert (verdict, group) == ("shirk", "want_me_to")
+
+
 # ── main() integration via a Stop payload ────────────────────────────────────
 
 
-def via_main(monkeypatch, capsys, write_transcript, *, assistant, stop_hook_active=False, user="почини баг"):
+def via_main(monkeypatch, capsys, write_transcript, *, assistant, stop_hook_active=False, user="почини баг", stale=()):
     payload = json.dumps(
         {
             "session_id": "test",
-            "transcript_path": write_transcript([("user", user)]),
+            "transcript_path": write_transcript([("user", user), *stale]),
             "stop_hook_active": stop_hook_active,
             "hook_event_name": "Stop",
             "last_assistant_message": assistant,
@@ -572,8 +599,9 @@ def test_main_blocks_shirking_turn(monkeypatch, capsys, write_transcript):
 
 
 def test_main_reads_final_message_from_payload_not_stale_transcript(monkeypatch, capsys, write_transcript):
-    # The transcript lags: it holds only the user turn, the final answer arrives in the payload.
-    out = via_main(monkeypatch, capsys, write_transcript, assistant=YELP_REPORT)
+    # The transcript lags: its last assistant entry is an earlier, harmless message.
+    stale = [("assistant", "Факты подтверждены первоисточниками. Жду второе мнение.")]
+    out = via_main(monkeypatch, capsys, write_transcript, assistant=YELP_REPORT, stale=stale)
     assert json.loads(out)["decision"] == "block"
 
 
