@@ -64,6 +64,11 @@
       "name": "agent-knowledge",
       "source": "./plugins/agent-knowledge",
       "description": "Keeps the knowledge an agent loads lean and current, starting with CLAUDE.md. A PostToolUse gate holds every CLAUDE.md to one skeleton: an auto-stamped `Updated:` date, mandatory Business decisions and Technical decisions sections, a 200-line limit, no dead paths, no decisions duplicated from a parent file. Ships the skill that writes to that skeleton and an audit CLI."
+    },
+    {
+      "name": "fable-guard-hook",
+      "source": "./plugins/fable-guard-hook",
+      "description": "PreToolUse file-tool gate: denies Write/Edit/MultiEdit/NotebookEdit from the main thread, which runs on Fable, the most expensive tier — code edits delegate to a subagent or another session. `.scratch/` stays writable for one-off scripts."
     }
   ]
 }

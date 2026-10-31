@@ -1,0 +1,8 @@
+{
+  "name": "fable-guard-hook",
+  "version": "0.1.0",
+  "description": "PreToolUse file-tool gate: denies Write/Edit/MultiEdit/NotebookEdit from the main thread, which runs on Fable, the most expensive tier — code edits delegate to a subagent or another session. `.scratch/` stays writable for one-off scripts.",
+  "author": {
+    "name": "galilei2050"
+  }
+}
