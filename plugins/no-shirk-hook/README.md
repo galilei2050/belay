@@ -5,8 +5,17 @@ question.
 
 ## What it does
 
-After every main-agent turn (`Stop` event), the hook reads the last assistant
-text message. If the closing paragraph matches a *shirking* pattern — e.g.
+After every main-agent turn (`Stop` event), the hook takes the turn's final
+assistant message from the payload's `last_assistant_message` (the transcript
+file can lag behind it). A closing «Источники:»/"Sources:" paragraph is
+skipped, and trailing `result:`/`failed:`/`needs input:` status lines are
+checked together with the paragraph above them.
+
+Separately, the whole message is scanned for sending the user to ask a third
+party («нужно спросить у Yelp», "check with the vendor") — the `offload_check`
+group, which gets its own reason: research it yourself.
+
+If the closing paragraph matches a *shirking* pattern — e.g.
 «Запустить?», «Хочешь, я починю?», "Should I run the tests?", "Want me to
 continue?" — and no false-positive guard fires, it returns:
 
@@ -36,7 +45,11 @@ move:
    alternatives («какой вариант», "which approach", "A or B?"). Business
    decisions belong to the human.
 3. **User asked an open question** — the previous user message itself ends
-   with `?` and is short. Then the agent is answering, not shirking.
+   with `?` and is short. Then the agent is answering, not shirking. Doesn't
+   excuse `offload_check`: "ask the vendor" is no answer to a question.
+
+For an `offload_check` hit, guards 1 and 2 read the paragraph the phrase sits
+in, not the tail.
 4. **Loop guard** — if `stop_hook_active` is already true, the hook does
    nothing, so two blocks can't ping-pong.
 
@@ -59,6 +72,7 @@ Patterns and guards live as Python lists at the top of
 one negative test in `tests/test_no_shirk_hook.py`, run `pytest plugins/`. If
 the hook starts blocking legitimate turns, extend `HARD_DESTRUCTIVE_KEYWORDS` /
 `SOFT_DEPLOY_KEYWORDS` or `BUSINESS_AMBIGUITY_MARKERS` rather than weakening the
-patterns.
+patterns. A false `offload_check` hit is the exception: narrow
+`OFFLOAD_CHECK_PATTERNS` itself, since the guards only see the hit's paragraph.
 
 Logs: `~/.claude/logs/no-shirk-hook.log`.

@@ -1,8 +1,8 @@
 """Tests for plugins/no-shirk-hook/hooks/no_shirk_hook.py.
 
 The hook is pure: stdin JSON + transcript file → stdout JSON. We test classify()
-directly for per-pattern assertions, and main() through a synthesised stdin
-payload pointing at a temp JSONL transcript for end-to-end behaviour.
+directly for per-pattern assertions, and main() through a synthesised Stop
+payload (last_assistant_message + a temp JSONL transcript) end to end.
 """
 
 from __future__ import annotations
@@ -18,8 +18,8 @@ from no_shirk_hook import (
     extract_tail,
     has_business_ambiguity,
     has_destructive_context,
-    last_assistant_text,
     last_user_text,
+    match_offload_check,
     match_shirk,
     normalize,
 )
@@ -479,18 +479,6 @@ def test_question_inside_fenced_block_is_ignored():
 # ── transcript reading helpers ───────────────────────────────────────────────
 
 
-def test_last_assistant_text_skips_tool_use_only(write_transcript):
-    path = write_transcript(
-        [
-            ("user", "do the thing"),
-            ("assistant", [{"type": "tool_use", "id": "x", "name": "Bash", "input": {}}]),
-            ("assistant", "Готово. Запустить?"),
-        ]
-    )
-    events = no_shirk_hook.read_transcript(path)
-    assert "Запустить" in last_assistant_text(events)
-
-
 def test_last_user_text_returns_latest(write_transcript):
     path = write_transcript(
         [
@@ -503,16 +491,97 @@ def test_last_user_text_returns_latest(write_transcript):
     assert last_user_text(events) == "second"
 
 
-# ── main() integration via stdin + transcript file ───────────────────────────
+# ── tail trailers / offload_check (real miss: a bg-job report on Yelp lead replies) ──
+
+YELP_REPORT = (
+    "Варианты\n\n"
+    "1. Smart Lead Reply от Yelp — $30 в месяц. Нужно спросить у Yelp, доступен ли он для auto repair.\n"
+    "2. Zapier Yelp Leads — черновик от ИИ, сотрудник подтверждает.\n\n"
+    "Решение за тобой: отвечаем без человека или с проверкой черновика сотрудником?\n\n"
+    "Источники: Zapier-интеграция (https://docs.developer.yelp.com/docs/leads-api-zapier-integration)\n\n"
+    "result: Пять вариантов автоответа на Yelp-лиды. Рекомендация: Zapier с черновиком от ИИ."
+)
 
 
-def via_main(monkeypatch, capsys, *, transcript_path, stop_hook_active=False):
+def test_status_line_and_sources_do_not_hide_closing_question():
+    verdict, group, snippet = classify(YELP_REPORT, user_text="")
+    assert (verdict, group) == ("shirk", "offload_decision")
+    assert snippet == "Решение за тобой"
+
+
+def test_extract_tail_skips_sources_paragraph():
+    text = "Report body here.\n\nЗапушить ветку и открыть PR на ревью?\n\nSources: https://example.com/a, https://example.com/b"
+    assert extract_tail(text) == "Запушить ветку и открыть PR на ревью?"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Smart Lead Reply подходит. Нужно спросить у Yelp, доступен ли он для auto repair.",
+        "В ноябре спросить Yelp про вариант 1.",
+        "Стоит уточнить у поддержки лимиты.",
+        "Спроси у менеджера аккаунта, включён ли API.",
+        "Pricing is unclear — you'll need to check with the vendor.",
+        "Ask Yelp whether the feature covers auto repair.",
+    ],
+)
+def test_offload_check_triggers_anywhere(text):
+    assert match_offload_check(f"{text}\n\nДальше отчёт продолжается, финал без вопроса.") is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Я спросил у Yelp через форму поддержки — ответ: доступно для auto repair.",
+        "I checked with the vendor docs: the feature covers auto repair.",
+        "Хук срабатывает на фразу `нужно спросить у Yelp` — пример в коде.",
+        "Если что-то будет непонятно — спросить у тебя по ходу не придётся, всё решено.",
+        "Neither has hits today, but I'll ask Master whether R25 should skip use cases.",
+        "Защита пропускает «нужно спросить у Yelp», а ровно этот случай и должна ловить.",
+        "needs input: domain или рядом с use case; и как спросить Gemini.",
+    ],
+)
+def test_offload_check_does_not_overmatch(text):
+    verdict, _, _ = classify(text, user_text="")
+    assert verdict == "ok"
+
+
+def test_offload_check_is_not_excused_by_user_question():
+    text = "Не знаю точную цену. Нужно спросить у Yelp, сколько стоит лид."
+    assert classify(text, user_text="Сколько Yelp берёт за лид?") == ("shirk", "offload_check", "Нужно спросить")
+
+
+def test_offload_check_ignores_deploy_in_an_unrelated_tail():
+    text = "Отчёт.\n\nДальше нужно спросить у Yelp про цену лида.\n\nЗадеплоил на прод, всё работает."
+    assert classify(text, user_text="") == ("shirk", "offload_check", "нужно спросить")
+
+
+def test_offload_check_guarded_by_destructive_context_in_its_own_paragraph():
+    text = (
+        "Отчёт о миграции схемы.\n\n"
+        "Перед тем как деплоить в прод, нужно уточнить у DBA, не конфликтует ли колонка с их скриптом.\n\n"
+        "Остальное готово: тесты зелёные, линт чист."
+    )
+    verdict, group, _ = classify(text, user_text="")
+    assert (verdict, group) == ("guard:destructive", "offload_check")
+
+
+def test_question_inside_status_line_is_still_caught():
+    verdict, group, _ = classify("Починил.\n\nresult: починил импорт. Хочешь, запушу?", user_text="")
+    assert (verdict, group) == ("shirk", "want_me_to")
+
+
+# ── main() integration via a Stop payload ────────────────────────────────────
+
+
+def via_main(monkeypatch, capsys, write_transcript, *, assistant, stop_hook_active=False, user="почини баг", stale=()):
     payload = json.dumps(
         {
             "session_id": "test",
-            "transcript_path": transcript_path,
+            "transcript_path": write_transcript([("user", user), *stale]),
             "stop_hook_active": stop_hook_active,
             "hook_event_name": "Stop",
+            "last_assistant_message": assistant,
         }
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
@@ -521,70 +590,59 @@ def via_main(monkeypatch, capsys, *, transcript_path, stop_hook_active=False):
 
 
 def test_main_blocks_shirking_turn(monkeypatch, capsys, write_transcript):
-    path = write_transcript(
-        [
-            ("user", "почини баг"),
-            ("assistant", "Готово. Тесты 14/14.\n\nОсталось typecheck. Запустить?"),
-        ]
+    out = via_main(
+        monkeypatch, capsys, write_transcript, assistant="Готово. Тесты 14/14.\n\nОсталось typecheck. Запустить?"
     )
-    out = via_main(monkeypatch, capsys, transcript_path=path)
     decision = json.loads(out)
     assert decision["decision"] == "block"
     assert "ask-instead-of-do" in decision["reason"]
 
 
+def test_main_reads_final_message_from_payload_not_stale_transcript(monkeypatch, capsys, write_transcript):
+    # The transcript lags: its last assistant entry is an earlier, harmless message.
+    stale = [("assistant", "Факты подтверждены первоисточниками. Жду второе мнение.")]
+    out = via_main(monkeypatch, capsys, write_transcript, assistant=YELP_REPORT, stale=stale)
+    assert json.loads(out)["decision"] == "block"
+
+
+def test_main_offload_check_uses_its_own_reason(monkeypatch, capsys, write_transcript):
+    assistant = "Вариант 1 подходит. Нужно спросить у Yelp про цену.\n\nОстальное готово, тесты зелёные."
+    out = via_main(monkeypatch, capsys, write_transcript, assistant=assistant)
+    reason = json.loads(out)["reason"]
+    assert "offloading the check" in reason
+    assert "Нужно спросить" in reason
+
+
 def test_main_allows_normal_completion(monkeypatch, capsys, write_transcript):
-    path = write_transcript(
-        [
-            ("user", "почини баг"),
-            ("assistant", "Готово. Тесты 14/14, линт чист, typecheck зелёный."),
-        ]
+    out = via_main(
+        monkeypatch, capsys, write_transcript, assistant="Готово. Тесты 14/14, линт чист, typecheck зелёный."
     )
-    out = via_main(monkeypatch, capsys, transcript_path=path)
     assert out == ""
 
 
 def test_main_respects_loop_guard(monkeypatch, capsys, write_transcript):
-    path = write_transcript(
-        [
-            ("user", "fix"),
-            ("assistant", "Готово. Запустить?"),
-        ]
-    )
-    out = via_main(monkeypatch, capsys, transcript_path=path, stop_hook_active=True)
+    out = via_main(monkeypatch, capsys, write_transcript, assistant="Готово. Запустить?", stop_hook_active=True)
     assert out == ""
 
 
-def test_main_no_transcript_path_exits_clean(monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"hook_event_name": "Stop"})))
-    no_shirk_hook.main()
-    assert capsys.readouterr().out == ""
-
-
 def test_main_empty_assistant_text_exits_clean(monkeypatch, capsys, write_transcript):
-    path = write_transcript(
-        [
-            ("user", "fix"),
-            ("assistant", [{"type": "tool_use", "id": "x", "name": "Bash", "input": {}}]),
-        ]
-    )
-    out = via_main(monkeypatch, capsys, transcript_path=path)
+    out = via_main(monkeypatch, capsys, write_transcript, assistant="")
     assert out == ""
 
 
 def test_main_guards_destructive_question(monkeypatch, capsys, write_transcript):
-    path = write_transcript(
-        [
-            ("user", "rollback"),
-            ("assistant", "Готов сделать `git push --force` в прод. Запустить?"),
-        ]
+    out = via_main(
+        monkeypatch,
+        capsys,
+        write_transcript,
+        assistant="Готов сделать `git push --force` в прод. Запустить?",
+        user="rollback",
     )
-    out = via_main(monkeypatch, capsys, transcript_path=path)
     assert out == ""
 
 
 def test_build_reason_includes_snippet():
-    reason = build_reason("Запустить?")
+    reason = build_reason("Запустить?", "ask_to_run")
     assert "Запустить?" in reason
     assert "(1)" in reason
     assert "(2)" in reason
@@ -593,5 +651,5 @@ def test_build_reason_includes_snippet():
 
 def test_build_reason_truncates_long_snippet():
     long = "x " * 200
-    reason = build_reason(long)
+    reason = build_reason(long, "want_me_to")
     assert "…" in reason

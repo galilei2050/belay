@@ -57,6 +57,14 @@ STALE_AFTER_SECONDS = 24 * 60 * 60
 
 _UNSAFE_IN_NAME = re.compile(r"[^A-Za-z0-9_-]")
 
+CHEAPER_MODELS = ("opus", "sonnet", "haiku")
+
+# Where Claude Code records each installed plugin's `installPath` — the only way from a
+# `plugin:agent` subagent_type to the agent's definition file.
+INSTALLED_PLUGINS = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
+
+_MODEL_LINE = re.compile(r"^model:\s*(\S+)", re.MULTILINE)
+
 _FOREGROUND_DENIED = (
     "Subagents run in the background — drop `run_in_background: false` and call it again. A "
     "foreground agent freezes this session for its entire run, and nothing about waiting makes its "
@@ -98,8 +106,8 @@ _PICK_THE_MODEL = (
 
 _MODEL_DENIED = (
     "Name the subagent's model — pass `model` as `opus`, `sonnet` or `haiku` and call it again. "
-    "Without it the agent falls back to its definition or the session model, which here is Fable, "
-    "the most expensive tier; `fable` itself is not for subagents.\n" + _PICK_THE_MODEL
+    "This agent's definition pins none of them, so without it the agent runs on the session model, "
+    "which here is Fable, the most expensive tier; `fable` itself is not for subagents.\n" + _PICK_THE_MODEL
 )
 
 _WRAP_UP = (
@@ -190,6 +198,27 @@ def context_tokens(transcript: Path) -> int:
     return 0
 
 
+def pinned_model(subagent_type: str) -> str | None:
+    """The `model:` a plugin agent's definition pins, e.g. `sonnet` for `codex:codex-rescue`.
+
+    None for built-in and non-plugin agents, and for a definition without `model:` — both run on
+    the session model.
+    """
+    plugin, _, agent = subagent_type.partition(":")
+    if not agent or not INSTALLED_PLUGINS.exists():
+        return None
+    installs = json.loads(INSTALLED_PLUGINS.read_text(encoding="utf-8"))["plugins"]
+    for key, entries in installs.items():
+        if key.partition("@")[0] != plugin:
+            continue
+        for entry in entries:
+            definition = Path(entry["installPath"]) / "agents" / f"{agent}.md"
+            if definition.exists():
+                match = _MODEL_LINE.search(definition.read_text(encoding="utf-8").split("\n---", 1)[0])
+                return match.group(1) if match else None
+    return None
+
+
 class Verdict(NamedTuple):
     """What this hook has to say about one tool call: at most one deny, any number of nudges."""
 
@@ -203,7 +232,10 @@ def judge_spawn(tool_input: dict[str, object]) -> Verdict:
     # counts as foreground — and that is the one shape denied.
     if tool_input.get("run_in_background") is False:
         return Verdict(_FOREGROUND_DENIED, [])
-    if tool_input.get("model") in (None, "fable"):
+    model = tool_input.get("model")
+    if model is None:
+        model = pinned_model(str(tool_input.get("subagent_type", "")))
+    if model not in CHEAPER_MODELS:
         return Verdict(_MODEL_DENIED, [])
     return Verdict(None, [_SLICE_THE_TASK, _PICK_THE_MODEL])
 

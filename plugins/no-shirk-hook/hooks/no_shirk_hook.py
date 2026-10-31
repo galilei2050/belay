@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Stop hook: block the agent from ending a turn with an ask-instead-of-do question.
 
-Reads the conversation transcript, looks at the *last* assistant text message,
-and if its closing paragraph matches a shirking pattern (and no false-positive
-guard fires) returns {"decision":"block","reason":"..."} so Claude Code
-re-enters the agent and forces it to do the next obvious step.
+Takes the turn's final assistant message from the Stop payload, and if its
+closing paragraph matches a shirking pattern — or the message anywhere sends
+the user to ask a third party — and no false-positive guard fires, returns
+{"decision":"block","reason":"..."} so Claude Code re-enters the agent.
 
 One job. No project knowledge, no network, no LLM.
 """
@@ -19,14 +19,23 @@ import re
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import IO, NamedTuple
+from typing import IO, NamedTuple, NotRequired, TypedDict
+
+
+class StopPayload(TypedDict):
+    """The fields of Claude Code's Stop hook stdin payload this hook reads."""
+
+    transcript_path: str
+    last_assistant_message: str
+    stop_hook_active: NotRequired[bool]
 
 
 class Match(NamedTuple):
-    """A successful shirk-pattern hit on the tail of the assistant text."""
+    """A pattern hit: its group, the matched text, and the text the guards judge it by."""
 
     group: str
     snippet: str
+    scope: str
 
 
 class Classification(NamedTuple):
@@ -170,6 +179,8 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
         r"\bреша(ть|й)\s+(тебе|вам)\b",
         r"\bтво[йяё]\s+(выбор|решени\w*)\b",
         r"\bоставля[юе]\s+(это\s+)?(на\s+)?(тебя|вас|твоё|ваше)\b",
+        r"\b(решение|выбор|слово)\s+за\s+(тобой|вами)\b",
+        r"\b(decision|choice|call)\s+is\s+yours\b",
     ],
     "out_of_scope": [
         r"\bвне\s+(рамок|скоупа)\b",
@@ -194,6 +205,18 @@ SHIRK_PATTERNS: dict[str, list[str]] = {
         r"\bthis\s+should\s+get\s+you\s+started\b",
     ],
 }
+
+# Sending the user to ask a third party instead of researching it. Matched on the WHOLE message:
+# the punt usually sits mid-report in an option list, not in the closing question.
+OFFLOAD_CHECK_PATTERNS = [
+    r"\b(нужно|надо|стоит|придётся|придется|следует)\s+(спросить|уточнить|связаться)\b",
+    # capitalized object = a named third party, not the user; "how to ask X" is a question, not a punt
+    r"(?<!как\s)\bспросить\s+(у\s+)?(?-i:[A-ZА-ЯЁ])\w*",
+    r"\b(спроси|уточни|узнай)(те)?\s+у\b",
+    r"\b(need|have|ought)\s+to\s+(ask|check\s+with|contact|reach\s+out\s+to)\b",
+    # sentence-initial imperative only — "I'll ask Master whether…" is the agent acting, not a punt
+    r"(^|[.!?:;—-]\s*)(ask|check\s+with|contact|reach\s+out\s+to)\s+(?-i:[A-Z])\w+\s+(whether|if|about)\b",
+]
 
 # ── false-positive guards: when asking the human IS legitimate ───────────────
 
@@ -292,6 +315,10 @@ def setup_logging() -> logging.Logger:
 FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 INLINE_CODE_RE = re.compile(r"`[^`]*`")
 QUOTE_LINE_RE = re.compile(r"^>.*$", re.MULTILINE)
+# Background-job status line — always last, so as the tail on its own it hides the real closing question.
+STATUS_LINE_RE = re.compile(r"^(result|failed|needs input):.*$", re.MULTILINE | re.IGNORECASE)
+GUILLEMET_QUOTE_RE = re.compile(r"«[^»]*»")
+SOURCES_PARAGRAPH_RE = re.compile(r"^\**(источники|sources)\**\s*:", re.IGNORECASE)
 
 
 def normalize(text: str) -> str:
@@ -302,16 +329,22 @@ def normalize(text: str) -> str:
     return text.strip()
 
 
+def closing_text(text: str) -> str:
+    """Return the closing paragraph above any status lines, followed by those status lines."""
+    status = [m.group(0) for m in STATUS_LINE_RE.finditer(text)]
+    tail = extract_tail(STATUS_LINE_RE.sub("", text))
+    return "\n\n".join(p for p in (tail, *status) if p)
+
+
 def extract_tail(text: str) -> str:
-    """Return last paragraph (or ~600 trailing chars).
+    """Return last paragraph (or ~600 trailing chars), skipping trailing source lists.
 
     If the trailing paragraph is tiny, grab the previous one too — sometimes
     the question is split across a blank line.
     """
-    text = text.rstrip()
-    if not text:
-        return ""
     paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    while paragraphs and SOURCES_PARAGRAPH_RE.match(paragraphs[-1]):
+        paragraphs.pop()
     if not paragraphs:
         return ""
     tail = paragraphs[-1]
@@ -358,20 +391,6 @@ def _message_text(message: dict[str, object]) -> str:
     return "\n".join(chunks)
 
 
-def last_assistant_text(events: list[dict[str, object]]) -> str:
-    """Find the most recent assistant text. Skips tool_use-only messages."""
-    for event in reversed(events):
-        msg = event.get("message")
-        if not isinstance(msg, dict):
-            continue
-        if msg.get("role") != "assistant":
-            continue
-        text = _message_text(msg)
-        if text.strip():
-            return text
-    return ""
-
-
 def last_user_text(events: list[dict[str, object]]) -> str:
     """Return the text of the most recent user message, or '' if none."""
     for event in reversed(events):
@@ -389,13 +408,30 @@ def last_user_text(events: list[dict[str, object]]) -> str:
 # ── classifier ───────────────────────────────────────────────────────────────
 
 
+def _first_match(patterns: list[str], text: str, group: str) -> Match | None:
+    for pattern in patterns:
+        m = re.search(pattern, text, flags=re.IGNORECASE | re.MULTILINE)
+        if m:
+            return Match(group, m.group(0).lstrip(".!?:;—- "), text)
+    return None
+
+
 def match_shirk(tail: str) -> Match | None:
     """Return the first shirking pattern that matches the tail (or None)."""
     for group, patterns in SHIRK_PATTERNS.items():
-        for pattern in patterns:
-            m = re.search(pattern, tail, flags=re.IGNORECASE | re.MULTILINE)
-            if m:
-                return Match(group, m.group(0))
+        hit = _first_match(patterns, tail, group)
+        if hit:
+            return hit
+    return None
+
+
+def match_offload_check(text: str) -> Match | None:
+    """Return the first send-the-user-to-ask hit anywhere in the text, scoped to its paragraph."""
+    for paragraph in re.split(r"\n\s*\n", text):
+        # «…» quotes a phrase under discussion; the punt is never written in quotes
+        hit = _first_match(OFFLOAD_CHECK_PATTERNS, GUILLEMET_QUOTE_RE.sub("", paragraph), "offload_check")
+        if hit:
+            return hit
     return None
 
 
@@ -427,28 +463,29 @@ def user_asked_open_question(user_text: str) -> bool:
     return bool(text) and text.endswith("?") and len(text) < _USER_Q_MAX_LEN
 
 
-def _firing_guard(tail: str, user_text: str, group: str) -> str | None:
+def _firing_guard(scope: str, user_text: str, group: str) -> str | None:
     # A read-only "want me to look?" offer is never the destructive act — looking is exactly what to
     # just do, even (especially) when a deploy is downstream. So this group skips the destructive guard.
     if group != "offer_to_investigate":
-        if _any_match(HARD_DESTRUCTIVE_KEYWORDS, tail):
+        if _any_match(HARD_DESTRUCTIVE_KEYWORDS, scope):
             return "destructive"
-        if _any_match(SOFT_DEPLOY_KEYWORDS, tail) and not offers_reversible(tail):
+        if _any_match(SOFT_DEPLOY_KEYWORDS, scope) and not offers_reversible(scope):
             return "destructive"
-    if has_business_ambiguity(tail):
+    if has_business_ambiguity(scope):
         return "ambiguity"
-    if user_asked_open_question(user_text):
+    # "Ask the vendor" in reply to the user's own question is the very punt offload_check exists for.
+    if user_asked_open_question(user_text) and group != "offload_check":
         return "user_question"
     return None
 
 
 def classify(assistant_text: str, user_text: str) -> Classification:
     """Classify an assistant turn as ok / shirk / guarded."""
-    tail = extract_tail(normalize(assistant_text))
-    hit = match_shirk(tail) if tail else None
+    text = normalize(assistant_text)
+    hit = match_shirk(closing_text(text)) or match_offload_check(text)
     if hit is None:
         return Classification("ok", None, None)
-    guard = _firing_guard(tail, user_text, hit.group)
+    guard = _firing_guard(hit.scope, user_text, hit.group)
     verdict = f"guard:{guard}" if guard else "shirk"
     return Classification(verdict, hit.group, hit.snippet)
 
@@ -469,36 +506,38 @@ REASON_TEMPLATE = (
     "Otherwise: do the work and report the result, not a question."
 )
 
+OFFLOAD_CHECK_REASON_TEMPLATE = (
+    'You sent the user to ask a third party ("{snippet}") — that\'s offloading the check.\n'
+    "Find it out yourself: vendor docs, web search, the accounts and data you can reach.\n"
+    "If it truly can't be established from here, say what you checked and what stays unknown,\n"
+    "and give a solution that works today without that answer — not one gated on someone asking."
+)
 
-def build_reason(snippet: str) -> str:
+
+def build_reason(snippet: str, group: str) -> str:
     """Render the actionable block reason shown to the agent, embedding the matched snippet."""
     snippet = snippet.strip().replace("\n", " ")
     if len(snippet) > _SNIPPET_MAX_LEN:
         snippet = snippet[: _SNIPPET_MAX_LEN - 3] + "…"
-    return REASON_TEMPLATE.format(snippet=snippet)
+    template = OFFLOAD_CHECK_REASON_TEMPLATE if group == "offload_check" else REASON_TEMPLATE
+    return template.format(snippet=snippet)
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
 
-def _load_events() -> list[dict[str, object]] | None:
-    """Parse stdin payload, apply gate checks, return transcript events.
-
-    Returns None when the hook should exit silently (bad input, loop guard,
-    missing transcript). Empty list means transcript loaded but contained
-    nothing usable.
-    """
+def _load_payload() -> StopPayload | None:
+    """Parse the Stop payload; None when the hook should exit silently (bad input, loop guard)."""
     raw = sys.stdin.read()
+    if not raw.strip():
+        return None
     try:
-        data = json.loads(raw) if raw.strip() else {}
+        data: StopPayload = json.loads(raw)
     except json.JSONDecodeError:
         return None
     if data.get("stop_hook_active"):
         return None
-    transcript_path = data.get("transcript_path")
-    if not transcript_path or not Path(transcript_path).exists():
-        return None
-    return read_transcript(transcript_path)
+    return data
 
 
 def _log_verdict(
@@ -517,19 +556,21 @@ def _log_verdict(
 
 
 def main() -> None:
-    """Stop-hook entry point: read transcript, classify, emit block decision if needed."""
-    events = _load_events()
-    if events is None:
+    """Stop-hook entry point: classify the payload's final assistant message, emit a block if needed."""
+    data = _load_payload()
+    if data is None:
         return
-    assistant_text = last_assistant_text(events)
+    # The transcript is written asynchronously and can still lack this turn's final message.
+    assistant_text = data["last_assistant_message"]
     if not assistant_text.strip():
         return
-    result = classify(assistant_text, last_user_text(events))
+    user_text = last_user_text(read_transcript(data["transcript_path"]))
+    result = classify(assistant_text, user_text)
     _log_verdict(setup_logging(), result, assistant_text)
-    verdict, _, snippet = result
-    if verdict != "shirk" or snippet is None:
+    verdict, group, snippet = result
+    if verdict != "shirk" or snippet is None or group is None:
         return
-    sys.stdout.write(json.dumps({"decision": "block", "reason": build_reason(snippet)}) + "\n")
+    sys.stdout.write(json.dumps({"decision": "block", "reason": build_reason(snippet, group)}) + "\n")
 
 
 if __name__ == "__main__":

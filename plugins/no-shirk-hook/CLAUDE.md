@@ -1,5 +1,7 @@
 # CLAUDE.md — no-shirk-hook
 
+Updated: 2026-10-31
+
 How to extend `hooks/no_shirk_hook.py` without breaking it.
 
 ## Scope (don't expand it)
@@ -14,6 +16,15 @@ ask-instead-of-do question that shouldn't be there?* It does NOT:
 - inspect tool-use blocks.
 
 If a feature needs any of the above, it's a different plugin.
+
+## Business decisions
+
+- **Sending the user to ask a third party («нужно спросить у Yelp») is a shirk, wherever it sits in the message** — the user wants solutions that work today, not ones gated on "go find out yourself".
+
+## Technical decisions
+
+- **Final assistant text comes from the Stop payload's `last_assistant_message`; the transcript is read only for the last user message** — the transcript is written asynchronously and was seen lacking the turn's final message when the hook fired, so the hook classified the previous one. Rejected: field-else-transcript fallback — it reintroduces the race silently.
+- **`offload_check` is the one group matched on the whole message; its guards read the paragraph it matched in, and the user-question guard doesn't apply** — see "Why the tail-only rule matters". Rejected: tail-only — the real miss had it three paragraphs above the end.
 
 ## What "done" means (why commit/push/PR offers are shirks)
 
@@ -37,7 +48,7 @@ irreversible action (force-push, drop table, a *manual* prod deploy with no
 reversible step) — that's what the `HARD_DESTRUCTIVE` / `SOFT_DEPLOY` guards are
 for. They are not a license to ask before pushing or opening a PR.
 
-## Three knobs and only three
+## Four knobs and only four
 
 1. **`SHIRK_PATTERNS`** — regexes that match in the *tail* of the agent's last
    message. Group them semantically (`ask_to_run`, `want_me_to`, …). Add RU
@@ -63,6 +74,11 @@ for. They are not a license to ask before pushing or opening a PR.
      when a deploy is downstream — looking is exactly what to just do.
 3. **`BUSINESS_AMBIGUITY_MARKERS`** — false-positive guard №2. Phrases that
    indicate a tradeoff or named-alternative question that humans must own.
+4. **`OFFLOAD_CHECK_PATTERNS`** — the whole-message exception (see "Why the
+   tail-only rule matters"); test positives with `match_offload_check(...)`.
+
+Guards judge a hit by `Match.scope`: the tail for `SHIRK_PATTERNS`, the matched
+paragraph for `OFFLOAD_CHECK_PATTERNS`.
 
 Everything else is plumbing.
 
@@ -98,8 +114,21 @@ Don't add per-project allowlists. The hook is project-agnostic.
 Shirking is structural: it's the *closing move* of a turn. A passing mention of
 "should I run" inside a long explanation is fine — the agent is reasoning, not
 shirking. Restrict matching to `extract_tail()`'s output (last paragraph or
-~300 trailing chars). If a new pattern needs full-text matching to work, it's
+~600 trailing chars). If a new pattern needs full-text matching to work, it's
 probably catching the wrong thing.
+
+`extract_tail()` skips trailing «Источники:»/"Sources:" paragraphs, and
+`closing_text()` checks `result:`/`failed:`/`needs input:` status lines
+alongside the paragraph above them — a background-job report always ends with
+one, and as the tail on its own it hid the real closing question.
+
+The one deliberate exception is `OFFLOAD_CHECK_PATTERNS` («нужно спросить у
+X», "check with the vendor"): matched on the whole message by
+`match_offload_check()`, because the punt sits inside an option list mid-report,
+and a report that answers "go find out yourself" is unfinished wherever the line
+is. Keep that list narrow — verbs of asking a third party only — and check new
+patterns against real transcripts (`~/.claude/projects/*/*.jsonl`) for false
+positives before adding them. Tail-only remains the rule for everything else.
 
 ## Why we don't call an LLM
 
@@ -117,9 +146,9 @@ uv run ruff check plugins/no-shirk-hook/
 uv run mypy plugins/no-shirk-hook/hooks/no_shirk_hook.py
 ```
 
-The `write_transcript` fixture builds a tiny JSONL file in `tmp_path`; tests
-hit `main()` through a monkeypatched stdin payload pointing at it. No real
-Claude Code session is needed.
+The `write_transcript` fixture builds a tiny JSONL file in `tmp_path` for the
+user turn; tests hit `main()` through a monkeypatched stdin payload carrying
+`last_assistant_message` and pointing at it. No real Claude Code session is needed.
 
 ## What this file is not
 

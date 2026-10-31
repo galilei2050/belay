@@ -37,6 +37,7 @@ slice the same size, instead of naming the remainder and dispatching a right-siz
 |-----------|----------|
 | `Agent` with `run_in_background: false` | **deny** — let it detach; the harness will notify you |
 | `Agent` without `model`, or with `model: fable` | **deny** — name `opus`, `sonnet` or `haiku`; omitted inherits the Fable session |
+| `Agent` without `model` for a plugin agent whose definition pins one of those (`codex:codex-rescue` → `sonnet`) | *context* — same as a named model; found via `installed_plugins.json` |
 | `Agent` in the background (explicit or default) with a cheaper `model` | *context* — how to slice a task to fit the budget, and who owns a short answer |
 | any tool inside a subagent, under 200k context within 5 min | *silent* |
 | 200k–250k context, or past 5 min | *context* — `Nk/250k tokens of context and M/7 minutes used` |
