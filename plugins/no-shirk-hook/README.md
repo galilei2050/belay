@@ -5,8 +5,13 @@ question.
 
 ## What it does
 
-After every main-agent turn (`Stop` event), the hook reads the last assistant
-text message. If the closing paragraph matches a *shirking* pattern — e.g.
+After every main-agent turn (`Stop` event), the hook takes the turn's final
+assistant message from the payload's `last_assistant_message` (the transcript
+file can lag behind it). Trailing `result:`/`failed:`/`needs input:` status
+lines and a closing «Источники:»/"Sources:" paragraph are skipped. Separately,
+the whole message is scanned for sending the user to ask a third party («нужно
+спросить у Yelp», "check with the vendor") — the `offload_check` group, which
+gets its own reason: research it yourself. If the closing paragraph matches a *shirking* pattern — e.g.
 «Запустить?», «Хочешь, я починю?», "Should I run the tests?", "Want me to
 continue?" — and no false-positive guard fires, it returns:
 

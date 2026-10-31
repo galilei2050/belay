@@ -1,5 +1,7 @@
 # CLAUDE.md — no-shirk-hook
 
+Updated: 2026-10-31
+
 How to extend `hooks/no_shirk_hook.py` without breaking it.
 
 ## Scope (don't expand it)
@@ -14,6 +16,15 @@ ask-instead-of-do question that shouldn't be there?* It does NOT:
 - inspect tool-use blocks.
 
 If a feature needs any of the above, it's a different plugin.
+
+## Business decisions
+
+- **Sending the user to ask a third party («нужно спросить у Yelp») is a shirk, wherever it sits in the message** — the user wants solutions that work today, not ones gated on "go find out yourself".
+
+## Technical decisions
+
+- **Final assistant text comes from the Stop payload's `last_assistant_message`; the transcript is read only for the last user message** — the transcript is written asynchronously and was seen lacking the turn's final message when the hook fired, so the hook classified the previous one. Rejected: field-else-transcript fallback — it reintroduces the race silently.
+- **`offload_check` is the one group matched on the whole message** — the punt sits inside an option list mid-report. Rejected: tail-only — the real miss had it three paragraphs above the end.
 
 ## What "done" means (why commit/push/PR offers are shirks)
 
@@ -98,9 +109,21 @@ Don't add per-project allowlists. The hook is project-agnostic.
 Shirking is structural: it's the *closing move* of a turn. A passing mention of
 "should I run" inside a long explanation is fine — the agent is reasoning, not
 shirking. Restrict matching to `extract_tail()`'s output (last paragraph or
-~300 trailing chars). If a new pattern needs full-text matching to work, it's
+~600 trailing chars). If a new pattern needs full-text matching to work, it's
 probably catching the wrong thing.
 
+`extract_tail()` skips trailing «Источники:»/"Sources:" paragraphs, and
+`normalize()` drops `result:`/`failed:`/`needs input:` status lines — a
+background-job report always ends with one, and it used to hide the real
+closing question one paragraph above.
+
+The one deliberate exception is `OFFLOAD_CHECK_PATTERNS` («нужно спросить у
+X», "check with the vendor"): matched on the whole message by
+`match_offload_check()`, because the punt sits inside an option list mid-report,
+and a report that answers "go find out yourself" is unfinished wherever the line
+is. Keep that list narrow — verbs of asking a third party only — and check new
+patterns against real transcripts (`~/.claude/projects/*/*.jsonl`) for false
+positives before adding them. Tail-only remains the rule for everything else.
 ## Why we don't call an LLM
 
 A Stop hook runs synchronously between turns. An LLM call adds 1-5 seconds of
@@ -117,9 +140,9 @@ uv run ruff check plugins/no-shirk-hook/
 uv run mypy plugins/no-shirk-hook/hooks/no_shirk_hook.py
 ```
 
-The `write_transcript` fixture builds a tiny JSONL file in `tmp_path`; tests
-hit `main()` through a monkeypatched stdin payload pointing at it. No real
-Claude Code session is needed.
+The `write_transcript` fixture builds a tiny JSONL file in `tmp_path` for the
+user turn; tests hit `main()` through a monkeypatched stdin payload carrying
+`last_assistant_message` and pointing at it. No real Claude Code session is needed.
 
 ## What this file is not
 
