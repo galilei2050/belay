@@ -633,6 +633,28 @@ def test_outer_command_tail_after_substitution_is_allowed(logger, cmd):
     assert acl_hook._decide(cmd, logger, "test")[0] == "allow"
 
 
+def test_line_continuation_joins_lines():
+    cmd = (
+        "cd /x && \\\n"
+        'echo "--- web/CLAUDE.md ---"; cat web/CLAUDE.md 2>/dev/null | head -100; \\\n'
+        'echo "--- folder structure ---"; find web/src -maxdepth 3 -type d | sort'
+    )
+    assert acl_hook.split_chained_commands(cmd) == [
+        "cd /x",
+        'echo "--- web/CLAUDE.md ---"',
+        "cat web/CLAUDE.md 2>/dev/null",
+        "head -100",
+        'echo "--- folder structure ---"',
+        "find web/src -maxdepth 3 -type d",
+        "sort",
+    ]
+    assert acl_hook.split_chained_commands("echo 'a \\\nb' && ls") == ["echo 'a \\\nb'", "ls"]
+
+
+def test_line_continuation_is_allowed(logger):
+    assert acl_hook._decide("ls -la && \\\ngit status", logger, "test")[0] == "allow"
+
+
 @pytest.mark.parametrize(
     "cmd",
     [
