@@ -29,6 +29,7 @@ a climber when they fall. These plugins are the belay for the agent.
 | [second-opinion](plugins/second-opinion) | Skill + script | Puts a question to Gemini through Vertex AI — a model that has not read this session — and brings back an argument to check rather than an authority to follow |
 | [pr-flow](plugins/pr-flow) | Skill + PostToolUse + PreToolUse | Nudges after every commit/push toward a pushed branch, an open PR, a green CI and a change that is actually live; writes the PR description (measured failure, before/after table or mermaid, checks) and denies one that narrates the diff, lacks both, or carries a title only the code can decode; ships a CI script that waits to a verdict, then to the merge, then to the deploy (Actions or Cloud Build) — denied unless it is launched in the background, so the wait never freezes the session |
 | [agent-knowledge](plugins/agent-knowledge) | Skill + PostToolUse | Keeps the knowledge an agent loads lean and current, starting with CLAUDE.md: holds every one to a single skeleton — stamps the `Updated:` date on each edit and blocks on a missing Business/Technical decisions section, over 200 lines, a dead path, or a decision duplicated from a parent file; the same script audits a repo and flags files the code has left behind |
+| [fable-guard-hook](plugins/fable-guard-hook) | PreToolUse | Denies file edits from the main thread — Fable, the most expensive tier — pushing real code edits to a subagent or another session; `.scratch/` stays writable |
 
 More plugins will land here as the harness is decomposed.
 
