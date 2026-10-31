@@ -139,6 +139,41 @@ def test_spawn_with_a_named_cheaper_model_runs(monkeypatch, capsys, model):
     assert "permissionDecision" not in out
 
 
+@pytest.fixture
+def plugin_agent(tmp_path, monkeypatch):
+    """Install a `codex` plugin whose `codex-rescue` agent definition carries `frontmatter`."""
+
+    def install(frontmatter):
+        install_path = tmp_path / "cache" / "openai-codex" / "codex" / "1.0.6"
+        (install_path / "agents").mkdir(parents=True)
+        (install_path / "agents" / "codex-rescue.md").write_text(
+            f"---\n{frontmatter}\n---\n\nmodel: opus in the body\n"
+        )
+        registry = tmp_path / "installed_plugins.json"
+        registry.write_text(
+            json.dumps({"version": 2, "plugins": {"codex@openai-codex": [{"installPath": str(install_path)}]}})
+        )
+        monkeypatch.setattr(delegation_hook, "INSTALLED_PLUGINS", registry)
+        payload = spawn(background=None, model=None)
+        payload["tool_input"]["subagent_type"] = "codex:codex-rescue"
+        return payload
+
+    return install
+
+
+def test_plugin_agent_pinned_to_a_cheaper_model_runs_without_one(monkeypatch, capsys, plugin_agent):
+    """`codex:codex-rescue` pins `model: sonnet`, so omitting `model` never reaches Fable."""
+    out = via_main(monkeypatch, capsys, **plugin_agent("name: codex-rescue\nmodel: sonnet\ntools: Bash"))
+    assert "permissionDecision" not in out
+
+
+@pytest.mark.parametrize("frontmatter", ["name: codex-rescue\nmodel: inherit", "name: codex-rescue"])
+def test_plugin_agent_on_the_session_model_denied(monkeypatch, capsys, plugin_agent, frontmatter):
+    """`inherit`, or no `model:` in the frontmatter (one in the body doesn't count), is the Fable session."""
+    out = via_main(monkeypatch, capsys, **plugin_agent(frontmatter))
+    assert out["permissionDecision"] == "deny"
+
+
 def test_non_agent_tool_in_main_thread_is_silent(monkeypatch, capsys):
     assert via_main(monkeypatch, capsys, tool_name="Bash", tool_input={"command": "ls"}) is None
 
