@@ -133,7 +133,7 @@ def test_another_tool_is_left_alone(gate):
     assert gate(f"{CI} ship", tool="Read") is None
 
 
-# The loop an agent actually armed, copied from Monitor's own tool-description example.
+# The loop an agent actually armed — a variant of Monitor's own tool-description example.
 CHECKS_LOOP = (
     "cd /repo; while true; do s=$(gh pr checks 1110 --json name,bucket 2>/dev/null) || { sleep 30; continue; }; "
     'if jq -e \'length>0 and all(.bucket!="pending")\' <<<"$s" >/dev/null; then break; fi; sleep 45; done'
@@ -157,7 +157,10 @@ def test_the_backgrounded_poll_is_still_a_poll(gate):
 
 
 def test_a_monitor_over_ci_status_is_a_poll_too(gate):
-    assert gate(f"{CI} status", tool="Monitor") is not None
+    output = gate(f"{CI} status", tool="Monitor")
+    assert output is not None
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "ci.py ship" in output["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_a_monitor_over_anything_else_is_left_alone(gate):
