@@ -28,6 +28,7 @@ import re
 import sys
 
 from bash_command import blank_quotes, shell_bodies
+from nudges import CI, SHIP_BUDGET_S
 
 # The verbs that block. `status` and `logs` return immediately, so they belong in the foreground.
 BLOCKING_VERBS = ("wait", "merged", "deploy", "ship")
@@ -50,6 +51,21 @@ REASON = (
 )
 
 
+# A hand-rolled CI wait. Monitor's own description ships this loop around `gh pr checks` as its
+# example, and its `$(…)` / `{ …; }` trip Claude Code's built-in prompt, stalling a background job.
+_CI_READ_RE = re.compile(r"\bgh\s+(?:pr\s+checks|run\s+(?:watch|view|list))\b|\bci\.py\s+status\b")
+_LOOP_RE = re.compile(r"\b(?:while|until)\b")
+
+POLL_REASON = (
+    "This polls CI by hand. Claude Code stops a loop like this for a permission prompt (it can't "
+    "check `$(…)` / `{ …; }` groups), so in a background session the wait itself stalls on a human "
+    "— and the answer is one notification, which is not what Monitor is for.\n\n"
+    f"Launch `timeout -v {SHIP_BUDGET_S} {CI} ship` with Bash `run_in_background: true` instead — "
+    "checks, then merge, then deploy, one process, one notification, only the failing log on red. "
+    f"For checks alone: `{CI} wait`, same way. `{CI} status` answers right now in the foreground."
+)
+
+
 def runnable_text(command: str) -> str:
     """The parts of a Bash call that actually run: quoted prose dropped, `sh -c` bodies kept."""
     return blank_quotes(command) + " " + " ".join(shell_bodies(command))
@@ -66,19 +82,39 @@ def blocking_verb(data: dict[str, object]) -> str | None:
     return found.group(1) if found else None
 
 
+def polls_ci(data: dict[str, object]) -> bool:
+    """True iff the call re-reads CI state on a loop: any Monitor over it, or a Bash `while`/`until`.
+
+    A single foreground `gh pr checks` is a reading, not a wait, and stays allowed.
+    """
+    tool_input = data.get("tool_input")
+    if data.get("tool_name") not in ("Bash", "Monitor") or not isinstance(tool_input, dict):
+        return False
+    text = runnable_text(str(tool_input.get("command", "")))
+    return bool(_CI_READ_RE.search(text)) and (data["tool_name"] == "Monitor" or bool(_LOOP_RE.search(text)))
+
+
+def deny_reason(data: dict[str, object]) -> str | None:
+    """Why this call is denied, or None when it may run."""
+    verb = blocking_verb(data)
+    if verb is not None:
+        return REASON.format(verb=verb)
+    return POLL_REASON if polls_ci(data) else None
+
+
 def main() -> None:
     """PreToolUse entry point: emit one deny, or nothing at all."""
     data = json.loads(sys.stdin.read())
     if data.get("hook_event_name") != "PreToolUse":
         return
-    verb = blocking_verb(data)
-    if verb is None:
+    reason = deny_reason(data)
+    if reason is None:
         return
     output = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": REASON.format(verb=verb),
+            "permissionDecisionReason": reason,
         }
     }
     sys.stdout.write(json.dumps(output) + "\n")
