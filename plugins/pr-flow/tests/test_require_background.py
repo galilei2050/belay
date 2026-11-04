@@ -133,6 +133,53 @@ def test_another_tool_is_left_alone(gate):
     assert gate(f"{CI} ship", tool="Read") is None
 
 
+# The loop an agent actually armed — a variant of Monitor's own tool-description example.
+CHECKS_LOOP = (
+    "cd /repo; while true; do s=$(gh pr checks 1110 --json name,bucket 2>/dev/null) || { sleep 30; continue; }; "
+    'if jq -e \'length>0 and all(.bucket!="pending")\' <<<"$s" >/dev/null; then break; fi; sleep 45; done'
+)
+
+
+@pytest.mark.parametrize("tool", ["Monitor", "Bash"])
+def test_a_hand_rolled_ci_poll_is_sent_to_the_script(gate, tool):
+    output = gate(CHECKS_LOOP, tool=tool)
+    assert output is not None
+    payload = output["hookSpecificOutput"]
+    assert payload["permissionDecision"] == "deny"
+    assert "ci.py ship" in payload["permissionDecisionReason"]
+
+
+def test_the_backgrounded_poll_is_still_a_poll(gate):
+    """`run_in_background` fixes freezing, not the prompt the loop trips or the double payment."""
+    output = gate(CHECKS_LOOP, background=True)
+    assert output is not None
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_a_monitor_over_ci_status_is_a_poll_too(gate):
+    output = gate(f"{CI} status", tool="Monitor")
+    assert output is not None
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "ci.py ship" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_a_monitor_over_anything_else_is_left_alone(gate):
+    assert gate("tail -f app.log | grep --line-buffered -E 'ERROR|Traceback'", tool="Monitor") is None
+
+
+def test_a_websocket_monitor_has_no_command_to_judge(run_hook, tmp_path):
+    payload = {
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Monitor",
+        "tool_input": {"ws": {"url": "wss://example.test"}, "description": "events", "timeout_ms": 1000},
+    }
+    assert run_hook("require_background.py", payload, tmp_path) is None
+
+
+def test_one_reading_of_the_checks_stays_foreground(gate):
+    assert gate("gh pr checks 1110 --json name,bucket") is None
+
+
 def test_wrong_event_is_silent(gate):
     """The hooks in this plugin do not answer each other's events, whatever ends up wired to them."""
     assert gate(f"{CI} ship", event="PostToolUse") is None
