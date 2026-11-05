@@ -10,7 +10,7 @@ whether the change actually works.
 |---|---|---|
 | `hooks/nudge_after_git.py` | `PostToolUse` on Bash | After a real `git commit` / `git push`, states what the branch still owes: push it, open a PR, or refresh the PR body this push just made stale. |
 | `hooks/require_background.py` | `PreToolUse` on Bash, Monitor | Denies a blocking `ci.py` verb (`wait`, `merged`, `deploy`, `ship`) unless the Bash call sets `run_in_background: true`, and says to relaunch it that way. `status` / `logs` answer immediately and pass. Also denies a hand-rolled CI poll — any Monitor over `gh pr checks` / `gh run watch|view|list` / `ci.py status`, or a Bash `while`/`until` around them — and names `ci.py ship` instead: Monitor's own docs teach that loop, and its `$(…)` / `{ …; }` trip Claude Code's built-in permission prompt, stalling a background session. |
-| `hooks/pr_body_gate.py` | `PreToolUse` on Bash | Denies `gh pr create` / `gh pr edit` when the `--body-file` has no comparison table or mermaid diagram, narrates the diff as a list of symbols, or is dense with inline code outside its Checks section. The reason quotes the offending bullets and says how to rewrite them. A body passed any other way than a file is denied too. Once the body passes, Sonnet judges the `--title` (`hooks/title_judge.py`, about a second) and a title only the code can decode is denied with a rewrite. |
+| `hooks/pr_body_gate.py` | `PreToolUse` on Bash | Denies `gh pr create` / `gh pr edit` when the `--body-file` has no comparison table or mermaid diagram, narrates the diff as a list of symbols, or is dense with inline code outside its Checks section. The reason quotes the offending bullets and says how to rewrite them. A body passed any other way than a file is denied too, and so is a `gh pr create` without `--draft`: the PR stays a draft while the agent keeps pushing, and `gh pr ready` starts the one CI run that decides the merge. Once the body passes, Sonnet judges the `--title` (`hooks/title_judge.py`, about a second) and a title only the code can decode is denied with a rewrite. |
 | `skills/pr-description` | Skill | Writes the body: the failure with its measured numbers, a before/after table or a mermaid diagram, the decisions made, what was verified. `/pr-flow:pr` runs the whole sequence by hand. |
 | `scripts/ci.py` | Script | Takes the branch's CI to a verdict — every check on one line, a bounded blocking wait, only the failing steps' log — then the PR to merged and the merge commit to deployed, in GitHub Actions or Cloud Build. Meant to be launched in the background. `/pr-flow:ci` runs it; the push nudge points at it. |
 
@@ -121,6 +121,22 @@ span *is* the command, so it is read, not skipped.
 Requires `git`, and `gh` (authenticated) for anything PR-related. `gcloud` (authenticated, with
 the Cloud Build API enabled) only if the repo deploys from Cloud Build — without it `deploy` reads
 GitHub Actions alone, and an empty answer says so.
+
+## Draft first
+
+Agents commit and push constantly, and each push to an open PR is a full CI run nobody reads. So
+every PR opens as a draft, the push nudge on a draft says no CI ran, and `gh pr ready` is the step
+that asks for one. That saves runs only if the workflow skips drafts — GitHub Actions runs them by
+default. Add to each workflow:
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+jobs:
+  test:
+    if: ${{ !github.event.pull_request.draft }}
+```
 
 ## Config
 
