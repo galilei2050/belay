@@ -330,7 +330,9 @@ def await_checks(branch: str) -> list[Check]:
     while True:
         checks = fetch_checks(branch)
         left = deadline - time.monotonic()
-        if checks or left <= 0:
+        # Right after `gh pr ready` the draft run's skipped jobs stand in for the new run's.
+        registered = checks and all(check.bucket != "skipping" for check in checks)
+        if registered or left <= 0:
             return checks
         time.sleep(min(WATCH_INTERVAL_S, left))
 

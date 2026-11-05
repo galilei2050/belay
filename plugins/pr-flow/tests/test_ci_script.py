@@ -263,6 +263,21 @@ def test_wait_keeps_asking_while_the_run_has_not_registered_yet(ci):
     assert sum(1 for call in calls if call.startswith("pr checks") and "--watch" not in call) >= 2
 
 
+def test_wait_does_not_count_a_draft_runs_skipped_jobs_as_green(ci):
+    """Observed on PR #73: `wait` launched right after `gh pr ready` saw the new run's lint pass
+    beside the draft run's skipped test, and called the branch green before test had run."""
+    stale = [check("lint", "pass"), check("test", "skipping")]
+    _, _, calls = ci("wait", checks=stale, checks_then=[check("lint", "pass"), check("test", "pending")], appear=1)
+    before_watch = calls[: next(n for n, call in enumerate(calls) if "--watch" in call)]
+    assert sum(1 for call in before_watch if call.startswith("pr checks")) == 2
+
+
+def test_a_check_still_skipped_after_the_window_is_believed(ci):
+    code, out, _ = ci("wait", checks=[check("lint", "pass"), check("docs", "skipping")], appear=0)
+    assert code == 0
+    assert "GREEN" in out
+
+
 def test_a_branch_that_really_has_no_checks_is_still_not_green(ci):
     """The window makes the answer slower, not softer: nothing after it is exit 3, never exit 0."""
     code, out, _ = ci("wait", checks=(), appear=0)
