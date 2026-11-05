@@ -126,6 +126,22 @@ def test_push_with_an_open_pr_asks_to_refresh_the_body(bash, repo):
     assert "metrics" in nudge
 
 
+def test_push_without_a_pr_asks_for_a_draft(bash, repo):
+    assert "gh pr create --draft" in context(bash("git push", repo, gh_mode="none"))
+
+
+def test_push_to_a_draft_says_no_ci_ran_and_how_to_start_it(bash, repo):
+    nudge = context(bash("git push", repo, gh_mode="draft"))
+    assert "PR #12" in nudge
+    assert "is a draft" in nudge
+    assert "gh pr ready 12" in nudge
+    assert "ci.py ship" in nudge
+
+
+def test_commit_on_a_branch_with_a_draft_is_silent(bash, repo):
+    assert bash("git commit -m 'x'", repo, gh_mode="draft") is None
+
+
 def test_unauthenticated_gh_stays_silent(bash, repo):
     """A `gh` that cannot answer must not be read as "this branch has no PR"."""
     assert bash("git push", repo, gh_mode="unauth") is None

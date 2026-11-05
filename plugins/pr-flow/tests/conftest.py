@@ -51,7 +51,8 @@ case "$1 $2 $5 $6 $7" in
   *) echo "unexpected gh call: $*" >&2; exit 99 ;;
 esac
 case "$FAKE_GH_MODE" in
-  open)   printf '[{"number":12,"url":"https://example.test/pr/12"}]'; exit 0 ;;
+  open)   printf '[{"number":12,"url":"https://example.test/pr/12","isDraft":false}]'; exit 0 ;;
+  draft)  printf '[{"number":12,"url":"https://example.test/pr/12","isDraft":true}]'; exit 0 ;;
   unauth) echo "gh: To get started with GitHub CLI, please run: gh auth login" >&2; exit 4 ;;
   hang)   sleep 30 ;;
   *)      printf '[]'; exit 0 ;;

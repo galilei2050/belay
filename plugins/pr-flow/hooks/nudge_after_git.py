@@ -55,7 +55,7 @@ def nudge_for(data: dict[str, object]) -> str | None:
     step = next_step(str(data.get("cwd") or "."))
     if step is None:
         return None
-    if step.kind == "update" and "push" not in subcommands:
+    if step.kind in ("update", "draft") and "push" not in subcommands:
         return None  # only a push can have made the PR body stale
     return NUDGES[step.kind].format(**step._asdict())
 

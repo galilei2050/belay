@@ -49,11 +49,20 @@ NUDGES = {
         "from gone."
     ),
     "open": (
-        "`{branch}` is on the remote and has no open PR. Open one now with the `" + SKILL + "` "
-        "skill — it produces a description a reviewer can act on: what was actually broken (with "
-        "the numbers you measured), a before/after table or a mermaid diagram of the new flow, the "
+        "`{branch}` is on the remote and has no open PR. Open one now as a draft "
+        "(`gh pr create --draft`) with the `" + SKILL + "` skill — a draft runs no CI, so the "
+        "work still in motion costs nothing. The skill produces a description a "
+        "reviewer can act on: what was actually broken (with the numbers you measured), a "
+        "before/after table or a mermaid diagram of the new flow, the "
         "decisions made, what you verified. A bullet list of commit subjects is not a PR "
-        "description; the diff already says that. Then find out what happens to it: " + CHAIN
+        "description; the diff already says that. When the code is done — local checks green — "
+        "`gh pr ready <number>` starts the CI run, and then find out what happens to it: " + CHAIN
+    ),
+    "draft": (
+        "PR #{number} for `{branch}` ({url}) is a draft, so this push ran no CI — keep going. "
+        "When the code is done and the local checks are green, re-read the body against what the "
+        "branch now does (`gh pr edit {number} --body-file <file>` if it drifted), then "
+        "`gh pr ready {number}`: that starts the one CI run that decides the merge. Then: " + CHAIN
     ),
     "update": (
         "PR #{number} already covers `{branch}` ({url}), and you just pushed to it. Re-read its "

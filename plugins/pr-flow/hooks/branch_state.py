@@ -47,6 +47,7 @@ class PullRequest(TypedDict):
 
     number: int
     url: str
+    isDraft: bool
 
 
 class PrLookup(NamedTuple):
@@ -87,7 +88,17 @@ def look_up_pr(cwd: str, branch: str) -> PrLookup:
         return PrLookup(answered=False, pr=None)
     try:
         result = _run(
-            GH, cwd, "pr", "list", "--head", branch, "--state", "open", "--json", "number,url", timeout=GH_TIMEOUT_S
+            GH,
+            cwd,
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "open",
+            "--json",
+            "number,url,isDraft",
+            timeout=GH_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
         return PrLookup(answered=False, pr=None)  # a hung `gh` knows nothing about this branch
@@ -141,4 +152,5 @@ def pr_step(cwd: str, branch: str) -> Step | None:
         return None  # `gh` cannot answer — silence beats a wrong "you have no PR"
     if pr is None:
         return Step(kind="open", branch=branch)
-    return Step(kind="update", branch=branch, number=pr["number"], url=pr["url"])
+    kind = "draft" if pr["isDraft"] else "update"
+    return Step(kind=kind, branch=branch, number=pr["number"], url=pr["url"])

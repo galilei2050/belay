@@ -127,10 +127,10 @@ def gate(run_hook, tmp_path):
 
 @pytest.fixture
 def check(gate):
-    """The deny reason for `gh pr create --body-file body.md` with this body, or None if it passes."""
+    """The deny reason for `gh pr create --draft --body-file body.md` with this body, or None if it passes."""
 
     def run(body: str) -> str | None:
-        output = gate("gh pr create --title t --body-file body.md", body)
+        output = gate("gh pr create --draft --title t --body-file body.md", body)
         return None if output is None else reason_of(output)
 
     return run
@@ -214,18 +214,31 @@ def test_code_density_allows_a_few_identifiers(check, spans, denied):
 @pytest.mark.parametrize(
     "command",
     [
-        'gh pr create --title t --body "## Defect"',
-        "gh pr create --title t -b x",
-        "gh pr create --fill",
-        "gh pr create --title t",
+        'gh pr create --draft --title t --body "## Defect"',
+        "gh pr create --draft --title t -b x",
+        "gh pr create --draft --fill",
+        "gh pr create --draft --title t",
         "gh pr edit 12 --body-file -",
-        "gh pr create --title t --body-file - <<'EOF'\nbody\nEOF",
-        "bash -lc 'gh pr create --title x --body hi'",
+        "gh pr create --draft --title t --body-file - <<'EOF'\nbody\nEOF",
+        "bash -lc 'gh pr create --draft --title x --body hi'",
         "gh pr edit 12 --add-label bug && gh pr edit 12 --body x",
     ],
 )
 def test_a_body_that_is_not_a_file_is_denied(gate, command):
     assert "--body-file <path>" in reason_of(gate(command))
+
+
+def test_a_pr_opened_ready_for_review_is_denied_until_it_is_a_draft(gate):
+    reason = reason_of(gate("gh pr create --title t --body-file body.md", GOOD))
+    assert "--draft" in reason
+    assert "gh pr ready <number>" in reason
+    assert gate("gh pr create -d --title t --body-file body.md") is None
+
+
+def test_the_draft_rule_reads_flags_not_prose(gate):
+    """`--draft` inside the title is not the flag, and an edit never opens a PR."""
+    assert "--draft" in reason_of(gate('gh pr create --title "add --draft" --body-file body.md', GOOD))
+    assert gate("gh pr edit 12 --body-file body.md") is None
 
 
 @pytest.mark.parametrize(
@@ -242,18 +255,18 @@ def test_writing_a_body_through_the_api_is_denied(gate, command):
 
 
 def test_a_body_file_written_in_the_same_call_is_denied_until_it_exists(gate, tmp_path):
-    reason = reason_of(gate("cat > new.md <<'EOF'\nx\nEOF\ngh pr create --body-file new.md"))
+    reason = reason_of(gate("cat > new.md <<'EOF'\nx\nEOF\ngh pr create --draft --body-file new.md"))
     assert f"`new.md` does not exist at `{tmp_path / 'new.md'}`" in reason
 
 
 def test_a_quoted_body_file_path_is_read(gate, tmp_path):
     (tmp_path / "my body.md").write_text(NARRATED)
-    assert "narrates the diff" in reason_of(gate("gh pr create --title t --body-file 'my body.md'"))
+    assert "narrates the diff" in reason_of(gate("gh pr create --draft --title t --body-file 'my body.md'"))
 
 
 def test_a_body_file_that_is_not_text_is_denied_not_crashed_through(gate, tmp_path):
     (tmp_path / "body.md").write_bytes(b"\xff\xfe\x00bad")
-    assert "cannot be read as UTF-8" in reason_of(gate("gh pr create --body-file body.md"))
+    assert "cannot be read as UTF-8" in reason_of(gate("gh pr create --draft --body-file body.md"))
 
 
 @pytest.mark.parametrize(
@@ -264,7 +277,7 @@ def test_a_body_file_that_is_not_text_is_denied_not_crashed_through(gate, tmp_pa
         "gh pr edit 12 --add-label team-b",
         "gh pr edit 12 --add-label bug && echo --body done",
         "gh pr view 12 --json body",
-        "git commit -m 'run gh pr create --body x later'",
+        "git commit -m 'run gh pr create --draft --body x later'",
         "gh api repos/o/r/pulls/12 --jq .body",
     ],
 )
@@ -278,7 +291,7 @@ PLAIN = "Customer texts to the Main line get a follow-up task"
 
 def test_a_title_that_needs_the_code_is_denied_with_a_rewrite(gate, api):
     api.verdict = {"passes": False, "rewrite": PLAIN}
-    reason = reason_of(gate(f'gh pr create --title "{JARGON}" --body-file body.md', GOOD))
+    reason = reason_of(gate(f'gh pr create --draft --title "{JARGON}" --body-file body.md', GOOD))
     assert f"The title `{JARGON}` needs the code to decode" in reason
     assert f"For example:\n  {PLAIN}\n" in reason
     # Sonnet, not Haiku, is the measured choice; it sees the title and the body it describes.
@@ -288,16 +301,16 @@ def test_a_title_that_needs_the_code_is_denied_with_a_rewrite(gate, api):
 
 def test_the_judge_sees_only_the_opening_of_a_long_body(gate, api):
     long_body = GOOD + "x" * 3000
-    gate(f'gh pr create --title "{PLAIN}" --body-file body.md', long_body)
+    gate(f'gh pr create --draft --title "{PLAIN}" --body-file body.md', long_body)
     assert api.requests[0]["messages"][0]["content"] == f"Title: {PLAIN}\n\nBody (opening):\n{long_body[:1500]}"
 
 
 def test_the_suggested_title_is_accepted_once_without_asking_again(gate, api):
     api.verdict = {"passes": False, "rewrite": PLAIN}
-    assert PLAIN in reason_of(gate(f'gh pr create --title "{JARGON}" --body-file body.md', GOOD))
-    assert gate(f'gh pr create --title "{PLAIN}" --body-file body.md') is None
+    assert PLAIN in reason_of(gate(f'gh pr create --draft --title "{JARGON}" --body-file body.md', GOOD))
+    assert gate(f'gh pr create --draft --title "{PLAIN}" --body-file body.md') is None
     assert len(api.requests) == 1
-    gate(f'gh pr create --title "{PLAIN}" --body-file body.md')  # the suggestion was used up
+    gate(f'gh pr create --draft --title "{PLAIN}" --body-file body.md')  # the suggestion was used up
     assert len(api.requests) == 2
 
 
@@ -327,7 +340,9 @@ def test_a_judge_that_cannot_answer_denies_instead_of_letting_the_title_through(
 
 def test_a_rejected_body_in_one_call_is_not_lost_to_a_title_in_another(gate, api):
     api.status = 500
-    reason = reason_of(gate(f'gh pr create --title A --body-file body.md; gh pr edit 5 --title "{JARGON}"', NARRATED))
+    reason = reason_of(
+        gate(f'gh pr create --draft --title A --body-file body.md; gh pr edit 5 --title "{JARGON}"', NARRATED)
+    )
     assert "narrates the diff" in reason
     assert api.requests == []
 
@@ -339,7 +354,7 @@ def test_a_plain_title_passes(gate, api):
 
 def test_the_title_is_not_judged_while_the_body_is_rejected(gate, api):
     api.verdict = {"passes": False, "rewrite": PLAIN}
-    reason = reason_of(gate(f'gh pr create --title "{JARGON}" --body-file body.md', NARRATED))
+    reason = reason_of(gate(f'gh pr create --draft --title "{JARGON}" --body-file body.md', NARRATED))
     assert "narrates the diff" in reason
     assert "needs the code to decode" not in reason
     assert api.requests == []

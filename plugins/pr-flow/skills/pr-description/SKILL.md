@@ -91,7 +91,7 @@ New PR — write the body to a file, never inline in the shell (the ```` ``` ```
 backticks, and a double-quoted shell argument runs them as command substitution):
 
 ```bash
-gh pr create --title "<outcome claim>" --body-file <file>
+gh pr create --draft --title "<outcome claim>" --body-file <file>
 ```
 
 Existing PR after a push — read the current body, then update it rather than appending:

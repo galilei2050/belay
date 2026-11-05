@@ -4,9 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+    # A draft is work in progress: CI runs once, when `gh pr ready` flips it.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 jobs:
   lint:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,6 +21,7 @@ jobs:
       - run: make lint
 
   typecheck:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,6 +33,7 @@ jobs:
       - run: make typecheck
 
   test:
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

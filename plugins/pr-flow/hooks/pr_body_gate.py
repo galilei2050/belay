@@ -11,6 +11,9 @@ The body is read from the `--body-file` the skill mandates. An inline `--body`, 
 cannot be judged before it runs, so they are denied with the instruction to write a file first;
 the same goes for `gh api` writing a PR body, which is the obvious way round this gate.
 
+A `gh pr create` without `--draft` is denied too: every push to an open PR spends a CI run, and
+the runs that matter are the ones after the code is done, which `gh pr ready` starts.
+
 Once every body passes, `title_judge` has a model judge each `--title` — the one check here that is
 not mechanical, and the only one that costs an API call.
 """
@@ -39,6 +42,7 @@ _BODY_FILE_FLAG_RE = re.compile(r"(?<!\S)(?:--body-file|-F)(?=[=\s])")
 _FLAG_VALUE_RE = re.compile(r"(?:=|\s+)(\"[^\"]*\"|'[^']*'|\S+)")
 _TITLE_FLAG_RE = re.compile(r"(?<!\S)(?:--title|-t)(?=[=\s])")
 _INLINE_BODY_RE = re.compile(r"(?<!\S)(?:(?:--body|-b)(?:=|\s)|--fill\b)")
+_DRAFT_FLAG_RE = re.compile(r"(?<!\S)(?:--draft|-d)(?!\S)")
 
 _FENCE_RE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
 _TABLE_RULE_RE = re.compile(r"^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)+\|?\s*$", re.MULTILINE)
@@ -54,9 +58,8 @@ QUOTED_BULLETS = 3
 QUOTE_WIDTH = 100
 
 DENY_PREFIX = (
-    "PR rejected — a reviewer cannot get the point of it in a minute. Fix what is listed below, "
-    "then rerun the same command. Do not route around this with `gh api` or the web UI: the text "
-    "is the problem, not the tool.\n\n"
+    "PR rejected. Fix what is listed below, then rerun the same command. Do not route around this "
+    "with `gh api` or the web UI: the text is the problem, not the tool.\n\n"
 )
 NO_VISUAL = (
     "No before/after. Add a markdown table comparing before and after (`| | Before | After |`) "
@@ -97,6 +100,12 @@ BAD_TITLE = (
 JUDGE_DOWN = (
     "The title could not be checked: {error}. Rerun the command in a minute; if it keeps failing, "
     "stop and tell the user — this gate needs ANTHROPIC_API_KEY and the Messages API."
+)
+NOT_DRAFT = (
+    "Open the PR as a draft: add `--draft` to `gh pr create`. A draft runs no CI, so the pushes "
+    "while the work is still moving cost nothing. When the code is done — `make ci` or the "
+    "project's local checks green — run `gh pr ready <number>`: that starts the one CI run that "
+    "decides the merge."
 )
 UNREADABLE = "The body file `{path}` cannot be read as UTF-8 text ({error}). Rewrite it with the Write tool."
 
@@ -212,7 +221,8 @@ def problems(command: str, cwd: Path) -> list[str]:
     if _API_WRITE_RE.search(command):
         return [API_WRITE]
     calls = pr_calls(command)
-    found = [problem for call in calls for problem in body_problems(call, cwd)]
+    found = [NOT_DRAFT for call in calls if call.verb == "create" and not _DRAFT_FLAG_RE.search(call.blanked)]
+    found += [problem for call in calls for problem in body_problems(call, cwd)]
     # Titles cost a model call each, so they are judged only once every body has passed.
     return found or [problem for call in calls for problem in title_problems(call, cwd)]
 
