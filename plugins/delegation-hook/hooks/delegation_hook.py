@@ -31,23 +31,23 @@ import time
 from pathlib import Path
 from typing import NamedTuple
 
-# 250k tokens comes from the user. Of 989 subagents (Sep to Oct 2026) the old 30-call cap stopped 44,
+# 350k tokens comes from the user. Of 989 subagents (Sep to Oct 2026) the old 30-call cap stopped 44,
 # at a median 124k context and none above 250k; startup alone is ~67k. Context, not calls, is
 # what degrades an answer — 30 cheap Greps and 30 full-file Reads are not the same spend.
-CONTEXT_BUDGET = 250_000
+CONTEXT_BUDGET = 350_000
 
 # Warn with ~50k left: enough room to stop reading and write, too late to start another sweep.
-CONTEXT_WARN_FROM = 200_000
+CONTEXT_WARN_FROM = 300_000
 
-# 7 minutes comes from the user. Measured against 727 real subagent runs on this machine
-# (2026-08-22): median 3.7 min, p90 14.2 min — so it cuts the slowest ~23%: slow calls that grow
+# 10 minutes comes from the user. Measured against 727 real subagent runs on this machine
+# (2026-08-22): median 3.7 min, p90 14.2 min — so it cuts the slow tail: slow calls that grow
 # the context little but still keep the caller waiting. Wall-clock, so
 # a machine suspend mid-run spends it; an agent resumed hours later is told to wrap up, not to
 # resume grinding.
-TIME_BUDGET_MINUTES = 7
+TIME_BUDGET_MINUTES = 10
 TIME_BUDGET_SECONDS = TIME_BUDGET_MINUTES * 60
 
-TIME_WARN_FROM_SECONDS = 5 * 60
+TIME_WARN_FROM_SECONDS = 8 * 60
 
 STATE_DIR = Path.home() / ".claude" / "state" / "delegation-hook"
 
