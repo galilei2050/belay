@@ -253,7 +253,7 @@ def test_time_warning_starts_at_the_threshold(monkeypatch, capsys, session):
     backdate(SUBAGENT, TIME_WARN_FROM_SECONDS)
     out = via_main(monkeypatch, capsys, tool_name="Read", tool_input={}, **at_context(session, SUBAGENT, 90_000))
     assert "permissionDecision" not in out
-    assert f"5.0/{TIME_BUDGET_MINUTES} minutes used" in out["additionalContext"]
+    assert f"{TIME_WARN_FROM_SECONDS / 60:.1f}/{TIME_BUDGET_MINUTES} minutes used" in out["additionalContext"]
 
 
 def test_call_past_the_time_budget_is_denied(monkeypatch, capsys, session):

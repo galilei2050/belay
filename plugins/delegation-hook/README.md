@@ -18,8 +18,8 @@ and then polls the task output file has paid the cost of both. The deny text say
 notification is the signal.
 
 **Oversized slices.** An open-ended task makes a subagent grind: it keeps exploring, its window
-fills with its own tool output, and it answers from that. Each subagent gets **250k tokens of
-context and 7 minutes of wall-clock**; from 200k or minute 5 it is told its spend so far, and past
+fills with its own tool output, and it answers from that. Each subagent gets **350k tokens of
+context and 10 minutes of wall-clock**; from 300k or minute 8 it is told its spend so far, and past
 either limit every tool is denied, which forces it to answer from what it has and name what it
 didn't reach. The spawning agent is handed the same budget as a rule at spawn time, so it can size
 the slice instead of discovering the ceiling by hitting it.
@@ -39,9 +39,9 @@ slice the same size, instead of naming the remainder and dispatching a right-siz
 | `Agent` without `model`, or with `model: fable` | **deny** — name `opus`, `sonnet` or `haiku`; omitted inherits the Fable session |
 | `Agent` without `model` for a plugin agent whose definition pins one of those (`codex:codex-rescue` → `sonnet`) | *context* — same as a named model; found via `installed_plugins.json` |
 | `Agent` in the background (explicit or default) with a cheaper `model` | *context* — how to slice a task to fit the budget, and who owns a short answer |
-| any tool inside a subagent, under 200k context within 5 min | *silent* |
-| 200k–250k context, or past 5 min | *context* — `Nk/250k tokens of context and M/7 minutes used` |
-| over 250k context, or past 7 min | **deny** — answer now from what you have |
+| any tool inside a subagent, under 300k context within 8 min | *silent* |
+| 300k–350k context, or past 8 min | *context* — `Nk/350k tokens of context and M/10 minutes used` |
+| over 350k context, or past 10 min | **deny** — answer now from what you have |
 | any tool in the main thread | *silent* — the budgets are a subagent rule |
 
 Only `deny` or a bare `additionalContext` is ever emitted, never `allow`, so this hook can't
@@ -53,7 +53,7 @@ slice, because the marketplace agents pin `model: opus` and the spawner can over
 route by task shape, don't default upward — `opus` for review/falsification/hard debugging,
 `sonnet` for writing code and tests at ~half the cost, `haiku` for search and mechanical checks.
 
-## Why context instead of calls, why 250k, and why 7 minutes
+## Why context instead of calls, why 350k, and why 10 minutes
 
 The budget limits how big a slice can get; it must not cut an agent that is on track, because a
 restart re-reads what the first run already had. Measured over 999 subagents (2026-09/10):
@@ -62,12 +62,12 @@ restart re-reads what the first run already had. Measured over 999 subagents (20
   **~67k** a subagent starts with. After 51 of 75 budget stops, a same-type agent was spawned in
   the same session within 30 minutes and re-read a median **59k** tokens. Thirty cheap Greps and
   thirty full-file Reads are not the same spend; tokens are.
-- **250k** (the user's number) is above p95 (~200k), so it stops only the bloated tail (5 of 989
-  runs) — a drift guard, not a slicing enforcer. Degradation with context is gradual in the
+- **350k** (the user's number) is well above p95 (~200k), so it stops only the bloated tail (5 of
+  989 runs were even past 250k) — a drift guard, not a slicing enforcer. Degradation with context is gradual in the
   published evidence (NoLiMa, Chroma "Context Rot"), with no threshold that justifies cutting lower.
-  The warning at **200k** nudges the p95 agent to stop reading and write.
-- **7 minutes** bounds how long the caller waits: before the hook, runs took median **3.7 min**,
-  p90 **14.2 min** (727 runs, 2026-08-22); with it, median 2.2, p90 5.3. It is wall-clock, so a
+  The warning at **300k** leaves ~50k to stop reading and write.
+- **10 minutes** (the user's number) bounds how long the caller waits: before the hook, runs took median **3.7 min**,
+  p90 **14.2 min** (727 runs, 2026-08-22); under the earlier 7-minute cap, median 2.2, p90 5.3. It is wall-clock, so a
   machine suspend mid-run spends it. What no budget can catch is an agent stuck inside a single
   hung API request — a hook only runs when a tool is called.
 
