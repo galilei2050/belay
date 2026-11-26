@@ -937,6 +937,11 @@ def test_rm_env_is_denied(logger):
     assert decide("rm .env", logger)[0] == "deny"
 
 
+@pytest.mark.parametrize("cmd", ["rclone ls gdrive:", "rclone sync ./out gdrive:backup"])
+def test_rclone_is_allowed(cmd, logger):
+    assert decide(cmd, logger)[0] == "allow"
+
+
 # ── python -c standalone gate ─────────────────────────────────────────────────
 
 
